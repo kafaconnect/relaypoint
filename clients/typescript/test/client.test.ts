@@ -66,6 +66,23 @@ describe("connection lifecycle", () => {
     expect(seen).toEqual(["connecting", "connected", "reconnecting", "connected", "closed"]);
   });
 
+  // R1/R4: a failing transport.connect() must not strand the client in "connecting".
+  it("leaves connecting for disconnected when transport.connect keeps failing", async () => {
+    const { client, transport } = newClient({ connectBackoffMs: [0, 0] });
+    transport.failConnect(99);
+    await expect(client.connect()).rejects.toThrow(/transport connect/);
+    expect(client.state).toBe("disconnected");
+  });
+
+  // R4: a still-flapping network on reconnect retries with backoff rather than halting forever.
+  it("retries transport.connect on reconnect until it succeeds", async () => {
+    const { client, transport } = newClient({ connectBackoffMs: [0, 0, 0, 0] });
+    await client.connect();
+    transport.failConnect(2); // first two reconnect attempts fail, third succeeds
+    transport.emitStatus({ type: "disconnected", final: false });
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
+  });
+
   // @spec:clientsdk.connection.gettoken-failure
   it("becomes a fatal auth_failed after getToken retries exhaust", async () => {
     const getToken = vi.fn(() => Promise.reject(new Error("iam down")));

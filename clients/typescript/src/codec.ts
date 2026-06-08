@@ -63,6 +63,7 @@ interface WireEvent {
   tenant_id: string;
   actor_id: string;
   medium: string;
+  media_profile?: string;
   caused_by?: string;
   ref_id?: string;
   data?: unknown;
@@ -81,6 +82,7 @@ export function decodeLogEvent(bytes: Uint8Array): LogEvent {
     occurredAt: w.occurred_at,
     actorId: w.actor_id,
     medium: w.medium,
+    ...(w.media_profile !== undefined ? { mediaProfile: w.media_profile } : {}),
     ...(w.caused_by !== undefined ? { causedBy: w.caused_by } : {}),
     ...(w.ref_id !== undefined ? { refId: w.ref_id } : {}),
     data: w.data ?? null,

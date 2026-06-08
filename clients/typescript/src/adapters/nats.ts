@@ -4,6 +4,13 @@
 // the scoped token via getToken() on each reconnect (a connection is authorized at CONNECT
 // time by the auth-callout). A transient drop surfaces as a non-final "disconnected" status;
 // the client then re-invokes connect() with a fresh token.
+//
+// Trust model: this is a GENERIC transport with a raw publish(subject) — that genericity is the
+// price of the loose-coupling port (the core must not know NATS). The "clients never write .log"
+// guarantee does NOT rest on this adapter: it is enforced server-side by the NATS account ACL
+// (deploy/nats/nats-server.conf denies clients publish on interaction.*.log) and by the SDK's
+// own command API (InteractionHandle), which exposes no log-write path. The raw adapter is
+// plumbing, not the app-facing surface.
 
 import {
   connect,

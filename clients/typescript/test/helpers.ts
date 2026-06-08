@@ -10,6 +10,7 @@ export function wireEvent(e: {
   eventId?: string;
   occurredAt?: string;
   causedBy?: string;
+  mediaProfile?: string;
   data?: unknown;
 }): Uint8Array {
   return enc.encode(
@@ -22,6 +23,7 @@ export function wireEvent(e: {
       tenant_id: "t1",
       actor_id: "alice",
       medium: "chat",
+      ...(e.mediaProfile !== undefined ? { media_profile: e.mediaProfile } : {}),
       ...(e.causedBy !== undefined ? { caused_by: e.causedBy } : {}),
       ...(e.data !== undefined ? { data: e.data } : {}),
     }),

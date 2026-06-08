@@ -27,10 +27,17 @@ describe("wire-field naming projection", () => {
     // a fact decodes to camelCase, carries causedBy (NOT commandId), and keeps event-specific
     // fields INSIDE data (negotiation_id is not promoted to the envelope)
     const ev = decodeLogEvent(
-      wireEvent({ sequence: 5, eventType: "call.renegotiated", causedBy: "K1", data: { negotiation_id: "n-1" } }),
+      wireEvent({
+        sequence: 5,
+        eventType: "call.renegotiated",
+        causedBy: "K1",
+        mediaProfile: "webrtc-p2p",
+        data: { negotiation_id: "n-1" },
+      }),
     );
     expect(ev.causedBy).toBe("K1");
     expect(ev.eventType).toBe("call.renegotiated");
+    expect(ev.mediaProfile).toBe("webrtc-p2p"); // media_profile is an envelope field, projected
     expect(ev.sequence).toBe(5);
     expect("commandId" in ev).toBe(false);
     expect(ev.data).toEqual({ negotiation_id: "n-1" });

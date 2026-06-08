@@ -67,6 +67,17 @@ describe("ordered log delivery", () => {
     expect(states.at(-1)).toBe("live");
   });
 
+  // R3: a second concurrent consumer would silently split the ordered stream — it is refused.
+  it("refuses a second concurrent consumer", async () => {
+    const d = new Delivery(makeDeps([]));
+    const it1 = d.events()[Symbol.asyncIterator]();
+    const first = it1.next();
+    d.offer(logEvent(1));
+    expect((await first).value).toMatchObject({ sequence: 1 });
+    const it2 = d.events()[Symbol.asyncIterator]();
+    await expect(it2.next()).rejects.toThrow(/single-consumer/);
+  });
+
   // @spec:clientsdk.delivery.replay-failure
   it("surfaces a degraded then failed delivery state when replay cannot fill the gap", async () => {
     const states: DeliveryState[] = [];

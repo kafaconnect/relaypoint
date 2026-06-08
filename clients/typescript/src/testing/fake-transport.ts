@@ -30,8 +30,13 @@ export class FakeTransport implements Transport {
   private readonly durable = new Map<string, Array<{ sequence: number; data: Uint8Array }>>();
   private readonly statusCbs = new Set<(s: TransportStatus) => void>();
   private replayFailures = 0;
+  private connectFailures = 0;
 
   async connect(token: string): Promise<void> {
+    if (this.connectFailures > 0) {
+      this.connectFailures--;
+      throw new Error("transport connect failed");
+    }
     this.connectTokens.push(token);
   }
 
@@ -99,6 +104,11 @@ export class FakeTransport implements Transport {
   // Make the next `count` replay() calls throw (durable store unreachable).
   failReplay(count: number): void {
     this.replayFailures = count;
+  }
+
+  // Make the next `count` connect() calls throw (transport/network down).
+  failConnect(count: number): void {
+    this.connectFailures = count;
   }
 
   emitStatus(status: TransportStatus): void {

@@ -25,6 +25,7 @@ export interface LogEvent {
   readonly occurredAt: string; // display-only — never used for ordering/dedup/security
   readonly actorId: string;
   readonly medium: string;
+  readonly mediaProfile?: string; // present on call facts (e.g. "webrtc-p2p"); absent for chat
   readonly causedBy?: string; // = the command_id that produced this fact
   readonly refId?: string;
   readonly data: unknown;
