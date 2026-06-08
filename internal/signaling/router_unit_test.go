@@ -48,8 +48,8 @@ func TestCore_NoNATS(t *testing.T) {
 	st := newFakeStore()
 	r := NewRouter(st)
 
-	if got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil)); got.Status != "accepted" {
-		t.Fatalf("start: %+v", got)
+	if got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil)); got.Status != "accepted" || got.CausedBy != "c1" {
+		t.Fatalf("start: %+v (want accepted, caused_by=c1)", got)
 	}
 	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", map[string]any{"t": "hi"})); got.Status != "accepted" {
 		t.Fatalf("message: %+v", got)
@@ -118,5 +118,38 @@ func TestCore_ForgedAuthor(t *testing.T) {
 	ok, _ := json.Marshal(Command{CommandID: "f2", TenantID: "t1", ActorID: "u1", Type: "interaction.started", Medium: "chat"})
 	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd", ok); got.Status != "accepted" {
 		t.Fatalf("authenticated actor must be accepted, got %+v", got)
+	}
+}
+
+// edit/delete must name the message they target (ref_id).
+func TestCore_RefIDRequired(t *testing.T) {
+	r := NewRouter(newFakeStore())
+	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", nil))
+	noRef, _ := json.Marshal(Command{CommandID: "u1", TenantID: "t1", ActorID: "u1", Type: "message.updated", Medium: "chat"})
+	if got := r.HandleCommand(context.Background(), subj, noRef); got.Status != "rejected" {
+		t.Fatalf("message.updated without ref_id must be rejected, got %+v", got)
+	}
+	withRef, _ := json.Marshal(Command{CommandID: "u2", TenantID: "t1", ActorID: "u1", Type: "message.updated", Medium: "chat", RefID: "m1"})
+	if got := r.HandleCommand(context.Background(), subj, withRef); got.Status != "accepted" {
+		t.Fatalf("message.updated with ref_id should be accepted, got %+v", got)
+	}
+}
+
+// a rejected command_id reused with a DIFFERENT payload is a conflict (key bound to
+// its first request); the SAME payload may be retried once it becomes legal.
+func TestCore_RejectedReuseConflict(t *testing.T) {
+	r := NewRouter(newFakeStore())
+	// message before start → rejected (and memoised with its payload hash)
+	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "rejected" {
+		t.Fatalf("setup: want rejected, got %+v", got)
+	}
+	// same id, DIFFERENT payload → conflict
+	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", map[string]any{"t": "B"})); got.Status != "rejected" || got.Reason == "" {
+		t.Fatalf("reuse with different payload must conflict, got %+v", got)
+	}
+	// same id, SAME payload, now legal (after start) → accepted (transient rejection retried)
+	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", nil))
+	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "accepted" {
+		t.Fatalf("same-payload retry once legal should be accepted, got %+v", got)
 	}
 }

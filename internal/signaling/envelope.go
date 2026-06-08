@@ -34,7 +34,7 @@ type Command struct {
 type CommandResult struct {
 	CommandID string `json:"command_id"`
 	Status    string `json:"status"`              // 'accepted' | 'rejected'
-	CausedBy  string `json:"caused_by,omitempty"` // accepted: the produced fact's event_id
+	CausedBy  string `json:"caused_by,omitempty"` // accepted: the command_id (the fact's caused_by)
 	Reason    string `json:"reason,omitempty"`    // rejected: why
 }
 

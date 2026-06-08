@@ -9,13 +9,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // Router is the authoritative writer of every `interaction.<id>.log` fact (chat
 // subset). It is pure logic over a LogStore port — it has NO knowledge of NATS.
 // Clients publish intents on `.cmd`; the router validates, assigns a monotonic
 // `sequence`, appends the fact, and returns a CommandResult for the issuer. State is
-// in-memory per interaction and rebuilt lazily from the durable log on first access.
+// in-memory per interaction and rebuilt lazily from the durable log (the source of
+// truth) on first access / after a restart.
 type Router struct {
 	store LogStore
 	now   func() time.Time
@@ -23,6 +26,7 @@ type Router struct {
 
 	mu    sync.Mutex // guards the inter map only (brief)
 	inter map[string]*interactionState
+	load  singleflight.Group // one rebuild per key (no concurrent stale inserts)
 }
 
 type interactionState struct {
@@ -37,7 +41,6 @@ type storedResult struct {
 	result      CommandResult
 }
 
-// Option customises a Router (used by tests for a deterministic clock / id).
 type Option func(*Router)
 
 func WithClock(now func() time.Time) Option { return func(r *Router) { r.now = now } }
@@ -78,6 +81,11 @@ func legalTransition(status, cmdType string) bool {
 	}
 }
 
+// requiresRefID: an edit/delete must name the message it edits.
+func requiresRefID(cmdType string) bool {
+	return cmdType == "message.updated" || cmdType == "message.deleted"
+}
+
 func applyTransition(st *interactionState, cmdType string) {
 	switch cmdType {
 	case "interaction.started":
@@ -98,31 +106,45 @@ func logSubjectFor(tenant, iid string) string {
 	return fmt.Sprintf("tenant.%s.interaction.%s.log", tenant, iid)
 }
 
-// getState returns the (lazily rebuilt) state for an interaction, replaying the
-// durable log so a restart restores sequence/status/results instead of resetting.
-func (r *Router) getState(tenant, iid string) *interactionState {
+// getState returns the (lazily rebuilt) state for an interaction. The rebuild runs
+// under singleflight so concurrent callers share ONE state object (preventing a
+// stale state being re-inserted after a concurrent eviction). A replay failure is
+// propagated so the caller fails closed rather than acting on partial state.
+func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 	key := tenant + "/" + iid
 	r.mu.Lock()
 	st := r.inter[key]
 	r.mu.Unlock()
 	if st != nil {
-		return st
+		return st, nil
 	}
-	built := r.rebuild(tenant, iid)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if existing := r.inter[key]; existing != nil {
-		return existing
+	v, err, _ := r.load.Do(key, func() (any, error) {
+		r.mu.Lock()
+		if e := r.inter[key]; e != nil {
+			r.mu.Unlock()
+			return e, nil
+		}
+		r.mu.Unlock()
+		built, berr := r.rebuild(tenant, iid)
+		if berr != nil {
+			return nil, berr
+		}
+		r.mu.Lock()
+		r.inter[key] = built
+		r.mu.Unlock()
+		return built, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	r.inter[key] = built
-	return built
+	return v.(*interactionState), nil
 }
 
-func (r *Router) rebuild(tenant, iid string) *interactionState {
+func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 	st := &interactionState{results: map[string]storedResult{}}
 	facts, err := r.store.Replay(logSubjectFor(tenant, iid))
 	if err != nil {
-		return st
+		return nil, err
 	}
 	for _, e := range facts {
 		if e.Sequence > st.seq {
@@ -131,11 +153,11 @@ func (r *Router) rebuild(tenant, iid string) *interactionState {
 		applyTransition(st, e.EventType)
 		if e.CommandID != "" {
 			st.results[e.CommandID] = storedResult{result: CommandResult{
-				CommandID: e.CommandID, Status: "accepted", CausedBy: e.EventID,
+				CommandID: e.CommandID, Status: "accepted", CausedBy: e.CommandID,
 			}}
 		}
 	}
-	return st
+	return st, nil
 }
 
 // HandleCommand processes one `.cmd` request and returns the CommandResult to reply.
@@ -151,8 +173,9 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	if err := json.Unmarshal(data, &cmd); err != nil {
 		return CommandResult{Status: "rejected", Reason: "bad payload"}
 	}
-	// the authenticated tenant is the trust anchor; fall back to the subject only when
-	// the transport could not authenticate one (Phase-1, before auth-callout).
+	// the authenticated tenant is the trust anchor; the subject fallback applies only
+	// when the transport could not authenticate one (Phase-1 dev, before auth-callout —
+	// NOT production-safe for authorship; auth-callout MUST populate Identity in prod).
 	authTenant := id.TenantID
 	if authTenant == "" {
 		authTenant = tenant
@@ -165,31 +188,46 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	case cmd.ActorID == "":
 		res.Status, res.Reason = "rejected", "missing actor_id"
 		return res
-	case tenant != authTenant: // the subject must address the authenticated tenant
+	case tenant != authTenant:
 		res.Status, res.Reason = "rejected", "subject tenant != authenticated tenant"
 		return res
-	case cmd.TenantID != authTenant: // payload tenant must match the authenticated tenant
+	case cmd.TenantID != authTenant:
 		res.Status, res.Reason = "rejected", "payload tenant_id != authenticated tenant"
 		return res
-	case id.UserID != "" && cmd.ActorID != id.UserID: // forged author
+	case id.UserID != "" && cmd.ActorID != id.UserID:
 		res.Status, res.Reason = "rejected", "actor_id != authenticated user"
+		return res
+	case requiresRefID(cmd.Type) && cmd.RefID == "":
+		res.Status, res.Reason = "rejected", "missing ref_id"
 		return res
 	}
 
-	st := r.getState(tenant, iid)
+	st, err := r.getState(tenant, iid)
+	if err != nil {
+		res.Status, res.Reason = "rejected", "state unavailable (log replay failed) — retry"
+		return res
+	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	// idempotency / conflict: a command_id is bound to its first payload.
 	if prev, seen := st.results[cmd.CommandID]; seen {
-		if prev.payloadHash == "" || prev.payloadHash == hashPayload(cmd) {
-			return prev.result // replay (rebuilt entries have no hash → replay)
+		switch {
+		case prev.payloadHash == "": // rebuilt accepted fact — payload unknown → replay
+			return prev.result
+		case prev.payloadHash != hashPayload(cmd): // different payload → conflict
+			res.Status, res.Reason = "rejected", "conflict: command_id reused with a different payload"
+			return res
+		case prev.result.Status == "accepted": // same payload, accepted → replay
+			return prev.result
+			// same payload, previously rejected → fall through to re-evaluate (a
+			// transient rejection like an illegal transition may now be legal)
 		}
-		res.Status, res.Reason = "rejected", "conflict: command_id reused with a different payload"
-		return res
 	}
 
 	if !legalTransition(st.status, cmd.Type) {
 		res.Status, res.Reason = "rejected", fmt.Sprintf("illegal transition %q from state %q", cmd.Type, st.status)
+		st.results[cmd.CommandID] = storedResult{payloadHash: hashPayload(cmd), result: res}
 		return res
 	}
 
@@ -202,14 +240,20 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	}
 	payload, _ := json.Marshal(ev)
 	// Deterministic dedupID per (tenant,interaction,command): the store dedups a retry
-	// even if a prior append's ack was lost — exactly-once across crashes.
-	dup, err := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandID)
-	if err != nil {
+	// even if a prior append's ack was lost — exactly-once append across crashes.
+	dup, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandID)
+	if aerr != nil {
 		res.Status, res.Reason = "rejected", "log append failed"
 		return res
 	}
-	res.Status, res.CausedBy = "accepted", ev.EventID
-	if !dup {
+	res.Status, res.CausedBy = "accepted", cmd.CommandID
+	if dup {
+		// a prior ack was lost / a concurrent writer wrote it — resync seq/status from
+		// the durable log so this router's view is not behind.
+		if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
+			st.seq, st.status = fresh.seq, fresh.status
+		}
+	} else {
 		st.seq = seq
 		applyTransition(st, cmd.Type)
 	}

@@ -2,6 +2,7 @@ package signaling
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -15,7 +16,8 @@ type LogStore interface {
 	// Append writes one fact. dedupID makes the append idempotent: a retry with the
 	// same dedupID returns duplicate=true and does NOT write a second fact.
 	Append(subject string, data []byte, dedupID string) (duplicate bool, err error)
-	// Replay returns every fact on subject, in order (for state rebuild after restart).
+	// Replay returns every fact on subject, in order. It MUST return an error (not a
+	// short/empty slice) if the log could not be fully read, so callers fail closed.
 	Replay(subject string) ([]Event, error)
 }
 
@@ -43,8 +45,11 @@ func (s *jetstreamStore) Replay(subject string) ([]Event, error) {
 	var out []Event
 	for {
 		msgs, ferr := sub.Fetch(128, nats.MaxWait(250*time.Millisecond))
-		if ferr != nil || len(msgs) == 0 {
-			break
+		if errors.Is(ferr, nats.ErrTimeout) || (ferr == nil && len(msgs) == 0) {
+			break // end of the log
+		}
+		if ferr != nil {
+			return nil, ferr // a real failure — fail closed, do not return partial state
 		}
 		for _, m := range msgs {
 			var e Event
@@ -60,7 +65,7 @@ func (s *jetstreamStore) Replay(subject string) ([]Event, error) {
 // every interaction `.log` fact — ordered, replayable (signaling.log-durable).
 func EnsureLogStream(js nats.JetStreamContext) error {
 	cfg := &nats.StreamConfig{
-		Name:              "INTERACTION_LOG",
+		Name:              "INTERACTION_LOGS",
 		Subjects:          []string{"tenant.*.interaction.*.log"},
 		Storage:           nats.FileStorage,
 		Retention:         nats.LimitsPolicy,
