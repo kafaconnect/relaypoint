@@ -27,6 +27,7 @@
 - [ ] Fast-RONA on NATS `503 no responders` (offline/never-subscribed) — `// @spec:signaling.offer.no-responder-fast-rona`
 - [ ] Double-accept CAS on `offer_id`/`route_attempt_id`; losers `accepted_elsewhere`; idempotent re-accept — `// @spec:signaling.offer.double-accept-cas`
 - [ ] Cancel (originator) / withdraw (router) push terminal on `...user.<target>.control`; others denied — `// @spec:signaling.offer.cancel-withdraw-authorized`
+- [ ] Accept vs withdraw crossing in flight → same CAS, one terminal; late accept `accepted_elsewhere`/409, no phantom join — `// @spec:signaling.offer.accept-withdraw-cross`
 - [ ] KV `offer.active.<userId>` reconstruct ringing on reconnect + client-local ring backstop — `// @spec:signaling.offer.reconnect-during-ring`
 
 ## Interaction QoS split

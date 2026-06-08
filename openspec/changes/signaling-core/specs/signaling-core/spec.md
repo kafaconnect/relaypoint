@@ -118,6 +118,14 @@ NOT via the reply. The reply `_INBOX` MUST carry a one-time nonce bound to
 - **THEN** the router publishes the terminal state on `routing.offer.user.<target>.control` and the target stops ringing immediately
 - **AND** a cancel/withdraw from any other actor is rejected by ACL + author check
 
+#### Scenario: Accept and withdraw crossing in flight resolve to one terminal
+- **id:** `signaling.offer.accept-withdraw-cross`
+- **GIVEN** a ringing offer for which the target's `accept` reply and the router's own `withdraw` are in flight at the same instant
+- **WHEN** both reach the router's single per-offer state machine
+- **THEN** the router applies the same compare-and-set on `offer_id`: whichever transition commits first wins and the offer reaches exactly one terminal state
+- **AND** if `withdrawn` commits first, the late `accept` loses the CAS and is answered `accepted_elsewhere` / 409, the user is NOT joined, and its optimistic UI rolls back because no interaction-scoped grant is issued
+- **AND** if `accepted` commits first, the withdraw is a no-op against the already-accepted offer; a genuine customer abandon is then handled as an `interaction.abandoned` transition that tears down the established call via the call state machine, never a phantom half-join
+
 #### Scenario: Reconnect during ring reconstructs active offers
 - **id:** `signaling.offer.reconnect-during-ring`
 - **GIVEN** an active offer persisted by the router in NATS KV `offer.active.<userId>` per fanned-out user (a team/queue offer writes one `offer.active.<userId>` for EACH user it is fanned out to; there is no team-level KV the client reads)

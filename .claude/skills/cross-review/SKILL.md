@@ -72,30 +72,62 @@ reviewers=""
 | agy    | `timeout "${REVIEW_TIMEOUT:-12m}" agy -p "$PROMPT" --print-timeout 8m > out.md` | print mode; **never** `--dangerously-skip-permissions` | 3–6 min |
 | claude | `timeout "${REVIEW_TIMEOUT:-12m}" claude -p --permission-mode plan "$PROMPT" > out.md` | plan mode = read-only | 3–6 min |
 
-## 5. Build the review prompt
+## 5. Review rubric (MANDATORY — enumerate, don't spot-check)
+
+This is the heart of the review, and it is **domain-agnostic** — it asks *how* to
+review, never *what* this repo does. A reviewer that only reads what's written and
+nods is worthless: a "read and nod" pass passes a design that is missing a state
+exit, an unhandled race, or a forged-write path, because nobody drew the table to
+see the blank. **Review the negative space:** for every dimension below the reviewer
+MUST *build the artifact itself* (the state diagram, the actor-pair matrix, the
+failure list, the contract inventory) from the change, then report the **blanks** —
+the cases that are NOT specified — not just grade what is. A dimension is `OK` only
+once the reviewer has enumerated it and found no blank.
+
+Both modes use this rubric. **Plan/design review** (proposal + design + spec delta,
+before code): evidence = "is it specified in a Requirement/Scenario?". **Code review**
+(the diff): evidence = "is it implemented AND covered by a `// @spec:` test?". Same
+dimensions, different evidence bar.
+
+| # | Dimension | The reviewer MUST enumerate and check |
+|---|---|---|
+| R1 | **State machines** | For each stateful entity touched by the change, list ALL states and EVERY transition incl. terminal / error / timeout / cancel paths. Flag any state with no exit, any happy path with no failure/abort sibling, any transition that is implied but never written down. |
+| R2 | **Lifecycle edges** | For each happy path, derive its variants — abort mid-flight, timeout, retry, reconnect/resume, duplicate, out-of-order, expiry, empty/zero/max case — and check each is specified. A missing variant is a blank. |
+| R3 | **Races / concurrency** | Enumerate every pair of actors that can touch shared state at once (two writers; reader vs writer; retry vs original; cancel vs complete). Each MUST name its resolver: single authority, CAS/optimistic lock, idempotency key, or defined ordering. "Probably fine" = BLOCKER. |
+| R4 | **Failure / recovery** | Crash, restart, network partition, credential/lease expiry, peer offline, lost/duplicate/reordered message, dependency down/timeout. For each: is the recovery path defined and idempotent? Is stuck state swept/reaped? |
+| R5 | **Authority / security / tenancy** | For each write/effect: who is allowed to produce it, and can a caller forge it (actor == identity)? Least-privilege grants, tenant/data isolation, privileged-action audit, secrets handling, input validation. |
+| R6 | **Contract / SSoT integrity** | Every behavior change has a `### Requirement:` + `#### Scenario:` with a stable id; and every contract surface that EXISTS in this repo stays consistent end-to-end — whichever apply of: data schema/migrations, sync API, service/event contracts, topics/subjects, cache keys, UI states. Flag drift, a breaking change with no version, or a rollback gap. |
+| R7 | **Idempotency / ordering / delivery** | Dedup key present, sequence/ordering defined, exactly-once *effect* (not just delivery), replay-safe. |
+| R8 | **Test traceability + project DoD** | (code review) every Scenario id has its tracing test (e.g. `// @spec:<id>`); lint/typecheck/test green; the Definition of Done in `openspec/config.yaml` is met; repo dependency/licensing rules honored. |
+
+The dimensions are fixed; the *examples* in each row are illustrative, not a
+checklist of this repo's features. If a dimension genuinely does not apply to a
+change, the reviewer says so with a one-line reason — it may NOT silently skip a row.
+
+## 6. Build the review prompt
 
 Write `$SCRATCH/prompt.md`. It MUST: state the reviewer is independent and NOT the
-builder; forbid file edits (read-only); and ask it to judge the diff against the
-change's spec delta (`openspec/changes/$CHANGE/specs`) + the Definition of Done in
-`openspec/config.yaml`. Inputs to reference: `$SCRATCH/diff.patch`, the change folder.
-Require this exact output shape:
+builder; forbid file edits (read-only); hand it the rubric above and require it to
+work every row by enumeration; and judge against the change's spec delta
+(`openspec/changes/$CHANGE/specs`) + the Definition of Done in `openspec/config.yaml`.
+Inputs to reference: `$SCRATCH/diff.patch`, the change folder. Require this exact
+output shape:
 
 ```
 VERDICT: PASS | PASS_WITH_FINDINGS | BLOCKED
+RUBRIC:               # one line per row R1..R8: <id> OK | GAP | N/A — <evidence: the table you built, or the blank you found>
 FINDINGS:
-- [BLOCKER|HIGH|MEDIUM|LOW] <file:line or artifact> — <issue> — <required fix>
+- [BLOCKER|HIGH|MEDIUM|LOW] <file:line or artifact> — <issue> — <required fix> — <rubric id>
 MISSING_TESTS:        # scenario-ids with no `// @spec:` test, or "none"
-CONTRACT_RISKS:       # OpenAPI/proto/AsyncAPI compat, or "none"
+CONTRACT_RISKS:       # DB/OpenAPI/proto/AsyncAPI/topic/cache-key/UI drift, or "none"
 ARCHITECTURE_ADR_NEEDED:  # yes/no + reason
 QUESTIONS:            # or "none"
 ```
 
-Checks the reviewer must cover: spec correctness (every behavior change has a
-`### Requirement:` + `#### Scenario:` with a stable id); test traceability
-(`// @spec:<id>`); DoD; code risk (regressions, concurrency, security, RLS,
-NATS/gRPC/OpenAPI/migrations/rollback); and the 100%-OSS dependency rule.
+A `RUBRIC:` line that asserts `OK` without showing the enumeration it built is itself
+a `[BLOCKER]` finding — consolidation (step 8) MUST reject bare `OK`s.
 
-## 6. Run each reviewer, capture output
+## 7. Run each reviewer, capture output
 
 ```sh
 export PROMPT="$(cat "$SCRATCH/prompt.md")"
@@ -109,13 +141,15 @@ for r in $reviewers; do ( cd "$SCRATCH"
 done
 ```
 
-## 7. Consolidate into the change folder
+## 8. Consolidate into the change folder
 
 Write `$REVIEW_DIR/cross-review-$TS.md`: builder, reviewers, base, timestamp, the
 diff stat, then each reviewer's full output, then a consolidated list of every
-`VERDICT:` and `[BLOCKER]/[HIGH]` finding. Print the path.
+`VERDICT:` and `[BLOCKER]/[HIGH]` finding. Cross-check the `RUBRIC:` lines: any row
+marked `OK` with no enumeration shown, or marked `GAP` by any reviewer, is escalated
+to a `[BLOCKER]`. Print the path.
 
-## 8. Verdict handling (human owns it)
+## 9. Verdict handling (human owns it)
 
 - Any `[BLOCKER]`, a missing required-scenario test, a failed strict validation, or
   a contract-compat concern ⇒ the change **cannot be archived**.
