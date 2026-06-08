@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <title>Core Flows — Kafa Connect Docs</title>
-  <meta name="description" content="Dynamic views of RelayPoint: offer to accept/RONA, sending a chat message, placing a call, plus the single-node deployment view.">
+  <meta name="description" content="Dynamic views of RelayPoint: offer/accept/RONA, cancel/withdraw, double-accept, chat, call, transfer, reconnect-during-ring, and abandon/orphan, plus the single-node deployment view.">
   <meta name="author" content="Kafa Connect">
 
   <script type="application/json" id="doc-meta">
   {
     "title": "Core Flows",
-    "summary": "Dynamic views of RelayPoint: offer to accept/RONA, sending a chat message, placing a call, plus the single-node deployment view.",
-    "version": "1.0.0",
+    "summary": "Dynamic views of RelayPoint: offer/accept/RONA, cancel/withdraw, double-accept, chat, call, transfer, reconnect-during-ring, and abandon/orphan, plus the single-node deployment view.",
+    "version": "2.0.0",
     "updated": "2026-06-08",
     "status": "stable",
     "tags": ["architecture", "flows", "sequence", "webrtc", "deployment"],
@@ -70,7 +70,7 @@
     .page {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      max-width: 64rem;
+      width: 100vw;
       margin: 0 auto;
       padding: 0 var(--gap);
     }
@@ -181,8 +181,13 @@
       <ol>
         <li><a href="#overview">Overview</a></li>
         <li><a href="#offer-flow">Offer to accept or RONA</a></li>
+        <li><a href="#cancel-withdraw-flow">Offer cancel and withdraw</a></li>
+        <li><a href="#double-accept-flow">Double-accept race</a></li>
         <li><a href="#chat-flow">Sending a chat message</a></li>
         <li><a href="#call-flow">Placing a call</a></li>
+        <li><a href="#transfer-flow">Transfer (warm and cold)</a></li>
+        <li><a href="#reconnect-flow">Reconnect during ring</a></li>
+        <li><a href="#abandon-flow">Customer abandoned and orphaned reaper</a></li>
         <li><a href="#deployment-view">Deployment view</a></li>
         <li><a href="#related">Related documents</a></li>
       </ol>
@@ -191,15 +196,19 @@
     <main>
       <article>
         <h1>Core Flows</h1>
-        <p class="summary">The dynamic views of RelayPoint — how the subjects are used over time for offer/RONA, chat, and calls — plus the single-node Phase 1 deployment view.</p>
+        <p class="summary">The dynamic views of RelayPoint — how the subjects are used over time for offer/RONA, cancel/withdraw, double-accept, chat, calls, transfer, reconnect-during-ring, and abandon/orphan — plus the single-node Phase 1 deployment view. Throughout, clients send COMMANDS on <code>.cmd</code> and the router writes the authoritative <code>.log</code>.</p>
 
         <section aria-labelledby="overview">
           <h2 id="overview" class="anchored"><a class="anchor" href="#overview" aria-label="Link to this section">#</a>Overview</h2>
           <p>
-            These flows show the <a href="../subject-model.html">subject model</a> in motion.
+            These flows show the <a href="../subject-model.html">subject model</a> and <a href="../state-machines.html">state machines</a> in motion.
             Each flow is a numbered sequence with an accompanying box-art diagram.
             Throughout, every subject is tenant-prefixed with <code>tenant.&lt;tenantId&gt;.</code> (omitted in the steps for brevity), and media never transits NATS.
           </p>
+          <div class="callout note">
+            <span class="label">Note</span>
+            Clients are READ-only on <code>interaction.&lt;id&gt;.log</code> and publish intents as COMMANDS on <code>interaction.&lt;id&gt;.cmd</code>. The <strong>router / interaction service</strong> validates each command, assigns <code>sequence</code>, and is the only writer of <code>.log</code>. Offer terminals are pushed by the router on <code>routing.offer.user.&lt;userId&gt;.control</code>.
+          </div>
           <div class="callout danger">
             <span class="label">Danger</span>
             In the call flow, only SDP (on <code>.log</code>) and ICE (on <code>.signal</code>) cross NATS. The audio/video media itself flows WebRTC peer-to-peer, relayed by coturn only when NAT requires it — never through the broker.
@@ -208,50 +217,109 @@
 
         <section aria-labelledby="offer-flow">
           <h2 id="offer-flow" class="anchored"><a class="anchor" href="#offer-flow" aria-label="Link to this section">#</a>Offer to accept or RONA</h2>
-          <p>The router brings a target user into an interaction via NATS request/reply with a timeout.</p>
+          <p>The router brings a target user into an interaction via NATS request/reply with a timeout. See the <a href="../state-machines.html#offer">offer state machine</a> for all terminal states.</p>
           <ol>
-            <li>The router publishes a request to <code>routing.offer.user.&lt;userId&gt;</code> with a <code>timeout_ms</code>.</li>
+            <li>The router publishes a request to <code>routing.offer.user.&lt;userId&gt;</code> with an <code>offer_id</code>, <code>timeout_ms</code>, and a one-time nonce, and persists the active offer in NATS KV <code>offer.active.&lt;userId&gt;</code> (TTL).</li>
             <li>The client's offer subscription receives the offer and shows the ring to the user.</li>
-            <li><strong>Accept path:</strong> the callee's client replies <code>accept</code> before the timeout.</li>
-            <li>The router grants the callee ACL on <code>interaction.&lt;id&gt;.*</code> and returns the <code>interaction_id</code> in the reply. The acceptance is recorded as <code>interaction.accepted</code> (a.k.a. <code>call.accepted</code>) on <code>interaction.&lt;id&gt;.log</code>, authored by the callee/router — it is NOT a caller→callee message.</li>
+            <li><strong>Accept path:</strong> the callee's client replies <code>accept</code> with the matching nonce on the request <code>_INBOX</code> before the timeout.</li>
+            <li>The router drives the offer to <code>accepted</code>, issues the callee a short-lived interaction-scoped token, and returns the <code>interaction_id</code>. The callee reconnects with the token so the auth callout grants <code>interaction.&lt;id&gt;.&gt;</code>. The router records <code>interaction.assigned</code> / <code>participant.joined</code> on <code>interaction.&lt;id&gt;.log</code> — authored by the router, NOT a caller&rarr;callee message.</li>
             <li>The client subscribes to <code>interaction.&lt;id&gt;.log</code> (and <code>.signal</code> once it joins media) and consumes the durable backlog.</li>
-            <li><strong>RONA path:</strong> if no valid <code>accept</code> arrives before the timeout, or the client replies <code>reject</code>, the router requeues the interaction (redirect-on-no-answer); the user is not joined.</li>
+            <li><strong>RONA path:</strong> if no valid <code>accept</code> arrives before the timeout (&rarr; <code>timed_out_rona</code>), or the client replies <code>reject</code> (&rarr; <code>rejected</code>), the router requeues the interaction; the user is not joined. If the target has no subscriber, NATS returns <code>503 no responders</code> and the router fast-RONAs (&rarr; <code>no_responder_fast_rona</code>) immediately.</li>
+            <li>Every terminal is pushed by the router on <code>routing.offer.user.&lt;userId&gt;.control</code> so the client stops ringing.</li>
           </ol>
           <pre><code> Router                       NATS                        Agent client
    |                            |                                |
-   |-- req: routing.offer.user.&lt;userId&gt; (timeout_ms) ----------&gt;|
+   |-- persist offer.active.&lt;userId&gt; (KV, TTL) --               |
+   |-- req: routing.offer.user.&lt;userId&gt; (offer_id, timeout, nonce) --&gt;|
    |                            |        offer / ring            |
    |                            |                                |
    |   == ACCEPT (within timeout) ==                            |
-   |&lt;------------- reply: accept --------------------------------|
-   |-- grant ACL interaction.&lt;id&gt;.*  + return interaction_id --&gt;|
+   |&lt;------ reply on _INBOX: accept (nonce) --------------------|
+   |-- accepted; issue scoped token + return interaction_id ---&gt;|
+   |                            |   reconnect w/ token; callout grants
    |                            |   sub interaction.&lt;id&gt;.log     |
+   |-- write .log: interaction.assigned / participant.joined --&gt;|
    |                            |&lt;-- consume durable backlog ----|
    |                            |                                |
-   |   == RONA (timeout or reject) ==                           |
-   |&lt;----------- reply: reject / (no reply) --------------------|
-   |-- requeue interaction (user NOT joined) --                 |</code></pre>
+   |   == RONA (timeout / reject / 503 no responders) ==        |
+   |&lt;----------- reply: reject / (no reply) / 503 --------------|
+   |-- requeue interaction (user NOT joined) --                 |
+   |-- push terminal on routing.offer.user.&lt;userId&gt;.control ---&gt;|</code></pre>
+        </section>
+
+        <section aria-labelledby="cancel-withdraw-flow">
+          <h2 id="cancel-withdraw-flow" class="anchored"><a class="anchor" href="#cancel-withdraw-flow" aria-label="Link to this section">#</a>Offer cancel and withdraw</h2>
+          <p>
+            A ringing offer can end before the callee answers: the <strong>caller cancels</strong> (hangs up mid-ring) or the <strong>router withdraws</strong> (e.g. the customer abandoned).
+            In both cases the router pushes the terminal on the target's <code>.control</code> subject so the callee stops ringing immediately.
+          </p>
+          <ol>
+            <li><strong>Cancel:</strong> the originating caller sends a <code>cancel</code> command on <code>interaction.&lt;id&gt;.cmd</code>. The router checks ACL + author (only the originator/router may cancel), drives the offer to <code>cancelled</code>, and clears the KV entry.</li>
+            <li><strong>Withdraw:</strong> on <code>interaction.abandoned</code> the router drives ringing offers to <code>withdrawn</code>.</li>
+            <li>The router publishes <code>{ offer_id, terminal, reason }</code> on <code>routing.offer.user.&lt;target&gt;.control</code>.</li>
+            <li>The callee's <code>.control</code> subscription receives it and stops ringing — even though the callee never replied.</li>
+          </ol>
+          <pre><code> Caller        NATS           Router                 Callee (ringing)
+   |             |               |                         |
+   |-- cmd: cancel (.cmd) ------&gt;|                         |
+   |             |   validate ACL + author (originator?)   |
+   |             |               |-- offer -> cancelled    |
+   |             |               |-- clear offer.active KV |
+   |             |               |-- push .control: {offer_id, cancelled, reason} --&gt;|
+   |             |               |                         |  stop ringing
+   |             |                                         |
+   |   == WITHDRAW (router-initiated, e.g. abandoned) ==   |
+   |             |               |-- offer -> withdrawn ---&gt;|
+   |             |               |-- push .control: {offer_id, withdrawn, abandoned} --&gt;|
+   |             |                                         |  stop ringing</code></pre>
+        </section>
+
+        <section aria-labelledby="double-accept-flow">
+          <h2 id="double-accept-flow" class="anchored"><a class="anchor" href="#double-accept-flow" aria-label="Link to this section">#</a>Double-accept race</h2>
+          <p>
+            When an offer is fanned out to multiple agents (or devices), two <code>accept</code> replies can race.
+            The router resolves it with a compare-and-set on <code>offer_id</code> / <code>route_attempt_id</code>: the first valid accept wins, the loser is told <code>accepted_elsewhere</code>.
+          </p>
+          <ol>
+            <li>The router rings agents A and B for the same <code>offer_id</code>.</li>
+            <li>Both reply <code>accept</code> on their own <code>_INBOX</code> nearly simultaneously.</li>
+            <li>The router CAS-sets the winner (say A) &rarr; <code>accepted</code>; A is assigned, granted the interaction ACL, and joins.</li>
+            <li>The later accept (B) loses the CAS &rarr; <code>accepted_elsewhere</code> / 409; the router pushes that terminal on B's <code>.control</code> and B stops ringing without joining.</li>
+            <li>A repeated accept from the winning device A is idempotent — no second join.</li>
+          </ol>
+          <pre><code> Agent A      Agent B        Router                  NATS
+   |            |              |-- ring offer_id to A and B --&gt;|
+   |-- accept --|------------&gt;|                              |
+   |            |-- accept --&gt;|                              |
+   |            |              |-- CAS(offer_id): A wins      |
+   |&lt;-- accepted (assigned, ACL granted) --|                 |
+   |            |&lt;-- accepted_elsewhere / 409 --|             |
+   |            |   push B .control: {offer_id, accepted_elsewhere} -&gt; B stops ringing
+   |-- accept (retry, same device) --&gt;| idempotent: no second join</code></pre>
         </section>
 
         <section aria-labelledby="chat-flow">
           <h2 id="chat-flow" class="anchored"><a class="anchor" href="#chat-flow" aria-label="Link to this section">#</a>Sending a chat message</h2>
-          <p>A chat message is a durable fact, so it goes on <code>.log</code> and fans out to all subscribed participants; offline participants receive it on reconnect.</p>
+          <p>A chat message is a durable fact, so the sender sends a command and the router writes it on <code>.log</code>, fanning out to all subscribed participants; offline participants receive it on reconnect.</p>
           <ol>
-            <li>The sender publishes an envelope with <code>event_type: message.created</code> and <code>medium: chat</code> to <code>interaction.&lt;id&gt;.log</code>.</li>
-            <li>JetStream stores the event in <code>INTERACTION_LOGS</code>, preserving per-interaction order via <code>sequence</code>.</li>
+            <li>The sender publishes a <code>send_message</code> command with <code>medium: chat</code> on <code>interaction.&lt;id&gt;.cmd</code>. The sender does NOT set <code>sequence</code> and cannot write <code>.log</code>.</li>
+            <li>The router validates (tenant, role, state, <code>author == connection identity</code>), assigns the next <code>sequence</code>, and appends one <code>message.created</code> fact on <code>interaction.&lt;id&gt;.log</code>.</li>
+            <li>JetStream stores the event in <code>INTERACTION_LOGS</code> (with <code>Nats-Msg-Id = event_id</code> for dedup), preserving per-interaction order via <code>sequence</code>.</li>
             <li>Online participants subscribed to <code>interaction.&lt;id&gt;.log</code> receive it and filter by <code>event_type</code> locally.</li>
             <li>An offline participant, on reconnect, consumes the stream and receives the message in order (durable, not lost).</li>
             <li>In Desk, the <code>message.created</code> fact lands on the session's CustomerTimeline.</li>
           </ol>
-          <pre><code> Sender            NATS / JetStream            Participants (online + offline)
-   |                     |                                 |
-   |-- pub interaction.&lt;id&gt;.log -------------------------&gt;|
-   |   {message.created, medium: chat, sequence: N}      |
-   |                     | store in INTERACTION_LOGS      |
-   |                     |-- fanout to online subs ------&gt;| (online: deliver now)
-   |                     |                                 |
-   |                     |   (offline participant reconnects)
-   |                     |&lt;-- consume stream from cursor --| (offline: delivered in order)</code></pre>
+          <pre><code> Sender         NATS         Router        JetStream        Participants
+   |             |             |               |                 |
+   |-- cmd: send_message (.cmd) --&gt;|           |                 |
+   |   {medium: chat}  (no sequence)           |                 |
+   |             |   validate; assign sequence=N                 |
+   |             |             |-- append .log: message.created (seq N) --&gt;|
+   |             |             |   store in INTERACTION_LOGS     |
+   |&lt;----------- .log fanout to online subs -------------------- |
+   |             |                                               |
+   |             |   (offline participant reconnects)            |
+   |             |&lt;-- consume stream from cursor (in order) ---- |</code></pre>
           <div class="callout note">
             <span class="label">Note</span>
             Typing indicators for the same chat go on <code>interaction.&lt;id&gt;.signal</code> (ephemeral) with <code>event_type: typing.*</code> — they are never stored and never enter the timeline.
@@ -266,31 +334,103 @@
           </p>
           <div class="callout note">
             <span class="label">Precondition</span>
-            The offer is already accepted and the callee is in the interaction (see <a href="#offer-flow">Offer to accept or RONA</a>). The acceptance was recorded by the callee/router as <code>interaction.accepted</code> — it is not part of the WebRTC setup below.
+            The offer is already accepted and the callee is in the interaction (see <a href="#offer-flow">Offer to accept or RONA</a>). The offer's terminal is <code>accepted</code> (on the offer reply / control); the resulting facts the router writes on <code>.log</code> are <code>interaction.assigned</code> / <code>participant.joined</code> — neither is part of the WebRTC setup below.
           </div>
           <ol>
-            <li>The caller publishes <code>webrtc.offer</code> (SDP) on <code>interaction.&lt;id&gt;.log</code> → the callee — durable so a reconnecting peer can rebuild the call.</li>
-            <li>The callee replies with <code>webrtc.answer</code> (SDP) on <code>interaction.&lt;id&gt;.log</code> → the caller — also durable.</li>
-            <li>On joining the call, each peer subscribes to ICE and exchanges <code>webrtc.ice</code> candidates both ways on <code>interaction.&lt;id&gt;.signal</code> (ephemeral). Candidates are discovered via coturn STUN.</li>
+            <li>The caller sends a <code>webrtc.offer</code> command (SDP) on <code>interaction.&lt;id&gt;.cmd</code>; the router records it as <code>webrtc.offer</code> on <code>interaction.&lt;id&gt;.log</code> — durable so a reconnecting peer can rebuild the call. See the <a href="../state-machines.html#call">call state machine</a>.</li>
+            <li>The callee sends a <code>webrtc.answer</code> command (SDP) on <code>.cmd</code>; the router records <code>webrtc.answer</code> on <code>.log</code> — also durable. The call advances <code>setup_offered &rarr; answered</code>.</li>
+            <li>On joining the call, each peer subscribes to ICE and exchanges <code>webrtc.ice</code> candidates both ways on <code>interaction.&lt;id&gt;.signal</code> (ephemeral, rate-limited). Incoming ICE is buffered until the matching SDP from <code>.log</code> is applied. Candidates are discovered via coturn STUN. The call advances <code>ice_connecting &rarr; connected</code>.</li>
             <li>The peers establish a direct WebRTC connection and audio/video flows peer-to-peer. If NAT blocks a direct path, coturn relays the media via TURN.</li>
-            <li>No media packet passes through NATS — only SDP (on <code>.log</code>) and ICE (on <code>.signal</code>) did, during setup.</li>
+            <li>No media packet passes through NATS — only SDP (recorded on <code>.log</code>) and ICE (on <code>.signal</code>) did, during setup.</li>
           </ol>
-          <pre><code> Caller                 NATS                  Callee            coturn
-   |                      |                       |                |
-   |   (precondition: offer accepted; callee in interaction)      |
-   |-- webrtc.offer (SDP)-| (.log, durable) -----&gt;|                |
-   |&lt;- webrtc.answer (SDP)| (.log, durable) ------|                |
-   |   (join call -> subscribe ICE on .signal)    |                |
-   |-- webrtc.ice --------| (.signal, ephemeral)-&gt;|                |
-   |&lt;- webrtc.ice --------| (.signal, ephemeral)--|                |
-   |   STUN candidate discovery  -----------------+---------------&gt;|
-   |                      |                       |                |
-   |============ WebRTC P2P media (A/V) ==========|                |
-   |   direct path, or TURN relay via coturn if NAT blocks direct  |
-   |   *** media NEVER transits NATS ***          |                |</code></pre>
+          <pre><code> Caller            NATS        Router       Callee          coturn
+   |                |             |             |               |
+   |   (precondition: offer accepted; callee in interaction)   |
+   |-- cmd: webrtc.offer (SDP) (.cmd) --&gt;|       |             |
+   |                |   record .log: webrtc.offer (durable) --&gt;|
+   |                |             |&lt;- cmd: webrtc.answer (.cmd)-|
+   |&lt;-- record .log: webrtc.answer (durable) ----|             |
+   |   (join call -> subscribe ICE on .signal; buffer until SDP applied)
+   |-- webrtc.ice (.signal, ephemeral) --------&gt;|              |
+   |&lt;- webrtc.ice (.signal, ephemeral) ---------|              |
+   |   STUN candidate discovery --------------+--------------&gt;|
+   |                |             |             |               |
+   |============ WebRTC P2P media (A/V) ========|              |
+   |   direct path, or TURN relay via coturn if NAT blocks direct
+   |   *** media NEVER transits NATS ***       |              |</code></pre>
           <p>
             This is the unified-Interaction model at work: the same <code>interaction.&lt;id&gt;</code> subjects carried the earlier chat and now carry the call, differing only by <code>event_type</code> and <code>medium</code> in the payload.
           </p>
+        </section>
+
+        <section aria-labelledby="transfer-flow">
+          <h2 id="transfer-flow" class="anchored"><a class="anchor" href="#transfer-flow" aria-label="Link to this section">#</a>Transfer (warm and cold)</h2>
+          <p>
+            An agent transfers an active interaction to another target. The router offers the new target, bridges the legs on accept, and swaps the ACLs.
+            <strong>Warm</strong> transfer keeps a brief overlap (both agents present); <strong>cold</strong> transfer has no overlap (the first agent leaves before the second joins).
+          </p>
+          <ol>
+            <li>Agent A sends an <code>interaction.transfer.requested</code> command on <code>interaction.&lt;id&gt;.cmd</code> naming the new target B.</li>
+            <li>The router rings B via <code>routing.offer.user.&lt;B&gt;</code> (the offer state machine). On accept, B reconnects with an interaction-scoped token and the auth callout grants B <code>interaction.&lt;id&gt;.&gt;</code>.</li>
+            <li>The router records <code>interaction.transferred</code> on <code>.log</code>, grants the new leg's ACL, and revokes the old leg's ACL.</li>
+            <li><strong>Warm:</strong> A and B overlap briefly (A's ACL revoked after B is connected). <strong>Cold:</strong> A leaves first (<code>participant.left</code>), then B joins — no overlap.</li>
+          </ol>
+          <pre><code> Agent A        NATS        Router            Agent B (new target)
+   |             |             |                     |
+   |-- cmd: interaction.transfer.requested (.cmd) -&gt;|
+   |             |   ring routing.offer.user.&lt;B&gt; ---&gt;|
+   |             |             |&lt;-- accept (nonce) --|
+   |             |             |   grant B ACL (reconnect w/ token)
+   |             |             |-- .log: interaction.transferred --&gt;|
+   |             |             |   warm: A + B overlap, then revoke A
+   |             |             |   cold: revoke A (participant.left) before B joins
+   |&lt;-- ACL revoked ---------- |                     |&lt;-- ACL granted</code></pre>
+        </section>
+
+        <section aria-labelledby="reconnect-flow">
+          <h2 id="reconnect-flow" class="anchored"><a class="anchor" href="#reconnect-flow" aria-label="Link to this section">#</a>Reconnect during ring</h2>
+          <p>
+            A ringing client can drop and reconnect before answering. Because the router persists active offers in NATS KV <code>offer.active.&lt;userId&gt;</code>, the client reconstructs its ringing offers and resumes — no offer is lost.
+          </p>
+          <ol>
+            <li>The router rings the client and persists the offer in KV <code>offer.active.&lt;userId&gt;</code> with a TTL.</li>
+            <li>The client's connection drops mid-ring (no reply sent).</li>
+            <li>The client reconnects (transparent over <code>nats.ws</code>) and, via the router, reads <code>offer.active.&lt;userId&gt;</code> from KV to reconstruct its ringing offers; it resumes ringing.</li>
+            <li>A client-local ring timeout is the backstop if no <code>.control</code> message arrives. If the router crashed, a TTL sweeper plus idempotent terminal transitions ensure no stuck ring and no phantom assignment.</li>
+          </ol>
+          <pre><code> Router            NATS (KV)              Client
+   |                  |                     |
+   |-- ring + persist offer.active.&lt;userId&gt; (TTL) --&gt;|
+   |                  |        ring         |
+   |                  |                     X  connection drops (no reply)
+   |                  |                     |
+   |                  |        (reconnect)  |
+   |                  |&lt;-- read offer.active.&lt;userId&gt; (reconstruct) --|
+   |                  |        resume ring  |
+   |   backstop: client-local ring timeout if no .control arrives    |
+   |   crash: TTL sweeper + idempotent terminals -> no stuck ring     |</code></pre>
+        </section>
+
+        <section aria-labelledby="abandon-flow">
+          <h2 id="abandon-flow" class="anchored"><a class="anchor" href="#abandon-flow" aria-label="Link to this section">#</a>Customer abandoned and orphaned reaper</h2>
+          <p>
+            Two related lifecycle endings: the customer <strong>abandons</strong> (leaves before or after assignment), and the <strong>orphaned reaper</strong> ends an interaction whose every participant has been offline too long. See the <a href="../state-machines.html#interaction">interaction state machine</a>.
+          </p>
+          <ol>
+            <li><strong>Abandon:</strong> the customer leaves; the router records <code>interaction.abandoned</code> and withdraws any ringing offers (terminal <code>withdrawn</code>, pushed on the target's <code>.control</code>), so a ringing agent stops ringing.</li>
+            <li><strong>Offline vs left:</strong> a transient drop records <code>participant.offline</code> (presence-driven, recoverable) and does NOT remove the participant; an explicit leave records <code>participant.left</code> (permanent).</li>
+            <li><strong>Reaper:</strong> when every participant has been offline (per presence) for more than N minutes, the reaper injects <code>interaction.ended</code> with reason <code>orphaned</code>.</li>
+          </ol>
+          <pre><code> Customer        Router            Presence          Ringing agent
+   |               |                  |                   |
+   |  leaves ----&gt; |                  |                   |
+   |               |-- .log: interaction.abandoned        |
+   |               |-- withdraw offers -> .control: {withdrawn} --&gt;| stop ringing
+   |               |                  |                   |
+   |   == later: orphaned reaper ==   |                   |
+   |               |&lt;- all participants offline &gt; N min --|
+   |               |-- .log: interaction.ended [orphaned] |
+   |               |   (participant.offline = transient; participant.left = permanent)</code></pre>
         </section>
 
         <section aria-labelledby="deployment-view">
@@ -319,8 +459,9 @@
         <section aria-labelledby="related">
           <h2 id="related" class="anchored"><a class="anchor" href="#related" aria-label="Link to this section">#</a>Related documents</h2>
           <ul>
-            <li><a href="../subject-model.html">Subject Model</a> — the subjects, envelope, streams, and ACLs these flows use.</li>
-            <li><a href="../containers.html">Containers</a> — the processes that participate in each flow.</li>
+            <li><a href="../subject-model.html">Subject Model</a> — the command plane, subjects, envelope, streams, and ACLs these flows use.</li>
+            <li><a href="../state-machines.html">State Machines</a> — the offer, call, and interaction machines these flows traverse.</li>
+            <li><a href="../containers.html">Containers</a> — the processes (including the router) that participate in each flow.</li>
             <li><a href="../context.html">System Context</a> — the actors and external systems involved.</li>
             <li><a href="../index.html">Architecture hub</a> — back to the index.</li>
           </ul>
@@ -329,7 +470,7 @@
     </main>
 
     <footer class="site">
-      <p>Last updated 2026-06-08 &middot; version 1.0.0 &middot; <a href="../index.html">Architecture hub</a></p>
+      <p>Last updated 2026-06-08 &middot; version 2.0.0 &middot; <a href="../index.html">Architecture hub</a></p>
     </footer>
 
   </div>

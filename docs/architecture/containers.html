@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <title>Containers — Kafa Connect Docs</title>
-  <meta name="description" content="C4 Level 2 container view of RelayPoint: NATS server, presence service, coturn, observability, and the web client.">
+  <meta name="description" content="C4 Level 2 container view of RelayPoint: NATS server, the router/interaction service, presence service, coturn, observability, and the web client.">
   <meta name="author" content="Kafa Connect">
 
   <script type="application/json" id="doc-meta">
   {
     "title": "Containers",
-    "summary": "C4 Level 2 container view of RelayPoint: NATS server, presence service, coturn, observability, and the web client.",
-    "version": "1.0.0",
+    "summary": "C4 Level 2 container view of RelayPoint: NATS server, the router/interaction service, presence service, coturn, observability, and the web client.",
+    "version": "2.0.0",
     "updated": "2026-06-08",
     "status": "stable",
-    "tags": ["architecture", "c4", "containers", "nats", "coturn"],
+    "tags": ["architecture", "c4", "containers", "nats", "coturn", "router"],
     "audience": ["developers", "architects"]
   }
   </script>
@@ -70,7 +70,7 @@
     .page {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      max-width: 64rem;
+      width: 100vw;
       margin: 0 auto;
       padding: 0 var(--gap);
     }
@@ -184,6 +184,7 @@
         <li><a href="#containers">Containers</a>
           <ol>
             <li><a class="lvl-3" href="#nats-server">NATS server</a></li>
+            <li><a class="lvl-3" href="#router-service">Router / interaction service</a></li>
             <li><a class="lvl-3" href="#presence-service">Presence service</a></li>
             <li><a class="lvl-3" href="#coturn">coturn</a></li>
             <li><a class="lvl-3" href="#observability">Observability</a></li>
@@ -199,13 +200,14 @@
     <main>
       <article>
         <h1>Containers</h1>
-        <p class="summary">C4 Level 2 view of RelayPoint: the deployable containers — a single-node NATS server, the presence service, coturn, the observability stack, and the web client — and the protocol on every relationship.</p>
+        <p class="summary">C4 Level 2 view of RelayPoint: the deployable containers — a single-node NATS server, the authoritative router/interaction service, the presence service, coturn, the observability stack, and the web client — and the protocol on every relationship.</p>
 
         <section aria-labelledby="overview">
           <h2 id="overview" class="anchored"><a class="anchor" href="#overview" aria-label="Link to this section">#</a>Overview</h2>
           <p>
             At the container level RelayPoint is a small set of cooperating processes around one NATS server.
             In Phase 1 the NATS server runs as a single node with JetStream enabled and three listeners active — WebSocket, MQTT, and the system account that exports <code>$SYS</code> events.
+            The <strong>router / interaction service</strong> is the authoritative core: it is the ONLY writer of every <code>interaction.&lt;id&gt;.log</code> fact and owns the offer, call, and interaction state machines.
             The presence service, coturn, and the observability stack are separate processes; the web client is browser-side code using <code>nats.ws</code> and the browser WebRTC stack.
           </p>
           <p>
@@ -216,34 +218,49 @@
 
         <section aria-labelledby="container-diagram">
           <h2 id="container-diagram" class="anchored"><a class="anchor" href="#container-diagram" aria-label="Link to this section">#</a>Container diagram</h2>
-          <p>Solid arrows transit NATS; the dashed WebRTC path does not.</p>
+          <p>
+            Solid arrows transit NATS; the dashed WebRTC path does not.
+            Clients publish COMMANDS on <code>interaction.&lt;id&gt;.cmd</code> and are READ-only on <code>interaction.&lt;id&gt;.log</code>; the router is the only writer of <code>.log</code>.
+          </p>
           <pre><code>  +-------------------------------------------------------------+
   |  Web client  (browser)                                      |
   |   nats.ws  +  WebRTC (RTCPeerConnection)                    |
   +----+----------------------------------------+---------------+
-       |  WSS / nats.ws (subjects)               |  STUN/TURN
-       |                                         |
+       |  WSS / nats.ws                          |  STUN/TURN
+       |  write: .cmd, .signal                   |
+       |  read:  .log, offer(.control), notify,  |
+       |         presence                        |
        v                                         v
   +------------------------------------+   +------------------+
   |  NATS server  (single node)        |   |  coturn          |
   |  +------------------------------+  |   |  STUN / TURN     |
   |  | websocket{}  listener        |  |   +--------+---------+
   |  | mqtt{} 3.1.1 listener (idle) |  |            |
-  |  | JetStream (file storage)     |  |            | TURN relay
-  |  |  - INTERACTION_LOGS          |  |            | only if NAT
-  |  |  - NOTIFICATIONS             |  |            v
-  |  | core NATS (.signal, presence)|  |   +------------------+
-  |  | $SYS account (conn events)   |  |   | WebRTC P2P media |
-  |  +------------------------------+  |   | browser<-->browser
-  +---+------------+----------------+--+   +------------------+
-      | $SYS        | NATS req/reply | $SYS / monitor
-      | events      | (offer/RONA)   | endpoints
-      v             v                v
- +------------+ +-------------+ +-----------------------------+
- | Presence   | | Routing     | | Observability               |
- | service    | | engine      | | surveyor + nats-exporter -> |
- | (Go/TS)    | | (NATS micro)| | Prometheus -> Grafana       |
- +------------+ +-------------+ +-----------------------------+</code></pre>
+  |  | auth callout (authorization) |  |            | TURN relay
+  |  | JetStream (file storage)     |  |            | only if NAT
+  |  |  - INTERACTION_LOGS          |  |            v
+  |  |  - NOTIFICATIONS             |  |   +------------------+
+  |  |  - ROUTING_AUDIT             |  |   | WebRTC P2P media |
+  |  | KV: offer.active.&lt;userId&gt;     |  |   | browser&lt;-&gt;browser |
+  |  | core NATS (.cmd .signal,     |  |   +------------------+
+  |  |   presence, offer/.control)  |  |
+  |  | $SYS account (conn events)   |  |
+  |  +------------------------------+  |
+  +-+----------+-----------+--------+--+
+    | $SYS      | .cmd sub  | $SYS /
+    | events    | .log/KV/  | monitor
+    |           | offer pub | endpoints
+    v           v           v
+ +----------+ +-----------+ +-----------------------------+
+ | Presence | | Router /  | | Observability               |
+ | service  | | interactn | | surveyor + nats-exporter -> |
+ | (Go/TS)  | | service   | | Prometheus -> Grafana       |
+ |          | | (NATS     | +-----------------------------+
+ |          | |  micro)   |
+ +----------+ +-----------+
+   the ONLY writer of .log; owns offer/call/interaction
+   state machines, sequence, RONA/timers, KV offer store,
+   orphaned reaper, auth-callout authorization.</code></pre>
         </section>
 
         <section aria-labelledby="containers">
@@ -252,14 +269,36 @@
           <h3 id="nats-server" class="anchored"><a class="anchor" href="#nats-server" aria-label="Link to this section">#</a>NATS server</h3>
           <p>
             One NATS server is the single backbone for both client signaling and microservices (NATS <code>micro</code>).
-            It runs four cooperating facilities in one process:
+            It runs these cooperating facilities in one process:
           </p>
           <ul>
             <li><strong>websocket{} listener</strong> — accepts <code>nats.ws</code> browser connections over WSS.</li>
             <li><strong>mqtt{} listener (3.1.1)</strong> — configured for the future mobile bridge, idle in Phase 1. The <code>a.b.c &harr; a/b/c</code> auto-map keeps that bridge rework-free.</li>
-            <li><strong>JetStream</strong> — file storage for the durable streams <code>INTERACTION_LOGS</code> and <code>NOTIFICATIONS</code>; core NATS carries ephemeral <code>.signal</code> and presence traffic.</li>
+            <li><strong>auth callout</strong> — <code>authorization { auth_callout { … } }</code> delegates per-connection authorization to the router so per-interaction subjects can be minted at CONNECT time from a short-lived, interaction-scoped token. See the <a href="./subject-model.html#auth-callout">subject model</a>.</li>
+            <li><strong>JetStream</strong> — file storage for the durable streams <code>INTERACTION_LOGS</code>, <code>NOTIFICATIONS</code>, and <code>ROUTING_AUDIT</code>; core NATS carries the ephemeral <code>.cmd</code>, <code>.signal</code>, presence, and live offer/control traffic.</li>
+            <li><strong>KV bucket <code>offer.active</code></strong> — a JetStream KV store, keyed <code>offer.active.&lt;userId&gt;</code> with TTLs, where the router persists active (ringing) offers so reconnecting clients can reconstruct them and a crash leaves no stuck ring.</li>
             <li><strong>$SYS account</strong> — exports <code>$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}</code> connection events the presence service consumes.</li>
           </ul>
+
+          <h3 id="router-service" class="anchored"><a class="anchor" href="#router-service" aria-label="Link to this section">#</a>Router / interaction service</h3>
+          <p>
+            A stateful backend process (Go or TS, built on NATS <code>micro</code>) that is the authoritative core of RelayPoint.
+            It is the <strong>single writer</strong> of every <code>interaction.&lt;id&gt;.log</code> fact: clients never write <code>.log</code> and never assign <code>sequence</code>.
+            Clients publish intents as COMMANDS on <code>interaction.&lt;id&gt;.cmd</code>; the router subscribes <code>.cmd</code>, validates (tenant, actor role, state-machine legality, <code>author == connection identity</code>, payload <code>tenant_id</code> == subject tenant), assigns a monotonic per-interaction <code>sequence</code>, and appends the authoritative fact on <code>.log</code>.
+          </p>
+          <p>The router owns:</p>
+          <ul>
+            <li>The <strong>offer, call, and interaction state machines</strong> — see <a href="./state-machines.html">State Machines</a>. Illegal transitions and forged authorship are rejected.</li>
+            <li>The per-interaction <strong><code>sequence</code></strong> counter (router-assigned, never client-set).</li>
+            <li><strong>RONA and timers</strong> — offer timeout, fast-RONA on NATS <code>503 no responders</code>, penalty-box backoff for agents who RONA/reject repeatedly.</li>
+            <li>The <strong>NATS-KV offer store</strong> (<code>offer.active.&lt;userId&gt;</code>) with TTLs, so reconnecting clients reconstruct ringing offers and a router crash leaves no stuck-ringing or phantom-assignment state (TTL sweeper + idempotent terminal transitions).</li>
+            <li>The <strong>orphaned reaper</strong> — when all participants are offline (per presence) for more than N minutes it injects <code>interaction.ended</code> with reason <code>orphaned</code>.</li>
+            <li><strong>Auth-callout authorization</strong> — it answers the NATS auth callout, minting each connection's allowed subjects from a short-lived, nonce/audience-bound, actor+interaction-scoped token, and issues the interaction-scoped token on offer-accept. Privileged controls (cancel/withdraw/transfer/ACL grant-revoke) are audited on <code>routing.audit.&gt;</code>.</li>
+          </ul>
+          <div class="callout warn">
+            <span class="label">Warning</span>
+            The router is the ONLY component with write access to <code>.log</code>. Clients are READ-only on <code>.log</code> and write-only on <code>.cmd</code>. This is what prevents authorship spoofing and <code>sequence</code> collisions; see the <a href="./subject-model.html#why-router-authoritative">subject model</a>.
+          </div>
 
           <h3 id="presence-service" class="anchored"><a class="anchor" href="#presence-service" aria-label="Link to this section">#</a>Presence service</h3>
           <p>
@@ -300,12 +339,17 @@
                 <tr><th>From</th><th>To</th><th>Protocol / edge</th><th>Carries</th></tr>
               </thead>
               <tbody>
-                <tr><td>Web client</td><td>NATS server</td><td>WSS / nats.ws</td><td>Chat, SDP/ICE, presence, notifications as NATS subjects.</td></tr>
+                <tr><td>Web client</td><td>NATS server</td><td>WSS / nats.ws (write)</td><td>COMMANDS on <code>interaction.&lt;id&gt;.cmd</code> and ephemeral <code>interaction.&lt;id&gt;.signal</code> (rate-limited). Clients have NO write ACL on <code>.log</code>.</td></tr>
+                <tr><td>Web client</td><td>NATS server</td><td>WSS / nats.ws (read)</td><td>Subscribe-only: <code>interaction.&lt;id&gt;.log</code>, <code>routing.offer.user.&lt;userId&gt;</code> (+ <code>.control</code>), <code>notify.&lt;userId&gt;</code>, <code>presence.&lt;userId&gt;</code>.</td></tr>
                 <tr><td>Web client</td><td>coturn</td><td>STUN / TURN</td><td>Candidate discovery; TURN media relay only if NAT requires it.</td></tr>
                 <tr><td>Web client</td><td>Web client</td><td>WebRTC P2P</td><td>Audio/video media — does not pass through NATS.</td></tr>
+                <tr><td>Router / interaction service</td><td>NATS server</td><td>NATS sub <code>.cmd</code></td><td>Subscribes every <code>interaction.*.cmd</code> to validate client intents.</td></tr>
+                <tr><td>Router / interaction service</td><td>NATS server</td><td>JetStream write <code>.log</code></td><td>Appends authoritative facts on <code>interaction.&lt;id&gt;.log</code> with router-assigned <code>sequence</code> (the only writer).</td></tr>
+                <tr><td>Router / interaction service</td><td>NATS server</td><td>NATS req/reply (micro)</td><td>Offer delivery on <code>routing.offer.user.&lt;id&gt;</code> (reply via <code>_INBOX</code>+nonce); terminal push on <code>routing.offer.user.&lt;id&gt;.control</code>; RONA requeue; ACL grant on accept.</td></tr>
+                <tr><td>Router / interaction service</td><td>NATS server</td><td>JetStream KV</td><td>Reads/writes the <code>offer.active.&lt;userId&gt;</code> bucket (offer state + TTLs).</td></tr>
+                <tr><td>NATS server</td><td>Router / interaction service</td><td>auth callout</td><td>Delegates per-connection authorization; the router mints subjects from the connection's scoped token.</td></tr>
                 <tr><td>NATS server</td><td>Presence service</td><td>NATS <code>$SYS</code></td><td>Connect/disconnect events.</td></tr>
-                <tr><td>Presence service</td><td>NATS server</td><td>NATS subjects</td><td>Publishes <code>presence.&lt;userId&gt;</code>.</td></tr>
-                <tr><td>Routing engine</td><td>NATS server</td><td>NATS req/reply (micro)</td><td>Offer delivery on <code>routing.offer.user.&lt;id&gt;</code>; RONA requeue; ACL grant on accept.</td></tr>
+                <tr><td>Presence service</td><td>NATS server</td><td>NATS publish</td><td>Sole publisher of <code>presence.&lt;userId&gt;</code> (clients subscribe-only).</td></tr>
                 <tr><td>Observability</td><td>NATS server</td><td>$SYS / monitor scrape</td><td>Metrics to Prometheus and Grafana.</td></tr>
               </tbody>
             </table>
@@ -327,7 +371,8 @@
           <h2 id="related" class="anchored"><a class="anchor" href="#related" aria-label="Link to this section">#</a>Related documents</h2>
           <ul>
             <li><a href="./context.html">System Context</a> — the L1 view these containers sit inside.</li>
-            <li><a href="./subject-model.html">Subject Model</a> — the subjects, streams, and ACLs on the NATS server.</li>
+            <li><a href="./subject-model.html">Subject Model</a> — the subjects, streams, and ACLs on the NATS server, and the router-authoritative command plane.</li>
+            <li><a href="./state-machines.html">State Machines</a> — the offer, call, and interaction state machines the router owns.</li>
             <li><a href="./core-flows/index.html">Core Flows</a> — how these containers cooperate over time, plus the deployment view.</li>
             <li><a href="./index.html">Architecture hub</a> — back to the index.</li>
           </ul>
@@ -336,7 +381,7 @@
     </main>
 
     <footer class="site">
-      <p>Last updated 2026-06-08 &middot; version 1.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
+      <p>Last updated 2026-06-08 &middot; version 2.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
     </footer>
 
   </div>

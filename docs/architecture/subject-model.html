@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <title>Subject Model — Kafa Connect Docs</title>
-  <meta name="description" content="The unified-Interaction NATS subject model for RelayPoint: subjects, envelope, QoS split, streams, offer/RONA, ACLs, and the Desk mapping.">
+  <meta name="description" content="The router-authoritative, unified-Interaction NATS subject model for RelayPoint: command plane vs log, the full subject table, envelope, QoS split, streams, offer/RONA, KV, auth-callout ACLs, and the Desk mapping.">
   <meta name="author" content="Kafa Connect">
 
   <script type="application/json" id="doc-meta">
   {
     "title": "Subject Model",
-    "summary": "The unified-Interaction NATS subject model for RelayPoint: subjects, envelope, QoS split, streams, offer/RONA, ACLs, and the Desk mapping.",
-    "version": "1.0.0",
+    "summary": "The router-authoritative, unified-Interaction NATS subject model for RelayPoint: command plane vs log, the full subject table, envelope, QoS split, streams, offer/RONA, KV, auth-callout ACLs, and the Desk mapping.",
+    "version": "2.0.0",
     "updated": "2026-06-08",
     "status": "stable",
-    "tags": ["architecture", "subjects", "nats", "jetstream", "webrtc", "multi-tenant"],
+    "tags": ["architecture", "subjects", "nats", "jetstream", "webrtc", "multi-tenant", "router", "auth-callout"],
     "audience": ["developers", "architects"]
   }
   </script>
@@ -70,7 +70,7 @@
     .page {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      max-width: 64rem;
+      width: 100vw;
       margin: 0 auto;
       padding: 0 var(--gap);
     }
@@ -180,7 +180,9 @@
       <h2>On this page</h2>
       <ol>
         <li><a href="#overview">Overview</a></li>
+        <li><a href="#why-router-authoritative">Why the router is authoritative</a></li>
         <li><a href="#subject-table">Subject table</a></li>
+        <li><a href="#command-flow">Command to validate to append</a></li>
         <li><a href="#event-envelope">Event envelope</a></li>
         <li><a href="#qos-split">QoS split: log vs signal</a>
           <ol>
@@ -189,11 +191,24 @@
           </ol>
         </li>
         <li><a href="#jetstream-streams">JetStream streams</a></li>
-        <li><a href="#offer-rona">Offer and RONA</a></li>
+        <li><a href="#offer-mechanics">Offer mechanics</a>
+          <ol>
+            <li><a class="lvl-3" href="#offer-control">Offer control and cancel/withdraw</a></li>
+            <li><a class="lvl-3" href="#double-accept">Double-accept CAS</a></li>
+            <li><a class="lvl-3" href="#fast-rona">Fast-RONA</a></li>
+            <li><a class="lvl-3" href="#kv-reconnect">KV offer store and reconnect</a></li>
+          </ol>
+        </li>
         <li><a href="#subscription-discipline">Subscription discipline</a></li>
+        <li><a href="#rate-limits">Rate limits</a></li>
         <li><a href="#why-hybrid">Why the hybrid QoS split won</a></li>
         <li><a href="#desk-mapping">Desk mapping</a></li>
-        <li><a href="#multi-tenant-acls">Multi-tenant ACLs</a></li>
+        <li><a href="#multi-tenant-acls">Multi-tenant ACLs</a>
+          <ol>
+            <li><a class="lvl-3" href="#auth-callout">Auth callout and reconnect-on-accept</a></li>
+            <li><a class="lvl-3" href="#connection-lifetime">Token expiry and connection lifetime</a></li>
+          </ol>
+        </li>
         <li><a href="#related">Related documents</a></li>
       </ol>
     </nav>
@@ -201,7 +216,7 @@
     <main>
       <article>
         <h1>Subject Model</h1>
-        <p class="summary">The heart of RelayPoint: the unified-Interaction NATS subject layout, the event envelope, the durable-vs-ephemeral QoS split, the JetStream streams, offer/RONA mechanics, client subscription discipline, the Desk mapping, and multi-tenant ACLs.</p>
+        <p class="summary">The heart of RelayPoint: the router-authoritative, unified-Interaction NATS subject layout — the command plane vs the authoritative log, the event envelope, the durable-vs-ephemeral QoS split, the JetStream streams, offer/RONA mechanics, the KV offer store, client subscription discipline, the Desk mapping, and auth-callout multi-tenant ACLs.</p>
 
         <section aria-labelledby="overview">
           <h2 id="overview" class="anchored"><a class="anchor" href="#overview" aria-label="Link to this section">#</a>Overview</h2>
@@ -211,8 +226,9 @@
             A single conversation that starts as chat and escalates to a voice call keeps the same interaction subjects throughout; only the <code>event_type</code> and <code>medium</code> in the payload differ.
           </p>
           <p>
-            Per interaction there are exactly two update subjects, split by quality of service: a durable, ordered <code>.log</code> on JetStream for facts, and an ephemeral <code>.signal</code> on core NATS for high-rate transient signals.
-            The offer/ring that brings a user into an interaction is a separate, target-addressed routing concern with its own subtree and timeout/RONA semantics — never on the interaction update subjects.
+            Per interaction there are three subjects, split by role and quality of service: a write-only <strong>command</strong> subject <code>.cmd</code> (core NATS) where clients publish intents, a durable, ordered <strong>log</strong> <code>.log</code> on JetStream that ONLY the router writes, and an ephemeral, per-publisher <strong>signal</strong> <code>.signal.&lt;userId&gt;</code> on core NATS for high-rate transient signals (the publisher's id is in the subject, so the NATS publish-ACL enforces authorship; subscribers read <code>.signal.*</code>).
+            Clients are READ-only on <code>.log</code>; they never write a fact directly and never assign <code>sequence</code>.
+            The offer/ring that brings a user into an interaction is a separate, target-addressed routing concern with its own subtree, terminal-control subject, and timeout/RONA semantics — never on the interaction update subjects.
             All subjects are tenant-prefixed with <code>tenant.&lt;tenantId&gt;.</code> (omitted below for brevity).
           </p>
           <div class="callout note">
@@ -221,43 +237,98 @@
           </div>
         </section>
 
+        <section aria-labelledby="why-router-authoritative">
+          <h2 id="why-router-authoritative" class="anchored"><a class="anchor" href="#why-router-authoritative" aria-label="Link to this section">#</a>Why the router is authoritative</h2>
+          <p>
+            A stateful <strong>router / interaction service</strong> is the single authoritative writer of every <code>interaction.&lt;id&gt;.log</code> fact and the owner of the offer, call, and interaction state machines, the <code>sequence</code> counter, RONA/timers, the NATS-KV offer store, the orphaned reaper, and auth-callout grant/revoke.
+            Clients are READ-only on <code>.log</code> and publish intents as COMMANDS on <code>interaction.&lt;id&gt;.cmd</code>.
+            If clients could write <code>.log</code> directly, two things break:
+          </p>
+          <ul>
+            <li><strong>Authorship spoofing.</strong> A client could publish a fact claiming any <code>actor_id</code> — recording a message or an <code>interaction.ended</code> "from" another agent. With a write-only <code>.cmd</code> plane, the router validates <code>author == the connection's authenticated identity</code> and rejects forged authorship.</li>
+            <li><strong>Sequence collisions.</strong> <code>sequence</code> is a single monotonic per-interaction counter. Multiple writers cannot assign it without races and gaps; only a single authoritative writer can guarantee a clean, ordered log. Clients never set <code>sequence</code>.</li>
+          </ul>
+          <p>
+            The router also enforces <strong>state-machine legality</strong> (no resume after <code>ended</code>), <strong>tenant scope</strong> (subject tenant must match the payload <code>tenant_id</code>), and <strong>actor role</strong>. Illegal transitions are rejected and write no <code>.log</code> fact. See the <a href="./state-machines.html">state machines</a> for the legal transitions.
+          </p>
+          <div class="callout danger">
+            <span class="label">Danger</span>
+            Clients hold NO write ACL on <code>.log</code>. A client that tries to publish <code>message.created</code> or <code>interaction.ended</code> on <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.log</code> is denied by NATS. The only path to record a fact is a command on <code>interaction.&lt;id&gt;.cmd</code>.
+          </div>
+        </section>
+
         <section aria-labelledby="subject-table">
           <h2 id="subject-table" class="anchored"><a class="anchor" href="#subject-table" aria-label="Link to this section">#</a>Subject table</h2>
-          <p>The full Phase 1 subject layout. Every subject is prefixed <code>tenant.&lt;tenantId&gt;.</code></p>
+          <p>The full Phase 1 subject layout. Every subject is prefixed <code>tenant.&lt;tenantId&gt;.</code> The <strong>who writes / who reads</strong> column is the access model the auth-callout ACLs enforce.</p>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Purpose</th><th>Subject</th><th>Transport</th><th>QoS</th></tr>
+                <tr><th>Purpose</th><th>Subject</th><th>Transport</th><th>Who writes / who reads</th></tr>
               </thead>
               <tbody>
-                <tr><td>Offer / routing</td><td><code>routing.offer.user.&lt;userId&gt;</code> (also team / queue variants)</td><td>core NATS, request/reply</td><td>Timeout &rarr; RONA; not stored</td></tr>
-                <tr><td>Interaction log (durable facts)</td><td><code>interaction.&lt;id&gt;.log</code></td><td>JetStream</td><td>Durable, ordered, replayable</td></tr>
-                <tr><td>Interaction signal (ephemeral)</td><td><code>interaction.&lt;id&gt;.signal</code></td><td>core NATS</td><td>At-most-once, never stored</td></tr>
-                <tr><td>Presence</td><td><code>presence.&lt;userId&gt;</code></td><td>core NATS / KV (from <code>$SYS</code>)</td><td>Latest state</td></tr>
-                <tr><td>Notification</td><td><code>notify.&lt;userId&gt;</code></td><td>JetStream</td><td>Durable, survives reconnect</td></tr>
+                <tr><td>Interaction commands (client intents)</td><td><code>interaction.&lt;id&gt;.cmd</code></td><td>core NATS</td><td><strong>Write:</strong> clients (participants). <strong>Read:</strong> router only.</td></tr>
+                <tr><td>Interaction log (durable facts)</td><td><code>interaction.&lt;id&gt;.log</code></td><td>JetStream</td><td><strong>Write:</strong> router only. <strong>Read:</strong> participant clients.</td></tr>
+                <tr><td>Interaction signal (ephemeral, per-publisher)</td><td><code>interaction.&lt;id&gt;.signal.&lt;userId&gt;</code> (subscribe <code>interaction.&lt;id&gt;.signal.*</code>)</td><td>core NATS (rate-limited)</td><td><strong>Write:</strong> each participant only to its own <code>.signal.&lt;self&gt;</code> (author is in the subject; NATS publish-ACL enforces it). <strong>Read:</strong> participants on <code>.signal.*</code>.</td></tr>
+                <tr><td>Offer ring (request/reply)</td><td><code>routing.offer.user.&lt;userId&gt;</code> (+ team / queue variants)</td><td>core NATS req/reply, reply via <code>_INBOX</code>+nonce</td><td><strong>Request:</strong> router. <strong>Reply:</strong> the target client on its <code>_INBOX</code>.</td></tr>
+                <tr><td>Offer control (terminal push)</td><td><code>routing.offer.user.&lt;userId&gt;.control</code></td><td>core NATS</td><td><strong>Write:</strong> router only. <strong>Read:</strong> the ringing client.</td></tr>
+                <tr><td>Presence</td><td><code>presence.&lt;userId&gt;</code></td><td>core NATS (from <code>$SYS</code>)</td><td><strong>Write:</strong> presence service only. <strong>Read:</strong> clients (subscribe-only).</td></tr>
+                <tr><td>Notification</td><td><code>notify.&lt;userId&gt;</code></td><td>JetStream</td><td><strong>Write:</strong> services. <strong>Read:</strong> the user.</td></tr>
+                <tr><td>Routing audit</td><td><code>routing.audit.&gt;</code></td><td>JetStream</td><td><strong>Write:</strong> router only. <strong>Read:</strong> operators (not live delivery).</td></tr>
+                <tr><td>Offer state (KV)</td><td>KV bucket <code>offer.active.&lt;userId&gt;</code> (one per fanned-out user)</td><td>JetStream KV (TTL)</td><td><strong>Write:</strong> router only (one entry per user a team/queue offer fans out to). <strong>Read:</strong> router; each client reconstructs only its own pending offers via the router.</td></tr>
               </tbody>
             </table>
           </div>
           <pre><code>tenant.&lt;tenantId&gt;.
-  routing.offer.user.&lt;userId&gt;        (req/reply, timeout -> RONA)
+  interaction.&lt;id&gt;.cmd               (core NATS: client COMMANDS, write-only for clients)
+  interaction.&lt;id&gt;.log               (JetStream: durable facts, ROUTER-only write)
+  interaction.&lt;id&gt;.signal.&lt;userId&gt;    (core NATS: ephemeral, per-publisher; author in subject; sub .signal.*)
+  routing.offer.user.&lt;userId&gt;        (req/reply, reply via _INBOX + nonce)
   routing.offer.team.&lt;teamId&gt;        (variant)
   routing.offer.queue.&lt;queueId&gt;      (variant)
-  interaction.&lt;id&gt;.log               (JetStream: durable facts)
-  interaction.&lt;id&gt;.signal            (core NATS: ephemeral signals)
-  presence.&lt;userId&gt;                  (core NATS / KV from $SYS)
-  notify.&lt;userId&gt;                    (JetStream: durable)</code></pre>
+  routing.offer.user.&lt;userId&gt;.control (router -&gt; client: terminal push)
+  presence.&lt;userId&gt;                  (core NATS from $SYS, presence-service-only write)
+  notify.&lt;userId&gt;                    (JetStream: durable)
+  routing.audit.&gt;                    (JetStream: privileged-control audit)
+
+KV bucket: offer.active.&lt;userId&gt;     (JetStream KV, TTL; router-only write)</code></pre>
+        </section>
+
+        <section aria-labelledby="command-flow">
+          <h2 id="command-flow" class="anchored"><a class="anchor" href="#command-flow" aria-label="Link to this section">#</a>Command to validate to append</h2>
+          <p>
+            Every fact on <code>.log</code> originates as a client command on <code>.cmd</code> (or as a router-internal event such as a timer firing or the reaper running).
+            The router validates each command and, only if it passes, assigns the next <code>sequence</code> and appends one authoritative fact.
+          </p>
+          <ol>
+            <li>The client publishes a command — e.g. <code>send_message</code>, <code>webrtc.offer</code>, <code>hold</code>, <code>cancel</code> — on <code>interaction.&lt;id&gt;.cmd</code>.</li>
+            <li>The router validates: tenant scope (subject tenant == payload <code>tenant_id</code>), actor role, state-machine legality, and <code>author == the connection's authenticated identity</code>.</li>
+            <li>On pass: the router assigns the next monotonic <code>sequence</code> and appends one fact (e.g. <code>message.created</code>) on <code>interaction.&lt;id&gt;.log</code>, authored by the router.</li>
+            <li>On fail (forged author, illegal transition, tenant mismatch): the command is rejected and NO <code>.log</code> fact is written.</li>
+          </ol>
+          <pre><code> Client                NATS              Router                JetStream
+   |                     |                  |                       |
+   |-- pub .cmd: send_message ------------&gt;|                       |
+   |                     |   (sub .cmd)     |                       |
+   |                     |                  |-- validate tenant/role/state/author
+   |                     |                  |     pass -&gt; assign sequence=N
+   |                     |                  |-- append .log: message.created (seq N) -&gt;|
+   |&lt;----- .log fanout: message.created (seq N) ------------------ |
+   |                     |                  |     fail -&gt; reject, NO .log written     |</code></pre>
         </section>
 
         <section aria-labelledby="event-envelope">
           <h2 id="event-envelope" class="anchored"><a class="anchor" href="#event-envelope" aria-label="Link to this section">#</a>Event envelope</h2>
-          <p>Every message — on <code>.log</code> or <code>.signal</code> — carries the same envelope. The business meaning lives in <code>event_type</code> and the medium lives in <code>medium</code>, both inside the payload.</p>
+          <p>Every message — a command on <code>.cmd</code>, a fact on <code>.log</code>, or a signal on <code>.signal</code> — carries the same envelope. The business meaning lives in <code>event_type</code> and the medium lives in <code>medium</code>, both inside the payload. On <code>.log</code>, <code>sequence</code> is router-assigned; clients never set it.</p>
           <pre><code>{
   "schema":      "...",          // schema id / version of `data`
   "event_type":  "message.created",
-  "event_id":    "&lt;ULID&gt;",
-  "sequence":    42,             // per-interaction ordering
+  "event_id":    "&lt;ULID&gt;",       // Nats-Msg-Id for JetStream dedup
+  "sequence":    42,             // ROUTER-assigned, per-interaction ordering
   "occurred_at": "2026-06-08T12:00:00Z",
+  "tenant_id":   "&lt;tenantId&gt;",   // MUST match the subject's tenant
+  "actor_id":    "&lt;userId&gt;",     // MUST equal the connection's identity
   "medium":      "chat",         // chat | voice | video | email | social
+  "ref_id":      "&lt;event_id&gt;",   // optional: target of update/delete
   "data":        { /* event-specific */ }
 }</code></pre>
           <div class="table-wrap">
@@ -268,10 +339,13 @@
               <tbody>
                 <tr><td><code>schema</code></td><td>Schema id/version of the <code>data</code> payload.</td></tr>
                 <tr><td><code>event_type</code></td><td>The business event; clients filter on this locally.</td></tr>
-                <tr><td><code>event_id</code></td><td>Unique id for the event (idempotency / dedup).</td></tr>
-                <tr><td><code>sequence</code></td><td>Per-interaction ordering counter.</td></tr>
+                <tr><td><code>event_id</code></td><td>Unique id for the event. Published as <code>Nats-Msg-Id</code> so JetStream dedups within its window; clients dedup beyond it.</td></tr>
+                <tr><td><code>sequence</code></td><td>Per-interaction ordering counter — <strong>router-assigned</strong> on <code>.log</code>; clients never set it. Consumers track the last applied <code>sequence</code> and replay from JetStream on a detected gap.</td></tr>
                 <tr><td><code>occurred_at</code></td><td>Event timestamp.</td></tr>
+                <tr><td><code>tenant_id</code></td><td>The tenant. The router rejects a command whose <code>tenant_id</code> does not match the subject's tenant even if the subject ACL passes.</td></tr>
+                <tr><td><code>actor_id</code></td><td>The acting user. On a command the router requires <code>actor_id == the connection's authenticated identity</code> (forged authorship rejected).</td></tr>
                 <tr><td><code>medium</code></td><td>The channel — <code>chat</code>, <code>voice</code>, <code>video</code>, <code>email</code>, <code>social</code>. This is the unified-Interaction key: the medium is data, not a subject.</td></tr>
+                <tr><td><code>ref_id</code></td><td>Optional. On <code>message.updated</code> / <code>message.deleted</code> it carries the target <code>event_id</code> — applied as redaction (edit) or tombstone (delete).</td></tr>
                 <tr><td><code>data</code></td><td>Event-specific payload.</td></tr>
               </tbody>
             </table>
@@ -288,23 +362,23 @@
           </p>
 
           <h3 id="log-event-types" class="anchored"><a class="anchor" href="#log-event-types" aria-label="Link to this section">#</a>.log event types</h3>
-          <p>Durable, ordered facts on <code>interaction.&lt;id&gt;.log</code> (JetStream):</p>
+          <p>Durable, ordered facts on <code>interaction.&lt;id&gt;.log</code> — all written by the router (JetStream):</p>
           <ul>
-            <li><code>interaction.started</code> / <code>interaction.ended</code></li>
-            <li><code>message.created</code> / <code>message.updated</code> / <code>message.deleted</code></li>
-            <li><code>participant.joined</code> / <code>participant.left</code></li>
-            <li><code>interaction.accepted</code> / <code>interaction.assigned</code> / <code>interaction.transferred</code> / <code>interaction.held</code> / <code>interaction.resumed</code></li>
+            <li><code>interaction.started</code> / <code>interaction.assigned</code> / <code>interaction.transferred</code> / <code>interaction.abandoned</code> / <code>interaction.ended</code></li>
+            <li><code>message.created</code> / <code>message.updated</code> / <code>message.deleted</code> (carry <code>ref_id</code>)</li>
+            <li><code>participant.joined</code> / <code>participant.offline</code> / <code>participant.left</code></li>
             <li><code>webrtc.offer</code> / <code>webrtc.answer</code></li>
-            <li><code>call.accepted</code> / <code>call.hold</code> / <code>call.ended</code></li>
+            <li><code>webrtc.renegotiation.offer</code> / <code>webrtc.renegotiation.answer</code> (carry <code>negotiation_id</code> / generation)</li>
+            <li><code>call.answered</code> / <code>call.connected</code> / <code>call.held</code> / <code>call.resumed</code> / <code>call.cancelled</code> / <code>call.ended</code> / <code>call.media_failed</code> / <code>call.setup_failed</code></li>
             <li><code>recording.started</code> / <code>recording.stopped</code></li>
           </ul>
           <div class="callout note">
             <span class="label">Note</span>
-            WebRTC SDP offer/answer are durable state and live on <code>.log</code> — a reconnecting participant must replay them to rebuild the call. ICE candidates are not state and live on <code>.signal</code>.
+            <code>participant.offline</code> is a transient, presence-driven fact (the participant may return); <code>participant.left</code> is explicit and permanent and removes them from the interaction. WebRTC SDP offer/answer are durable state and live on <code>.log</code> — a reconnecting participant must replay them to rebuild the call. ICE candidates are not state and live on <code>.signal</code>.
           </div>
 
           <h3 id="signal-event-types" class="anchored"><a class="anchor" href="#signal-event-types" aria-label="Link to this section">#</a>.signal event types</h3>
-          <p>Ephemeral, at-most-once signals on <code>interaction.&lt;id&gt;.signal</code> (core NATS, never JetStream):</p>
+          <p>Ephemeral, at-most-once signals on the per-publisher <code>interaction.&lt;id&gt;.signal.&lt;userId&gt;</code> (core NATS, never JetStream; subscribers read <code>interaction.&lt;id&gt;.signal.*</code>):</p>
           <ul>
             <li><code>webrtc.ice</code> — ICE candidates</li>
             <li><code>typing.*</code> — typing indicators</li>
@@ -317,7 +391,7 @@
           <h2 id="jetstream-streams" class="anchored"><a class="anchor" href="#jetstream-streams" aria-label="Link to this section">#</a>JetStream streams</h2>
           <p>
             Streams are defined by leaf class, not per interaction.
-            Two streams are required; one is optional; nothing else is stored.
+            Three streams are required; nothing else is stored.
           </p>
           <div class="table-wrap">
             <table>
@@ -325,36 +399,72 @@
                 <tr><th>Stream</th><th>Subjects captured</th><th>Storage / notes</th></tr>
               </thead>
               <tbody>
-                <tr><td><code>INTERACTION_LOGS</code></td><td><code>tenant.*.interaction.*.log</code></td><td>File storage; preserves per-interaction ordering.</td></tr>
+                <tr><td><code>INTERACTION_LOGS</code></td><td><code>tenant.*.interaction.*.log</code></td><td>File storage; preserves per-interaction ordering; <code>Nats-Msg-Id = event_id</code> dedup.</td></tr>
                 <tr><td><code>NOTIFICATIONS</code></td><td><code>tenant.*.notify.*</code></td><td>Durable; survives reconnect.</td></tr>
-                <tr><td><code>ROUTING_AUDIT</code> (optional)</td><td><code>tenant.*.routing.audit.&gt;</code></td><td>Audit only — NOT live offer delivery.</td></tr>
+                <tr><td><code>ROUTING_AUDIT</code></td><td><code>tenant.*.routing.audit.&gt;</code></td><td>Privileged-control audit (actor + reason); NOT live offer delivery.</td></tr>
               </tbody>
             </table>
           </div>
           <div class="callout danger">
             <span class="label">Danger</span>
-            There is NO JetStream stream for <code>.signal</code>, for <code>presence.*</code>, or for the live offer subjects (<code>routing.offer.*</code>). Capturing <code>.signal</code> in JetStream would persist ICE floods and typing noise and defeat the entire QoS split.
+            There is NO JetStream stream for <code>.cmd</code>, for <code>.signal</code>, for <code>presence.*</code>, or for the live offer / control subjects (<code>routing.offer.*</code>, <code>routing.offer.user.&lt;id&gt;.control</code>). The command plane and signals are core NATS only. Capturing <code>.signal</code> in JetStream would persist ICE floods and typing noise and defeat the entire QoS split. The KV bucket <code>offer.active.&lt;userId&gt;</code> is a separate JetStream KV store, not one of these streams.
           </div>
         </section>
 
-        <section aria-labelledby="offer-rona">
-          <h2 id="offer-rona" class="anchored"><a class="anchor" href="#offer-rona" aria-label="Link to this section">#</a>Offer and RONA</h2>
+        <section aria-labelledby="offer-mechanics">
+          <h2 id="offer-mechanics" class="anchored"><a class="anchor" href="#offer-mechanics" aria-label="Link to this section">#</a>Offer mechanics</h2>
           <p>
             An offer brings a user who is not yet in an interaction into it.
-            The router publishes a NATS <strong>request/reply</strong> to <code>routing.offer.user.&lt;userId&gt;</code> (team and queue variants exist) carrying a <code>timeout_ms</code>.
+            The router publishes a NATS <strong>request/reply</strong> to <code>routing.offer.user.&lt;userId&gt;</code> (team and queue variants exist) carrying an <code>offer_id</code>, a <code>timeout_ms</code>, and a one-time nonce; the target client replies on the request's <code>_INBOX</code> with the matching nonce (bound to <code>tenant_id</code>/<code>offer_id</code>/target).
             Offer delivery never shares a subject or stream with interaction updates.
+            The offer is a full state machine — see <a href="./state-machines.html#offer">the offer state machine</a> — with terminal states <code>accepted</code>, <code>rejected</code>, <code>cancelled</code>, <code>withdrawn</code>, <code>accepted_elsewhere</code>, <code>timed_out_rona</code>, <code>expired</code>, and <code>no_responder_fast_rona</code>.
           </p>
           <ul>
-            <li><strong>Accept within timeout</strong> — the client replies <code>accept</code> before the deadline; the router grants the user ACL on <code>interaction.&lt;id&gt;.*</code> and returns the <code>interaction_id</code>.</li>
-            <li><strong>No answer or reject &rarr; RONA</strong> — if no valid <code>accept</code> arrives before the timeout, or the client replies <code>reject</code>, the router requeues the interaction (redirect-on-no-answer) and the user is not joined.</li>
+            <li><strong>Accept within timeout</strong> — the client replies <code>accept</code> with the nonce before the deadline; the router drives the offer to <code>accepted</code>, grants the user the interaction ACL (via a reconnect with an interaction-scoped token), and returns the <code>interaction_id</code>.</li>
+            <li><strong>No answer or reject &rarr; RONA</strong> — if no valid <code>accept</code> arrives before the timeout (&rarr; <code>timed_out_rona</code>), or the client replies <code>reject</code> (&rarr; <code>rejected</code>), the router requeues the interaction and the user is not joined.</li>
           </ul>
-          <pre><code>router --req--> routing.offer.user.&lt;userId&gt;   (timeout_ms)
-                       |
-          +------------+-------------+
-          | accept (in time)         | timeout / reject
-          v                          v
-   grant ACL on interaction.&lt;id&gt;.*  RONA: requeue interaction
-   return interaction_id            user NOT joined</code></pre>
+
+          <h3 id="offer-control" class="anchored"><a class="anchor" href="#offer-control" aria-label="Link to this section">#</a>Offer control and cancel/withdraw</h3>
+          <p>
+            Every terminal transition is pushed by the router to <code>routing.offer.user.&lt;userId&gt;.control</code> as <code>{ offer_id, terminal, reason }</code>, which the ringing client subscribes to so it stops ringing immediately — even when the terminal was not the client's own reply.
+          </p>
+          <ul>
+            <li><strong>Cancel (caller):</strong> the originating caller sends a <code>cancel</code> command; the router drives the offer to <code>cancelled</code> and pushes it on the target's <code>.control</code>, so the callee stops ringing.</li>
+            <li><strong>Withdraw (router):</strong> when the customer abandons (<code>interaction.abandoned</code>), the router drives ringing offers to <code>withdrawn</code> and pushes them on <code>.control</code>.</li>
+            <li><strong>Authorization:</strong> only the originator or the router may cancel/withdraw a ringing offer; a cancel/withdraw from any other actor is rejected by ACL + author check.</li>
+          </ul>
+
+          <h3 id="double-accept" class="anchored"><a class="anchor" href="#double-accept" aria-label="Link to this section">#</a>Double-accept CAS</h3>
+          <p>
+            When an offer is fanned out to multiple devices or agents, two <code>accept</code> replies can race.
+            The router performs a <strong>compare-and-set</strong> on the <code>offer_id</code> / <code>route_attempt_id</code>: the first valid accept wins (<code>accepted</code>), and every later accept is answered <code>accepted_elsewhere</code> / 409.
+            A repeated accept from the same winning device is idempotent — no second join.
+          </p>
+
+          <h3 id="fast-rona" class="anchored"><a class="anchor" href="#fast-rona" aria-label="Link to this section">#</a>Fast-RONA</h3>
+          <p>
+            If the target user has no subscriber on <code>routing.offer.user.&lt;userId&gt;</code> (offline or never-subscribed), the NATS request returns <code>503 no responders</code> immediately.
+            The router drives the offer to <code>no_responder_fast_rona</code> at once and requeues — distinct from a no-answer timeout, and without waiting the full <code>timeout_ms</code>.
+          </p>
+
+          <h3 id="kv-reconnect" class="anchored"><a class="anchor" href="#kv-reconnect" aria-label="Link to this section">#</a>KV offer store and reconnect</h3>
+          <p>
+            The router persists active (ringing) offers in the NATS KV bucket <code>offer.active.&lt;userId&gt;</code> with TTLs, writing <strong>one entry per fanned-out user</strong>: a team or queue offer fans out to several users, and the router writes <code>offer.active.&lt;userId&gt;</code> for EACH of them — there is no team-level KV the client must read.
+            When a ringing client drops and reconnects, it reconstructs only its own pending offers from <code>offer.active.&lt;self&gt;</code> (via the router) and resumes ringing; a client-local ring timeout is the backstop if no control message arrives.
+            On accept, withdraw, or any other terminal, the router clears those per-user KV entries; on router crash, a TTL sweeper plus idempotent terminal transitions ensure no offer is left stuck-ringing and no interaction is phantom-assigned.
+          </p>
+          <pre><code>router --req--&gt; routing.offer.user.&lt;userId&gt;   (offer_id, timeout_ms, nonce)
+   |                   |  persist offer.active.&lt;userId&gt; (KV, TTL)
+   |                   |
+   +---- accept (nonce, in time) -----+----- timeout/reject ----+----- 503 no responders
+   |                                  |                         |
+   v                                  v                         v
+ CAS first-writer-wins;          timed_out_rona/rejected;   no_responder_fast_rona
+ accepted -&gt; grant ACL,          requeue; user NOT joined   (immediate); requeue
+ reconnect w/ scoped token            |
+ later accept -&gt; accepted_elsewhere   |
+   |                                  |
+ router pushes terminal on routing.offer.user.&lt;userId&gt;.control -&gt; client stops ringing</code></pre>
         </section>
 
         <section aria-labelledby="subscription-discipline">
@@ -364,13 +474,27 @@
             They MUST NOT use the <code>interaction.&lt;id&gt;.&gt;</code> wildcard, which would flood the client with every ICE candidate and signal.
           </p>
           <ul>
-            <li>Subscribe to the exact subjects you need: <code>interaction.&lt;id&gt;.log</code>, <code>interaction.&lt;id&gt;.signal</code>, <code>routing.offer.user.&lt;userId&gt;</code>, <code>notify.&lt;userId&gt;</code>, <code>presence.&lt;userId&gt;</code>.</li>
+            <li>Subscribe to the exact subjects you need: <code>interaction.&lt;id&gt;.log</code>, <code>interaction.&lt;id&gt;.signal.*</code>, <code>routing.offer.user.&lt;userId&gt;</code>, <code>routing.offer.user.&lt;userId&gt;.control</code>, <code>notify.&lt;userId&gt;</code>, <code>presence.&lt;userId&gt;</code>. Publish only on <code>interaction.&lt;id&gt;.cmd</code> and your own <code>interaction.&lt;id&gt;.signal.&lt;self&gt;</code>.</li>
             <li>Filter by <code>event_type</code> in the client, not with a subject wildcard.</li>
-            <li>The WebRTC subsystem subscribes to ICE (on <code>.signal</code>) <strong>only when the user joins the call</strong> — not before — so a chat-only participant never receives ICE traffic.</li>
+            <li>The WebRTC subsystem subscribes to ICE (on <code>.signal</code>) <strong>only when the user joins the call</strong> — not before — so a chat-only participant never receives ICE traffic. It buffers incoming ICE until the matching SDP (from <code>.log</code>) is applied.</li>
           </ul>
           <div class="callout warn">
             <span class="label">Warning</span>
             Never subscribe to <code>interaction.&lt;id&gt;.&gt;</code>. The wildcard collapses the QoS split at the client and re-introduces the ICE flood the <code>.log</code>/<code>.signal</code> separation exists to prevent.
+          </div>
+        </section>
+
+        <section aria-labelledby="rate-limits">
+          <h2 id="rate-limits" class="anchored"><a class="anchor" href="#rate-limits" aria-label="Link to this section">#</a>Rate limits</h2>
+          <p>
+            The per-publisher <code>interaction.&lt;id&gt;.signal.&lt;userId&gt;</code> is rate-limited per user/interaction, with a cap on ICE candidates per negotiation.
+            Because the publisher's id is in the subject, the NATS publish-ACL — not a payload <code>actor_id</code> check — binds each signal to its author: a client may publish only to its own <code>.signal.&lt;self&gt;</code>, and there is no shared signal subject on which authorship could be forged.
+            Excess is dropped or throttled and never reaches JetStream — <code>.signal</code> is never durable.
+            This protects the single-node broker from ICE floods and typing storms while keeping the durable <code>.log</code> path clean.
+          </p>
+          <div class="callout note">
+            <span class="label">Note</span>
+            Rate limiting applies to the ephemeral signal plane. The command plane (<code>.cmd</code>) is validated per-message by the router, which is itself the natural backpressure point for facts.
           </div>
         </section>
 
@@ -393,7 +517,8 @@
             </table>
           </div>
           <p>
-            The QoS line is the only boundary that demands a separate subject, because it maps to a hard infrastructure choice — JetStream (durable, ordered) versus core NATS (ephemeral, at-most-once).
+            The QoS line is one boundary that demands a separate subject, because it maps to a hard infrastructure choice — JetStream (durable, ordered) versus core NATS (ephemeral, at-most-once).
+            The second boundary is the <strong>authority line</strong>: the write-only command subject <code>.cmd</code> versus the router-only <code>.log</code>. That split exists for security (no authorship spoofing) and integrity (single-writer <code>sequence</code>), not QoS — see <a href="#why-router-authoritative">why the router is authoritative</a>.
             Everything else is a payload concern, so it stays in the envelope.
           </p>
         </section>
@@ -427,26 +552,44 @@
           </p>
           <ul>
             <li><strong>Tenant isolation</strong> — a user authenticated for tenant A subscribing to <code>tenant.&lt;B&gt;.interaction.*.&gt;</code> is denied by NATS.</li>
+            <li><strong>Payload tenant match</strong> — even on a correctly tenant-prefixed <code>.cmd</code> subject, the router rejects a command whose payload <code>tenant_id</code> does not match the subject's tenant. The subject ACL passing is not enough.</li>
             <li><strong>ACL after accept</strong> — before accepting an interaction's offer, a user subscribing to that <code>interaction.&lt;id&gt;.log</code> is denied; the grant for <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.&gt;</code> is issued only on accept.</li>
             <li><strong>Scoped grants</strong> — a user authorized for interaction X holds only <code>tenant.&lt;tid&gt;.interaction.X.&gt;</code>, never <code>interaction.*</code>, so they cannot reach an interaction Y they did not accept.</li>
+            <li><strong>Log is router-authored</strong> — clients hold no write ACL on <code>.log</code>; they write only <code>.cmd</code> and their own <code>.signal.&lt;self&gt;</code>. On <code>.cmd</code> the router validates <code>author == the connection's authenticated identity</code>; on <code>.signal.&lt;self&gt;</code> the author is the subject itself, enforced by the publish-ACL.</li>
           </ul>
+
+          <h3 id="auth-callout" class="anchored"><a class="anchor" href="#auth-callout" aria-label="Link to this section">#</a>Auth callout and reconnect-on-accept</h3>
           <p>
-            Per-interaction grants are enforced dynamically by a <strong>NATS authorization service using the server's auth callout</strong> (<code>authorization { auth_callout { … } }</code>). The callout authenticates each connection's Phase-1 token and mints that connection's allowed subjects — initially only the user's own <code>routing.offer.user.&lt;self&gt;</code>, <code>notify.&lt;self&gt;</code>, and <code>presence.&lt;self&gt;</code>. On offer-accept, the accepting user's authorization is re-issued to add only <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.&gt;</code> for that interaction. Static permissions cannot express these runtime, per-interaction grants safely, so tenant-wide <code>interaction.*</code> access is never used.
+            Static permissions cannot express per-interaction grants, so Phase 1 enforces them dynamically through the server's <strong>auth callout</strong> (<code>authorization { auth_callout { … } }</code>), answered by the router.
+            The callout authenticates each connection's short-lived, nonce/audience-bound, actor+interaction-scoped token and mints that connection's subjects — initially only the user's own <code>routing.offer.user.&lt;self&gt;</code> (+ <code>.control</code>), <code>notify.&lt;self&gt;</code>, <code>presence.&lt;self&gt;</code> (read), and <code>interaction.&lt;accepted&gt;.cmd</code> + <code>.signal.&lt;self&gt;</code> write, <code>.signal.*</code> + <code>.log</code> read for interactions already accepted.
+            It holds NO blanket <code>interaction.*</code> and NO <code>.log</code> write.
           </p>
           <p>
-            Because the auth callout authorizes at <strong>CONNECT time</strong>, an already-connected <code>nats.ws</code> client cannot have its live connection widened in place. On accept the router hands the client a short-lived <strong>interaction-scoped token</strong> and the client <strong>reconnects</strong> (transparent over <code>nats.ws</code>); the callout then authorizes that interaction's <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.&gt;</code> subtree for the new connection.
+            Because the callout authorizes at <strong>CONNECT time</strong>, an already-connected <code>nats.ws</code> client cannot be widened in place.
+            On offer-accept the router issues the client a short-lived interaction-scoped token and the client <strong>reconnects</strong> (transparent over <code>nats.ws</code>); the callout mints the new connection's subjects, now including ONLY <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.&gt;</code> for that one interaction. A user authorized for interaction X cannot touch interaction Y.
+          </p>
+          <p>
+            Privileged controls (cancel/withdraw/transfer/ACL grant-revoke) are audited with actor and reason on <code>routing.audit.&gt;</code> (the <code>ROUTING_AUDIT</code> stream).
+          </p>
+
+          <h3 id="connection-lifetime" class="anchored"><a class="anchor" href="#connection-lifetime" aria-label="Link to this section">#</a>Token expiry and connection lifetime</h3>
+          <p>
+            The callout runs only at CONNECT, so token expiry mid-session is bounded by an enforced <strong>maximum NATS connection lifetime</strong> (or a ledger that actively kills connections whose token expired).
+            When the token expires the connection is terminated at the enforced max lifetime; the client refreshes its scoped token and reconnects transparently.
+            This is what keeps a revoked or expired grant from outliving its intended window without a per-message authorization check.
           </p>
           <div class="callout note">
             <span class="label">Note</span>
-            Phase 1 auth is user/pass or token at the NATS edge, with per-interaction subjects granted through the auth callout on offer-accept. NKEY/JWT auth is deferred to a later phase.
+            Phase 1 auth is user/pass or token at the NATS edge, with per-interaction subjects granted through the auth callout on offer-accept and a max connection lifetime bounding expiry. NKEY/JWT auth is deferred to a later phase.
           </div>
         </section>
 
         <section aria-labelledby="related">
           <h2 id="related" class="anchored"><a class="anchor" href="#related" aria-label="Link to this section">#</a>Related documents</h2>
           <ul>
-            <li><a href="./core-flows/index.html">Core Flows</a> — these subjects in action: offer, chat, and call sequences.</li>
-            <li><a href="./containers.html">Containers</a> — the NATS server and streams that host these subjects.</li>
+            <li><a href="./state-machines.html">State Machines</a> — the offer, call, and interaction state machines the router enforces.</li>
+            <li><a href="./core-flows/index.html">Core Flows</a> — these subjects in action: offer, cancel/withdraw, double-accept, transfer, chat, and call sequences.</li>
+            <li><a href="./containers.html">Containers</a> — the NATS server, the router service, and streams that host these subjects.</li>
             <li><a href="./context.html">System Context</a> — the actors that publish and subscribe.</li>
             <li><a href="./index.html">Architecture hub</a> — back to the index.</li>
           </ul>
@@ -455,7 +598,7 @@
     </main>
 
     <footer class="site">
-      <p>Last updated 2026-06-08 &middot; version 1.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
+      <p>Last updated 2026-06-08 &middot; version 2.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
     </footer>
 
   </div>

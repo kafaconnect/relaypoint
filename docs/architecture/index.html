@@ -12,8 +12,8 @@
   {
     "title": "RelayPoint Architecture",
     "summary": "Architecture hub for RelayPoint, the NATS web-signaling backbone for KafaConnect Desk.",
-    "version": "1.0.0",
-    "updated": "2026-06-07",
+    "version": "1.1.0",
+    "updated": "2026-06-08",
     "status": "stable",
     "tags": ["architecture", "c4", "index", "signaling", "nats"],
     "audience": ["developers", "architects"]
@@ -70,7 +70,7 @@
     .page {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      max-width: 64rem;
+      width: 100vw;
       margin: 0 auto;
       padding: 0 var(--gap);
     }
@@ -231,12 +231,17 @@
                 <tr>
                   <td><a href="./subject-model.html">Subject Model</a></td>
                   <td>—</td>
-                  <td>The key document. The unified-Interaction subject layout, the event envelope, the QoS split, JetStream streams, offer/RONA mechanics, subscription discipline, the Desk mapping, and multi-tenant ACLs.</td>
+                  <td>The key document. The router-authoritative, unified-Interaction subject layout — command plane vs log, the event envelope, the QoS split, JetStream streams, offer/RONA mechanics, the KV offer store, subscription discipline, the Desk mapping, and auth-callout ACLs.</td>
+                </tr>
+                <tr>
+                  <td><a href="./state-machines.html">State Machines</a></td>
+                  <td>—</td>
+                  <td>The three machines the router owns and enforces — offer, 1:1 call/WebRTC, and interaction — each as ASCII plus a transitions table.</td>
                 </tr>
                 <tr>
                   <td><a href="./core-flows/index.html">Core Flows</a></td>
                   <td>—</td>
-                  <td>The dynamic views — offer to accept/RONA, sending a chat message, placing a call — plus the single-node deployment view.</td>
+                  <td>The dynamic views — offer/accept/RONA, cancel/withdraw, double-accept, transfer, reconnect-during-ring, abandon/orphan, chat, and call — plus the single-node deployment view.</td>
                 </tr>
               </tbody>
             </table>
@@ -252,6 +257,7 @@
             <li><a href="./context.html">System Context</a> — who and what RelayPoint talks to.</li>
             <li><a href="./containers.html">Containers</a> — the moving parts and their wire protocols.</li>
             <li><a href="./subject-model.html">Subject Model</a> — the heart of the design; everything else references it.</li>
+            <li><a href="./state-machines.html">State Machines</a> — the offer, call, and interaction lifecycles the router enforces.</li>
             <li><a href="./core-flows/index.html">Core Flows</a> — how the subjects are used over time, plus deployment.</li>
           </ol>
         </section>
@@ -285,7 +291,7 @@
     </main>
 
     <footer class="site">
-      <p>Last updated 2026-06-07 &middot; version 1.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
+      <p>Last updated 2026-06-08 &middot; version 1.1.0 &middot; <a href="./index.html">Architecture hub</a></p>
     </footer>
 
   </div>

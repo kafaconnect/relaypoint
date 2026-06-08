@@ -70,7 +70,7 @@
     .page {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      max-width: 64rem;
+      width: 100vw;
       margin: 0 auto;
       padding: 0 var(--gap);
     }
@@ -231,12 +231,14 @@
    events    |       TURN   |            metrics|        metrics |
              v              v                   v                v
    +-----------------+ +----------+   +-----------------+ +----------------+
-   | Routing engine  | |  coturn  |   | Presence        | | Observability  |
-   | (offer / RONA)  | | STUN/TURN|   | service         | | surveyor +     |
-   | NATS req/reply  | |          |   | $SYS -> presence| | exporter ->    |
-   +-----------------+ +----+-----+   +-----------------+ | Prometheus +   |
-                            |                             | Grafana        |
-                            |  (TURN relay only if NAT)   +----------------+
+   | Router /        | |  coturn  |   | Presence        | | Observability  |
+   | interaction svc | | STUN/TURN|   | service         | | surveyor +     |
+   | (.log writer,   | |          |   | $SYS -> presence| | exporter ->    |
+   | offer/RONA,     | |          |   |                 | | Prometheus +   |
+   | state machines) | +----+-----+   +-----------------+ | Grafana        |
+   +-----------------+      |                             +----------------+
+                            |
+                            |  (TURN relay only if NAT)
                             v
         +--------------------------------------------+
         |   WebRTC peer-to-peer media (A/V)          |
@@ -262,7 +264,7 @@
               <tbody>
                 <tr><td>Agent (web client)</td><td>Person, browser</td><td>A Desk agent who receives interaction offers, chats, and takes calls. Connects with <code>nats.ws</code> over WebSocket.</td></tr>
                 <tr><td>Customer (web client)</td><td>Person, browser</td><td>An end user who starts an interaction (chat or call) and exchanges signaling with the assigned agent.</td></tr>
-                <tr><td>Routing engine</td><td>Internal service</td><td>Delivers interaction offers to a target user via NATS request/reply with a timeout; applies RONA (redirect-on-no-answer) and grants interaction ACLs on accept.</td></tr>
+                <tr><td>Router / interaction service</td><td>Internal service</td><td>The authoritative, stateful core: the single writer of every <code>interaction.&lt;id&gt;.log</code> fact, owner of the offer / call / interaction state machines, the per-interaction <code>sequence</code> counter, RONA/timers, the NATS-KV offer store, the orphaned reaper, and auth-callout grant/revoke. Delivers offers via NATS request/reply with a timeout and applies RONA (redirect-on-no-answer). See the <a href="./containers.html#router-service">containers view</a>.</td></tr>
                 <tr><td>Presence service</td><td>Internal service</td><td>Derives per-user presence from <code>$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}</code> and publishes it on <code>presence.&lt;userId&gt;</code>. Written in Go or TS.</td></tr>
                 <tr><td>KafaConnect Desk</td><td>Consuming product</td><td>Embeds RelayPoint as a submodule and maps Interactions to Desk Sessions and <code>.log</code> events to the CustomerTimeline.</td></tr>
               </tbody>
@@ -298,7 +300,7 @@
               </thead>
               <tbody>
                 <tr><td>Agent / Customer (web)</td><td>RelayPoint</td><td>WSS / nats.ws</td><td>Chat, presence, SDP/ICE, notifications (NATS subjects).</td></tr>
-                <tr><td>RelayPoint</td><td>Routing engine</td><td>NATS request/reply</td><td>Offer delivery and accept/reject; RONA requeue.</td></tr>
+                <tr><td>RelayPoint</td><td>Router / interaction service</td><td>NATS request/reply + JetStream</td><td>Subscribes client commands on <code>.cmd</code>, writes authoritative <code>.log</code> facts; offer delivery and accept/reject; RONA requeue.</td></tr>
                 <tr><td>RelayPoint</td><td>Presence service</td><td>NATS <code>$SYS</code></td><td>Connect/disconnect events the service turns into presence.</td></tr>
                 <tr><td>Web client</td><td>coturn</td><td>STUN / TURN</td><td>Candidate discovery and, if NAT requires, media relay.</td></tr>
                 <tr><td>Web client</td><td>Web client</td><td>WebRTC P2P</td><td>Audio/video media — bypasses RelayPoint entirely.</td></tr>

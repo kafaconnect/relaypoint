@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>State Machines — Kafa Connect Docs</title>
+  <meta name="description" content="The three RelayPoint state machines the router owns: offer, 1:1 call/WebRTC, and interaction — each as ASCII plus a transitions table.">
+  <meta name="author" content="Kafa Connect">
+
+  <script type="application/json" id="doc-meta">
+  {
+    "title": "State Machines",
+    "summary": "The three RelayPoint state machines the router owns: offer, 1:1 call/WebRTC, and interaction — each as ASCII plus a transitions table.",
+    "version": "1.0.0",
+    "updated": "2026-06-08",
+    "status": "stable",
+    "tags": ["architecture", "state-machines", "offer", "webrtc", "interaction", "router"],
+    "audience": ["developers", "architects"]
+  }
+  </script>
+
+  <style>
+    :root {
+      --measure: 72ch;
+      --gap: 1.5rem;
+      --radius: 8px;
+      --bg: #ffffff;
+      --bg-soft: #f6f8fa;
+      --bg-code: #f3f4f6;
+      --fg: #1f2328;
+      --fg-soft: #57606a;
+      --border: #d0d7de;
+      --link: #0969da;
+      --accent: #0969da;
+      --note-bg: #ddf4ff;     --note-bd: #54aeff;
+      --warn-bg: #fff8c5;     --warn-bd: #d4a72c;
+      --danger-bg: #ffebe9;   --danger-bd: #ff8182;
+      --tip-bg: #dafbe1;      --tip-bd: #4ac26b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --bg-soft: #161b22;
+        --bg-code: #161b22;
+        --fg: #e6edf3;
+        --fg-soft: #9198a1;
+        --border: #30363d;
+        --link: #4493f8;
+        --accent: #4493f8;
+        --note-bg: #0c2d4a;   --note-bd: #1f6feb;
+        --warn-bg: #341a00;   --warn-bd: #9e6a03;
+        --danger-bg: #3c1618; --danger-bd: #b62324;
+        --tip-bg: #0f2d18;    --tip-bd: #238636;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      font-size: 17px;
+      line-height: 1.65;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      width: 100vw;
+      margin: 0 auto;
+      padding: 0 var(--gap);
+    }
+    @media (min-width: 60rem) {
+      .page { grid-template-columns: 16rem minmax(0, 1fr); gap: 2.5rem; }
+    }
+
+    header.site {
+      grid-column: 1 / -1;
+      padding: 1.25rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    header.site .brand { font-weight: 600; color: var(--fg-soft); text-decoration: none; }
+
+    nav.toc {
+      align-self: start;
+      font-size: 0.9rem;
+      padding-top: 2rem;
+    }
+    @media (min-width: 60rem) {
+      nav.toc { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
+    }
+    nav.toc h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-soft); margin: 0 0 0.5rem; }
+    nav.toc ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--border); }
+    nav.toc li { margin: 0; }
+    nav.toc a { display: block; padding: 0.2rem 0 0.2rem 0.75rem; color: var(--fg-soft); text-decoration: none; border-left: 2px solid transparent; margin-left: -2px; }
+    nav.toc a:hover { color: var(--link); }
+    nav.toc a.lvl-3 { padding-left: 1.6rem; font-size: 0.85em; }
+
+    main { padding: 2rem 0 4rem; min-width: 0; }
+    article { max-width: var(--measure); }
+
+    h1, h2, h3, h4 { line-height: 1.25; font-weight: 600; scroll-margin-top: 1.5rem; }
+    h1 { font-size: 2rem; margin: 0 0 0.25rem; }
+    article > .summary { font-size: 1.15rem; color: var(--fg-soft); margin: 0 0 1.5rem; }
+    h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 1.2rem; margin: 2rem 0 0.75rem; }
+
+    .anchored { position: relative; }
+    .anchored .anchor {
+      position: absolute; left: -1.1em; padding-right: 0.4em;
+      opacity: 0; text-decoration: none; color: var(--fg-soft); font-weight: 400;
+    }
+    .anchored:hover .anchor, .anchor:focus { opacity: 1; }
+
+    a { color: var(--link); }
+    p, ul, ol { margin: 0 0 var(--gap); }
+    li { margin: 0.25rem 0; }
+
+    code, pre, kbd { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+    :not(pre) > code {
+      background: var(--bg-code); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.88em;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1rem; overflow: auto; font-size: 0.88rem; line-height: 1.5; margin: 0 0 var(--gap);
+    }
+    pre code { background: none; border: 0; padding: 0; }
+
+    .table-wrap { overflow-x: auto; margin: 0 0 var(--gap); }
+    table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--border); }
+    thead th { background: var(--bg-soft); }
+    tbody tr:nth-child(even) { background: var(--bg-soft); }
+
+    .callout {
+      border: 1px solid var(--border); border-left-width: 4px;
+      border-radius: var(--radius); padding: 0.75rem 1rem; margin: 0 0 var(--gap); background: var(--bg-soft);
+    }
+    .callout > :last-child { margin-bottom: 0; }
+    .callout .label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+    .callout.note   { background: var(--note-bg);   border-left-color: var(--note-bd); }
+    .callout.tip    { background: var(--tip-bg);    border-left-color: var(--tip-bd); }
+    .callout.warn   { background: var(--warn-bg);   border-left-color: var(--warn-bd); }
+    .callout.danger { background: var(--danger-bg); border-left-color: var(--danger-bd); }
+
+    blockquote { margin: 0 0 var(--gap); padding: 0 1rem; border-left: 4px solid var(--border); color: var(--fg-soft); }
+
+    footer.site {
+      grid-column: 1 / -1;
+      border-top: 1px solid var(--border);
+      padding: 1.5rem 0; margin-top: 2rem; color: var(--fg-soft); font-size: 0.9rem;
+    }
+
+    @media print {
+      :root { --bg:#fff; --fg:#000; --fg-soft:#333; }
+      body { font-size: 11pt; }
+      nav.toc, header.site .brand { display: none; }
+      .page { display: block; max-width: none; }
+      a { color: #000; text-decoration: underline; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #555; }
+      pre, table, .callout, blockquote { page-break-inside: avoid; }
+      h2, h3 { page-break-after: avoid; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+
+    <header class="site">
+      <a class="brand" href="./index.html">Kafa Connect Docs</a>
+    </header>
+
+    <nav class="toc" aria-label="Table of contents">
+      <h2>On this page</h2>
+      <ol>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#offer">Offer state machine</a></li>
+        <li><a href="#call">Call / WebRTC state machine (1:1)</a></li>
+        <li><a href="#interaction">Interaction state machine</a></li>
+        <li><a href="#related">Related documents</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <article>
+        <h1>State Machines</h1>
+        <p class="summary">The three state machines the router/interaction service owns and enforces: the offer (ring) lifecycle, the 1:1 call/WebRTC lifecycle, and the interaction lifecycle. Each is shown as ASCII plus a transitions table. Illegal transitions are rejected and write no <code>.log</code> fact.</p>
+
+        <section aria-labelledby="overview">
+          <h2 id="overview" class="anchored"><a class="anchor" href="#overview" aria-label="Link to this section">#</a>Overview</h2>
+          <p>
+            RelayPoint's router is the single authoritative owner of three state machines: the <strong>offer</strong> (the ring that brings a user into an interaction), the <strong>call/WebRTC</strong> media negotiation, and the <strong>interaction</strong> itself.
+            Clients send COMMANDS on <code>interaction.&lt;id&gt;.cmd</code> and offer replies on the request <code>_INBOX</code>; the router validates each one against the legal transitions below, then appends the authoritative fact on <code>interaction.&lt;id&gt;.log</code> (or pushes an offer terminal on <code>routing.offer.user.&lt;userId&gt;.control</code>).
+            An illegal transition (for example, resuming an interaction that has already <code>ended</code>) is rejected and writes no fact.
+          </p>
+          <div class="callout note">
+            <span class="label">Phase 1 scope</span>
+            Calls are <strong>1:1 only</strong>. Multi-party / conference is explicitly deferred. The call machine below describes a single caller/callee pair; the interaction machine carries the medium as a payload field, so a chat can escalate to a 1:1 call within the same interaction.
+          </div>
+          <p>
+            Throughout, every subject is tenant-prefixed with <code>tenant.&lt;tenantId&gt;.</code> (omitted for brevity).
+            These machines are the binding contract behind the <a href="./core-flows/index.html">core flows</a>; the flows show specific paths through them.
+          </p>
+        </section>
+
+        <section aria-labelledby="offer">
+          <h2 id="offer" class="anchored"><a class="anchor" href="#offer" aria-label="Link to this section">#</a>Offer state machine</h2>
+          <p>
+            The offer brings a target user who is not yet in the interaction into it, via NATS request/reply on <code>routing.offer.user.&lt;userId&gt;</code> (reply on the request <code>_INBOX</code> with a one-time nonce).
+            It progresses <code>offered &rarr; ringing &rarr; terminal</code>, where terminal is exactly one of eight states.
+            The <code>_INBOX</code> carries a <strong>single</strong> reply — the terminal <code>accept</code> / <code>reject</code>; <code>ringing</code> is <strong>implicit</strong> once the request is published with no <code>503 No Responders</code>, and there is NO separate ringing reply (it would consume the inbox).
+            The non-reply terminals (cancel/withdraw/<code>accepted_elsewhere</code>, and any timeout/expiry) are pushed by the router on <code>routing.offer.user.&lt;userId&gt;.control</code> so the ringing client stops immediately — NOT via the reply.
+          </p>
+          <pre><code>                 router rings routing.offer.user.&lt;userId&gt;
+                            (offer_id, timeout_ms, nonce)
+                                     |
+                                     v
+                                 [offered]
+                                     |  client receives, shows ring
+                                     v
+                                 [ringing] --------------------------------+
+                                     |                                     |
+   +--------+--------+--------+------+------+---------+---------+          |
+   |        |        |        |             |         |         |          |
+ accept   reject   cancel  withdraw   accepted_     timeout   provider/   no subscriber
+ (nonce)  (client) (caller)(router)   elsewhere     (no ans.) ttl expiry  (NATS 503)
+   |        |        |        |        (CAS loser)    |         |          |
+   v        v        v        v             v         v         v          v
+[accepted][rejected][cancelled][withdrawn][accepted_ [timed_   [expired] [no_responder_
+   |                                        elsewhere] out_rona]            fast_rona]
+   |  grant interaction ACL (reconnect w/ scoped token); return interaction_id
+   |
+ all terminals -> router pushes {offer_id, terminal, reason} on
+                  routing.offer.user.&lt;userId&gt;.control  (client stops ringing)</code></pre>
+          <p>
+            Double-accept on a fan-out is resolved by a <strong>compare-and-set</strong> on <code>offer_id</code> / <code>route_attempt_id</code>: the first valid accept wins (<code>accepted</code>); every later accept is answered <code>accepted_elsewhere</code> / 409; a repeated accept from the same winning device is idempotent.
+            The <code>no_responder_fast_rona</code> path fires immediately on NATS <code>503 no responders</code> (target offline / never-subscribed) without waiting the full <code>timeout_ms</code> — distinct from <code>timed_out_rona</code>.
+            Active offers are persisted in NATS KV <code>offer.active.&lt;userId&gt;</code> with TTLs, so a reconnecting client reconstructs its ringing offers and a router crash leaves no stuck ring.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>From</th><th>Event / trigger</th><th>To</th><th>Notes</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>offered</code></td><td>request delivered (no <code>503</code>); client shows ring</td><td><code>ringing</code></td><td>Implicit — no ringing reply on the <code>_INBOX</code>. Persisted in KV with a TTL.</td></tr>
+                <tr><td><code>offered</code></td><td>NATS <code>503 no responders</code></td><td><code>no_responder_fast_rona</code></td><td>Target offline / never-subscribed; fires immediately, requeue.</td></tr>
+                <tr><td><code>ringing</code></td><td>client replies <code>accept</code> (valid nonce, wins CAS)</td><td><code>accepted</code></td><td>Grant interaction ACL via reconnect; return <code>interaction_id</code>.</td></tr>
+                <tr><td><code>ringing</code></td><td>later <code>accept</code> (loses CAS)</td><td><code>accepted_elsewhere</code></td><td>Answered 409; idempotent for the winning device.</td></tr>
+                <tr><td><code>ringing</code></td><td>client replies <code>reject</code></td><td><code>rejected</code></td><td>Requeue; user not joined.</td></tr>
+                <tr><td><code>ringing</code></td><td>no valid accept before <code>timeout_ms</code></td><td><code>timed_out_rona</code></td><td>No-answer RONA; requeue.</td></tr>
+                <tr><td><code>ringing</code></td><td>originator sends <code>cancel</code> command</td><td><code>cancelled</code></td><td>Only originator/router; pushed on <code>.control</code>.</td></tr>
+                <tr><td><code>ringing</code></td><td>router withdraws (e.g. <code>interaction.abandoned</code>)</td><td><code>withdrawn</code></td><td>Router-initiated; pushed on <code>.control</code>.</td></tr>
+                <tr><td><code>ringing</code></td><td>KV TTL / provider expiry</td><td><code>expired</code></td><td>TTL sweeper; idempotent terminal on crash recovery.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="call">
+          <h2 id="call" class="anchored"><a class="anchor" href="#call" aria-label="Link to this section">#</a>Call / WebRTC state machine (1:1)</h2>
+          <p>
+            The call machine governs WebRTC media negotiation for a single caller/callee pair.
+            SDP offer/answer are durable and recorded on <code>.log</code> (<code>webrtc.offer</code> / <code>webrtc.answer</code>); ICE candidates are ephemeral on <code>.signal</code> (<code>webrtc.ice</code>) and the media itself is WebRTC peer-to-peer — never on NATS.
+            It runs <code>idle &rarr; setup_offered &rarr; answered &rarr; ice_connecting &rarr; connected</code>, then loops through <code>renegotiating</code> / <code>held</code> / <code>transferring</code> / <code>reconnecting</code> back to <code>connected</code>, with terminals <code>cancelled</code>, <code>ended</code>, <code>media_failed</code>, and <code>setup_failed</code>.
+          </p>
+          <pre><code>  [idle]
+     |  caller: webrtc.offer (SDP) on .log
+     v
+ [setup_offered] --- caller hangs up before connect ---> [cancelled]/[setup_failed]
+     |  callee: webrtc.answer (SDP) on .log
+     v
+ [answered]
+     |  ICE candidates on .signal (buffered until SDP applied)
+     v
+ [ice_connecting] --- ICE never connects / coturn down ---> [media_failed]
+     |  ICE connected
+     v
+ +-------------------------- [connected] --------------------------+
+ |        ^          ^            ^               ^                 |
+ |        |          |            |               |                 |
+ |  [renegotiating] [held]  [transferring]  [reconnecting]          |
+ |   webrtc.        call.    interaction.    ICE failed -> grace    |
+ |   renegotiation  held/    transfer.        -> restore or         |
+ |   .offer/.answer resumed  requested        -> [media_failed]     |
+ |   (negotiation_id/gen)    (warm/cold)                            |
+ +-----------------------------------------------------------------+
+     |  either party ends
+     v
+  [ended]
+
+ Glare: simultaneous webrtc.offer -> perfect negotiation.
+ Deterministic polite/impolite role (caller=impolite, else lexical userId tie-break);
+ the POLITE peer rolls back its local offer and accepts the remote one;
+ the IMPOLITE peer ignores the colliding incoming offer and keeps its own.
+ Stale signaling (lower negotiation generation) is discarded.</code></pre>
+          <div class="callout note">
+            <span class="label">Glare and ordering</span>
+            Incoming ICE is buffered until the matching SDP is applied (SDP on <code>.log</code>, ICE on <code>.signal</code> — different transports, ordered by SDP). Renegotiation and ICE-restart carry a <code>negotiation_id</code> / generation; signaling tagged with a lower generation than the current one is discarded.
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>From</th><th>Event / trigger</th><th>To</th><th>Notes</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>idle</code></td><td>caller <code>webrtc.offer</code> (SDP)</td><td><code>setup_offered</code></td><td>Recorded on <code>.log</code> (durable).</td></tr>
+                <tr><td><code>setup_offered</code></td><td>callee <code>webrtc.answer</code> (SDP)</td><td><code>answered</code></td><td>Recorded on <code>.log</code>.</td></tr>
+                <tr><td><code>setup_offered</code> / <code>answered</code></td><td>caller hangs up before connect</td><td><code>cancelled</code> / <code>setup_failed</code></td><td>Peer rejects any late SDP/ICE for that attempt.</td></tr>
+                <tr><td><code>answered</code></td><td>ICE exchange begins on <code>.signal</code></td><td><code>ice_connecting</code></td><td>ICE buffered until SDP applied.</td></tr>
+                <tr><td><code>ice_connecting</code></td><td>ICE connectivity established</td><td><code>connected</code></td><td>Media flows WebRTC P2P (never NATS).</td></tr>
+                <tr><td><code>ice_connecting</code></td><td>ICE never connects / coturn unavailable</td><td><code>media_failed</code></td><td>Fallback ICE servers tried first.</td></tr>
+                <tr><td><code>connected</code></td><td><code>webrtc.renegotiation.offer/answer</code></td><td><code>renegotiating</code> &rarr; <code>connected</code></td><td>Carries <code>negotiation_id</code>; stale generation discarded.</td></tr>
+                <tr><td><code>connected</code></td><td><code>call.held</code> / <code>call.resumed</code></td><td><code>held</code> &rarr; <code>connected</code></td><td>SDP direction changes (local/remote/both).</td></tr>
+                <tr><td><code>connected</code></td><td><code>interaction.transfer.requested</code> accepted</td><td><code>transferring</code> &rarr; <code>connected</code></td><td>Warm = brief overlap; cold = no overlap; ACL swapped.</td></tr>
+                <tr><td><code>connected</code></td><td>ICE transitions to <code>failed</code></td><td><code>reconnecting</code></td><td>Grace period; attempts fallback ICE servers.</td></tr>
+                <tr><td><code>reconnecting</code></td><td>connectivity restored</td><td><code>connected</code></td><td>—</td></tr>
+                <tr><td><code>reconnecting</code></td><td>connectivity not restored</td><td><code>media_failed</code></td><td>Router records <code>call.media_failed</code>.</td></tr>
+                <tr><td><code>connected</code> (and loops)</td><td>either party ends</td><td><code>ended</code></td><td><code>call.ended</code> on <code>.log</code>.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="interaction">
+          <h2 id="interaction" class="anchored"><a class="anchor" href="#interaction" aria-label="Link to this section">#</a>Interaction state machine</h2>
+          <p>
+            The interaction is the unifying conversation across all media. It runs <code>started &rarr; offered &rarr; assigned &rarr; active</code>, loops through <code>held</code> / <code>escalated</code> / <code>transferring</code> back to <code>active</code>, and terminates in <code>ended</code>, <code>abandoned</code>, or <code>orphaned</code>.
+            The router rejects invalid transitions (no resume after <code>ended</code>) and writes no fact for them.
+          </p>
+          <pre><code>  [started]
+     |  router rings a target (offer machine)
+     v
+  [offered] --- customer leaves before assignment ---> [abandoned]
+     |  offer accepted
+     v
+  [assigned] --- ACL granted to the assigned agent
+     |
+     v
+ +------------------------ [active] ------------------------+
+ |        ^             ^                ^                   |
+ |        |             |                |                   |
+ |     [held]      [escalated]     [transferring]           |
+ |   call.held/    medium added    interaction.transfer.    |
+ |   resumed       (chat->voice)   requested -> new target  |
+ |                                 (ACL grant new/revoke old)|
+ +----------------------------------------------------------+
+     |                    |                       |
+  ended by party    all participants offline   customer leaves
+     |               > N min (reaper)            after assignment
+     v                    v                       v
+  [ended]            [orphaned]               [abandoned]
+                  interaction.ended[orphaned]  router withdraws
+                                               ringing offers
+
+ participant.offline  = transient (presence-driven, recoverable)
+ participant.left     = explicit/permanent (removes from interaction)</code></pre>
+          <div class="callout note">
+            <span class="label">Offline vs left, abandon, reaper</span>
+            <code>participant.offline</code> is a transient presence fact and does not remove a participant; <code>participant.left</code> is explicit and permanent. When the customer abandons (<code>interaction.abandoned</code>), the router withdraws any ringing offers (terminal <code>withdrawn</code>). The orphaned reaper injects <code>interaction.ended</code> with reason <code>orphaned</code> when every participant is offline for more than N minutes.
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>From</th><th>Event / trigger</th><th>To</th><th>Notes</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>started</code></td><td>router rings a target</td><td><code>offered</code></td><td>Drives the offer state machine.</td></tr>
+                <tr><td><code>offered</code></td><td>customer leaves before assignment</td><td><code>abandoned</code></td><td>Router withdraws ringing offers.</td></tr>
+                <tr><td><code>offered</code></td><td>offer accepted</td><td><code>assigned</code></td><td>ACL granted to the assigned agent.</td></tr>
+                <tr><td><code>assigned</code></td><td>participant joined / conversing</td><td><code>active</code></td><td>—</td></tr>
+                <tr><td><code>active</code></td><td><code>call.held</code> / <code>call.resumed</code></td><td><code>held</code> &rarr; <code>active</code></td><td>—</td></tr>
+                <tr><td><code>active</code></td><td>medium added (chat &rarr; voice)</td><td><code>escalated</code> &rarr; <code>active</code></td><td>Same interaction; medium is a payload field.</td></tr>
+                <tr><td><code>active</code></td><td><code>interaction.transfer.requested</code> accepted</td><td><code>transferring</code> &rarr; <code>active</code></td><td>Grant new leg's ACL, revoke old leg's; <code>interaction.transferred</code>.</td></tr>
+                <tr><td><code>active</code> (and loops)</td><td>a party ends the interaction</td><td><code>ended</code></td><td><code>interaction.ended</code>.</td></tr>
+                <tr><td><code>assigned</code> / <code>active</code></td><td>customer leaves after assignment</td><td><code>abandoned</code></td><td>Router withdraws any ringing offers.</td></tr>
+                <tr><td><code>active</code></td><td>all participants offline &gt; N min (reaper)</td><td><code>orphaned</code></td><td><code>interaction.ended</code> with reason <code>orphaned</code>.</td></tr>
+                <tr><td><code>ended</code> (terminal)</td><td>any resume/send attempt</td><td>— (rejected)</td><td>Illegal transition; no <code>.log</code> fact written.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="related">
+          <h2 id="related" class="anchored"><a class="anchor" href="#related" aria-label="Link to this section">#</a>Related documents</h2>
+          <ul>
+            <li><a href="./subject-model.html">Subject Model</a> — the command plane, the subjects these machines write, and the auth-callout ACLs.</li>
+            <li><a href="./core-flows/index.html">Core Flows</a> — specific paths through these machines: offer/accept, cancel/withdraw, double-accept, transfer, reconnect, abandon/orphan.</li>
+            <li><a href="./containers.html">Containers</a> — the router/interaction service that owns these machines.</li>
+            <li><a href="./index.html">Architecture hub</a> — back to the index.</li>
+          </ul>
+        </section>
+      </article>
+    </main>
+
+    <footer class="site">
+      <p>Last updated 2026-06-08 &middot; version 1.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
+    </footer>
+
+  </div>
+</body>
+</html>

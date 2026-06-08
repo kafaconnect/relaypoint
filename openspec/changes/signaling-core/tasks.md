@@ -1,44 +1,93 @@
 # Tasks: signaling-core
 
 > Verifiable via config, code, tests, or CI. Issue numbers added once synced to the board.
+> Each behavioral task is tagged with the scenario id its test must carry.
 
 ## NATS server (single node)
-- [ ] `nats-server.conf`: JetStream; `websocket{}`; `mqtt{}` (3.1.1); system account exporting `$SYS`
-- [ ] Auth (Phase 1): user/pass or token; tenant-scoped subject ACLs
+- [ ] `nats-server.conf`: JetStream; `websocket{}`; `mqtt{}` (3.1.1); system account exporting `$SYS`; auth callout; KV bucket for offer state
+- [ ] Tenant-scoped subject ACLs: clients READ-only on `.log`, WRITE-only on `.cmd`, subscribe-only on `presence.*`
 - [ ] `deploy/docker-compose.yml`: nats + coturn (+ surveyor/exporter)
 - [ ] Web client connects via `nats.ws` — `// @spec:signaling.nats-ws-connect`
 - [ ] MQTT listener accepts connections (mobile-ready, unused) — `// @spec:signaling.mqtt-listener-ready`
 
-## Unified interaction + offer/routing
-- [ ] Event envelope `{ schema, event_type, event_id, sequence, occurred_at, medium, data }`
-- [ ] Chat + call share `interaction.<id>.log`/`.signal`; medium in payload — `// @spec:signaling.unified-interaction`
-- [ ] Offer on `routing.offer.user.<userId>` (request/reply, timeout) — `// @spec:signaling.offer-accept`
-- [ ] RONA on timeout/reject → requeue — `// @spec:signaling.offer-rona`
+## Router / interaction service (authoritative writer + state-machine owner)
+- [ ] Service skeleton (NATS micro): sole writer of `interaction.<id>.log`; clients denied `.log` write — `// @spec:signaling.cmd.log-write-only-router`
+- [ ] Command handler validates tenant/actor/role/state/author, assigns monotonic `sequence`, appends fact — `// @spec:signaling.cmd.router-assigns-sequence`
+- [ ] Reject command whose payload `actor_id` != connection identity — `// @spec:signaling.cmd.forged-author-rejected`
+- [ ] Reject illegal state transitions — `// @spec:signaling.cmd.illegal-transition-rejected`
+- [ ] Reject payload `tenant_id` != subject tenant even when ACL passes — `// @spec:signaling.security.payload-tenant-match`
+
+## Unified interaction
+- [ ] Event envelope `{ schema, event_type, event_id, sequence, occurred_at, tenant_id, actor_id, medium, ref_id?, data }`
+- [ ] Chat + call share `interaction.<id>.log`/`.cmd`/`.signal`; medium in payload — `// @spec:signaling.unified-interaction`
+
+## Offer lifecycle (full)
+- [ ] Offer state machine + ring on `routing.offer.user.<userId>` (req/reply via `_INBOX`+nonce); accept — `// @spec:signaling.offer.accept`
+- [ ] Reject + no-answer RONA terminal + requeue — `// @spec:signaling.offer.reject-and-rona`
+- [ ] Fast-RONA on NATS `503 no responders` (offline/never-subscribed) — `// @spec:signaling.offer.no-responder-fast-rona`
+- [ ] Double-accept CAS on `offer_id`/`route_attempt_id`; losers `accepted_elsewhere`; idempotent re-accept — `// @spec:signaling.offer.double-accept-cas`
+- [ ] Cancel (originator) / withdraw (router) push terminal on `...user.<target>.control`; others denied — `// @spec:signaling.offer.cancel-withdraw-authorized`
+- [ ] KV `offer.active.<userId>` reconstruct ringing on reconnect + client-local ring backstop — `// @spec:signaling.offer.reconnect-during-ring`
 
 ## Interaction QoS split
-- [ ] `interaction.<id>.log` on JetStream, ordered, durable/replayable — `// @spec:signaling.log-durable`
+- [ ] `interaction.<id>.log` on JetStream, ordered, durable/replayable; router-assigned `sequence` — `// @spec:signaling.log-durable`
 - [ ] `interaction.<id>.signal` on core NATS, never JetStream (ICE/typing) — `// @spec:signaling.signal-ephemeral`
 - [ ] Media stays WebRTC P2P; only SDP/ICE on NATS — `// @spec:signaling.media-bypass-broker`
 
+## 1:1 call / WebRTC lifecycle
+- [ ] Call state machine setup→answer→connect — `// @spec:signaling.call.setup-connect`
+- [ ] Glare resolved by perfect-negotiation (caller=impolite / lexical tie-break) — `// @spec:signaling.call.glare-perfect-negotiation`
+- [ ] Buffer ICE until matching SDP applied (SDP on `.log`, ICE on `.signal`) — `// @spec:signaling.call.ice-buffered-until-sdp`
+- [ ] Renegotiation/ICE-restart with `negotiation_id`/generation; discard stale — `// @spec:signaling.call.renegotiation-generation`
+- [ ] Hold/resume (SDP direction changes) — `// @spec:signaling.call.hold-resume`
+- [ ] Cold/warm transfer: offer new target, bridge, grant new leg, revoke old — `// @spec:signaling.call.transfer`
+- [ ] Setup-cancel before connect; reject late SDP/ICE — `// @spec:signaling.call.setup-cancel`
+- [ ] Media failure → reconnecting grace → fallback ICE → `media_failed`; coturn-down fallback — `// @spec:signaling.call.media-failed-fallback`
+
+## Interaction lifecycle
+- [ ] Explicit state machine rejects invalid transitions (no resume after ended) — `// @spec:signaling.interaction.invalid-transition`
+- [ ] `interaction.abandoned` withdraws ringing offers — `// @spec:signaling.interaction.abandoned-withdraws-offers`
+- [ ] Orphaned reaper: all offline > N min → `interaction.ended[orphaned]` — `// @spec:signaling.interaction.orphaned-reaper`
+- [ ] `participant.offline` (transient) vs `participant.left` (permanent) — `// @spec:signaling.interaction.offline-vs-left`
+
+## Delivery / ordering / idempotency
+- [ ] `Nats-Msg-Id = event_id` dedup + client-side dedup beyond window — `// @spec:signaling.delivery.msgid-dedup`
+- [ ] `message.updated/deleted` carry `ref_id`; redaction vs tombstone — `// @spec:signaling.delivery.ref-id-update-delete`
+- [ ] Gap detection pauses live apply + replays from JetStream — `// @spec:signaling.delivery.gap-replay`
+
+## Failure modes
+- [ ] Max NATS connection lifetime / kill-on-expiry + client refresh+reconnect — `// @spec:signaling.failure.token-expiry-max-lifetime`
+- [ ] Presence debounce (~5s) + session/device counts avoid false RONA — `// @spec:signaling.failure.presence-debounce`
+- [ ] RONA penalty-box / backoff suspends offers — `// @spec:signaling.failure.rona-penalty-box`
+- [ ] Router crash recovery via KV + TTL sweeper + idempotent terminals — `// @spec:signaling.failure.router-crash-recovery`
+
 ## Presence + notify
 - [ ] Presence service `$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}` → `presence.<userId>` — `// @spec:signaling.presence-from-sys`
+- [ ] Clients cannot publish presence (presence service is sole publisher) — `// @spec:signaling.presence-publish-restricted`
 - [ ] Durable `notify.<userId>` survives reconnect — `// @spec:signaling.notify-durable`
 
-## Multi-tenant isolation
+## Security / tenancy
 - [ ] Tenant-prefixed subjects + per-tenant ACLs; cross-tenant denied — `// @spec:signaling.tenant-isolation`
-- [ ] `interaction.<id>.*` ACL granted only on offer-accept — `// @spec:signaling.acl-after-accept`
+- [ ] Auth-callout interaction grant scoped to accepted interaction only — `// @spec:signaling.acl-interaction-scoped`
+- [ ] On accept: short-lived scoped token + reconnect grants `interaction.<id>.>` — `// @spec:signaling.acl-after-accept`
+- [ ] Rate-limit `.signal` per user/interaction + ICE-candidate cap per negotiation — `// @spec:signaling.security.signal-rate-limit`
+- [ ] Audit privileged controls (cancel/withdraw/transfer/grant-revoke) with actor + reason — `// @spec:signaling.security.privileged-audit`
 
 ## JetStream streams
-- [ ] `INTERACTION_LOGS` (`tenant.*.interaction.*.log`), `NOTIFICATIONS` (`tenant.*.notify.*`); none for `.signal`/presence/offer
+- [ ] `INTERACTION_LOGS` (`tenant.*.interaction.*.log`), `NOTIFICATIONS` (`tenant.*.notify.*`), `ROUTING_AUDIT` (`tenant.*.routing.audit.>`); none for `.cmd`/`.signal`/presence/offer/control
 
 ## NAT traversal
-- [ ] coturn (STUN/TURN) deployed; client uses it as ICE server
+- [ ] coturn (STUN/TURN) deployed; client uses it as ICE server; fallback ICE servers configured
 
 ## Docs (HTML) + verification
-- [ ] `docs/architecture/` C4 + subject-model docs (HTML, via docs-writer)
+- [ ] `docs/architecture/` C4 + subject-model + state-machine docs (HTML, via docs-writer)
 - [ ] `openspec validate signaling-core --strict`
 - [ ] Tests for every scenario id; lint/typecheck/test green
 - [ ] Independent cross-review recorded
 
 ## Deferred (own changes/ADRs)
-- [ ] Mobile via MQTT bridge · NKEY/JWT auth · 3-node JetStream RAFT HA cluster · SFU/media-server
+- [ ] Multi-party / conference calls
+- [ ] Mobile via MQTT bridge
+- [ ] NKEY/JWT auth
+- [ ] 3-node JetStream RAFT HA cluster + router HA
+- [ ] SFU/media-server
