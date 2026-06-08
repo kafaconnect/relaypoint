@@ -1,0 +1,43 @@
+RELAYPOINT SOURCE-AVAILABLE LICENSE
+RelayPoint — NATS Web Signaling Backbone
+
+Copyright (c) 2026 luongdev (luongld514@gmail.com). All rights reserved.
+
+The source code is made available, but this is NOT an OSI-approved open-source
+license. Your rights are limited to what this license grants.
+
+1. GRANT (internal use — free)
+   You are granted a worldwide, royalty-free, non-exclusive license to use, copy,
+   modify, and run the Software for the internal operations of you or your
+   organization, including non-commercial purposes. This covers running RelayPoint
+   as part of your own systems.
+
+2. RESTRICTION (commercial distribution — needs a license from the author)
+   You may NOT, without a separate written commercial license from the copyright
+   holder, do any of the following — whether for a fee or for free — for third
+   parties (anyone other than you/your organization):
+   - distribute, publish, sublicense, sell, lease, or otherwise convey the Software
+     or any derivative of it; or
+   - incorporate the Software (or a derivative) into a product, platform, or
+     hosted/SaaS service that you make available, sell, or offer to third parties.
+
+   In short: using RelayPoint inside your own systems is free; shipping it as, or
+   inside, a commercial product released to others requires the author's permission.
+
+3. COMMERCIAL LICENSE
+   To obtain a commercial license, contact:  luongdev — luongld514@gmail.com
+
+4. CONDITIONS
+   You must retain this license and the copyright notice in all copies and
+   derivatives. This license does not grant any trademark rights.
+
+5. THIRD-PARTY COMPONENTS
+   RelayPoint depends on third-party open-source software, each under its own
+   license; those apply only to their respective components and grant no rights to
+   RelayPoint itself.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

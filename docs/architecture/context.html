@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>System Context — Kafa Connect Docs</title>
+  <meta name="description" content="C4 Level 1 system context for RelayPoint: actors, external systems, and how it serves KafaConnect Desk.">
+  <meta name="author" content="Kafa Connect">
+
+  <script type="application/json" id="doc-meta">
+  {
+    "title": "System Context",
+    "summary": "C4 Level 1 system context for RelayPoint: actors, external systems, and how it serves KafaConnect Desk.",
+    "version": "1.0.0",
+    "updated": "2026-06-08",
+    "status": "stable",
+    "tags": ["architecture", "c4", "context", "signaling", "nats"],
+    "audience": ["developers", "architects"]
+  }
+  </script>
+
+  <style>
+    :root {
+      --measure: 72ch;
+      --gap: 1.5rem;
+      --radius: 8px;
+      --bg: #ffffff;
+      --bg-soft: #f6f8fa;
+      --bg-code: #f3f4f6;
+      --fg: #1f2328;
+      --fg-soft: #57606a;
+      --border: #d0d7de;
+      --link: #0969da;
+      --accent: #0969da;
+      --note-bg: #ddf4ff;     --note-bd: #54aeff;
+      --warn-bg: #fff8c5;     --warn-bd: #d4a72c;
+      --danger-bg: #ffebe9;   --danger-bd: #ff8182;
+      --tip-bg: #dafbe1;      --tip-bd: #4ac26b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --bg-soft: #161b22;
+        --bg-code: #161b22;
+        --fg: #e6edf3;
+        --fg-soft: #9198a1;
+        --border: #30363d;
+        --link: #4493f8;
+        --accent: #4493f8;
+        --note-bg: #0c2d4a;   --note-bd: #1f6feb;
+        --warn-bg: #341a00;   --warn-bd: #9e6a03;
+        --danger-bg: #3c1618; --danger-bd: #b62324;
+        --tip-bg: #0f2d18;    --tip-bd: #238636;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      font-size: 17px;
+      line-height: 1.65;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      max-width: 64rem;
+      margin: 0 auto;
+      padding: 0 var(--gap);
+    }
+    @media (min-width: 60rem) {
+      .page { grid-template-columns: 16rem minmax(0, 1fr); gap: 2.5rem; }
+    }
+
+    header.site {
+      grid-column: 1 / -1;
+      padding: 1.25rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    header.site .brand { font-weight: 600; color: var(--fg-soft); text-decoration: none; }
+
+    nav.toc {
+      align-self: start;
+      font-size: 0.9rem;
+      padding-top: 2rem;
+    }
+    @media (min-width: 60rem) {
+      nav.toc { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
+    }
+    nav.toc h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-soft); margin: 0 0 0.5rem; }
+    nav.toc ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--border); }
+    nav.toc li { margin: 0; }
+    nav.toc a { display: block; padding: 0.2rem 0 0.2rem 0.75rem; color: var(--fg-soft); text-decoration: none; border-left: 2px solid transparent; margin-left: -2px; }
+    nav.toc a:hover { color: var(--link); }
+    nav.toc a.lvl-3 { padding-left: 1.6rem; font-size: 0.85em; }
+
+    main { padding: 2rem 0 4rem; min-width: 0; }
+    article { max-width: var(--measure); }
+
+    h1, h2, h3, h4 { line-height: 1.25; font-weight: 600; scroll-margin-top: 1.5rem; }
+    h1 { font-size: 2rem; margin: 0 0 0.25rem; }
+    article > .summary { font-size: 1.15rem; color: var(--fg-soft); margin: 0 0 1.5rem; }
+    h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 1.2rem; margin: 2rem 0 0.75rem; }
+
+    .anchored { position: relative; }
+    .anchored .anchor {
+      position: absolute; left: -1.1em; padding-right: 0.4em;
+      opacity: 0; text-decoration: none; color: var(--fg-soft); font-weight: 400;
+    }
+    .anchored:hover .anchor, .anchor:focus { opacity: 1; }
+
+    a { color: var(--link); }
+    p, ul, ol { margin: 0 0 var(--gap); }
+    li { margin: 0.25rem 0; }
+
+    code, pre, kbd { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+    :not(pre) > code {
+      background: var(--bg-code); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.88em;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1rem; overflow: auto; font-size: 0.88rem; line-height: 1.5; margin: 0 0 var(--gap);
+    }
+    pre code { background: none; border: 0; padding: 0; }
+
+    .table-wrap { overflow-x: auto; margin: 0 0 var(--gap); }
+    table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--border); }
+    thead th { background: var(--bg-soft); }
+    tbody tr:nth-child(even) { background: var(--bg-soft); }
+
+    .callout {
+      border: 1px solid var(--border); border-left-width: 4px;
+      border-radius: var(--radius); padding: 0.75rem 1rem; margin: 0 0 var(--gap); background: var(--bg-soft);
+    }
+    .callout > :last-child { margin-bottom: 0; }
+    .callout .label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+    .callout.note   { background: var(--note-bg);   border-left-color: var(--note-bd); }
+    .callout.tip    { background: var(--tip-bg);    border-left-color: var(--tip-bd); }
+    .callout.warn   { background: var(--warn-bg);   border-left-color: var(--warn-bd); }
+    .callout.danger { background: var(--danger-bg); border-left-color: var(--danger-bd); }
+
+    blockquote { margin: 0 0 var(--gap); padding: 0 1rem; border-left: 4px solid var(--border); color: var(--fg-soft); }
+
+    footer.site {
+      grid-column: 1 / -1;
+      border-top: 1px solid var(--border);
+      padding: 1.5rem 0; margin-top: 2rem; color: var(--fg-soft); font-size: 0.9rem;
+    }
+
+    @media print {
+      :root { --bg:#fff; --fg:#000; --fg-soft:#333; }
+      body { font-size: 11pt; }
+      nav.toc, header.site .brand { display: none; }
+      .page { display: block; max-width: none; }
+      a { color: #000; text-decoration: underline; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #555; }
+      pre, table, .callout, blockquote { page-break-inside: avoid; }
+      h2, h3 { page-break-after: avoid; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+
+    <header class="site">
+      <a class="brand" href="./index.html">Kafa Connect Docs</a>
+    </header>
+
+    <nav class="toc" aria-label="Table of contents">
+      <h2>On this page</h2>
+      <ol>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#context-diagram">Context diagram</a></li>
+        <li><a href="#actors">Actors</a></li>
+        <li><a href="#external-systems">External systems</a></li>
+        <li><a href="#relationships">Relationships</a></li>
+        <li><a href="#scope-boundary">Scope boundary</a></li>
+        <li><a href="#related">Related documents</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <article>
+        <h1>System Context</h1>
+        <p class="summary">C4 Level 1 view of RelayPoint: the people and external systems it interacts with, and how it acts as the signaling service for KafaConnect Desk.</p>
+
+        <section aria-labelledby="overview">
+          <h2 id="overview" class="anchored"><a class="anchor" href="#overview" aria-label="Link to this section">#</a>Overview</h2>
+          <p>
+            RelayPoint is the real-time signaling backbone for web apps and the signaling service for KafaConnect Desk.
+            At the system-context level it sits between web clients in the browser and the supporting infrastructure for presence, NAT traversal, and observability.
+            Web clients are either agents or customers; both connect from the browser over a WebSocket.
+          </p>
+          <p>
+            RelayPoint carries control-plane traffic only — chat, presence, WebRTC SDP/ICE exchange, and notifications.
+            It deliberately does not carry media: audio and video flow peer-to-peer over WebRTC, never through RelayPoint.
+            Desk consumes RelayPoint (as a submodule) to power its agent and customer real-time experience.
+          </p>
+        </section>
+
+        <section aria-labelledby="context-diagram">
+          <h2 id="context-diagram" class="anchored"><a class="anchor" href="#context-diagram" aria-label="Link to this section">#</a>Context diagram</h2>
+          <p>
+            The box-art below is the L1 context.
+            Solid arrows are signaling/control traffic that transits RelayPoint; the dashed arrow is WebRTC media, which bypasses RelayPoint entirely.
+          </p>
+          <pre><code>             +-----------------+            +-----------------+
+             |  Agent (web)    |            | Customer (web)  |
+             |  browser tab    |            |  browser tab    |
+             +--------+--------+            +--------+--------+
+                      |  WSS / nats.ws                |  WSS / nats.ws
+                      |                               |
+                      v                               v
+        +-------------------------------------------------------------+
+        |                       RelayPoint                            |
+        |          NATS web-signaling backbone (this system)          |
+        |  chat . presence . WebRTC SDP/ICE . notifications . micro   |
+        +----+--------------+-------------------+----------------+-----+
+             |              |                   |                |
+   $SYS conn |       STUN/  |            $SYS / |        scrape  |
+   events    |       TURN   |            metrics|        metrics |
+             v              v                   v                v
+   +-----------------+ +----------+   +-----------------+ +----------------+
+   | Routing engine  | |  coturn  |   | Presence        | | Observability  |
+   | (offer / RONA)  | | STUN/TURN|   | service         | | surveyor +     |
+   | NATS req/reply  | |          |   | $SYS -> presence| | exporter ->    |
+   +-----------------+ +----+-----+   +-----------------+ | Prometheus +   |
+                            |                             | Grafana        |
+                            |  (TURN relay only if NAT)   +----------------+
+                            v
+        +--------------------------------------------+
+        |   WebRTC peer-to-peer media (A/V)          |
+        |   browser  &lt;----- direct / relayed -----&gt;  browser
+        |   * * *  NEVER transits RelayPoint  * * *  |
+        +--------------------------------------------+
+
+   [deferred] Mobile (web later via MQTT 3.1.1 bridge; listener configured, unused)</code></pre>
+          <div class="callout danger">
+            <span class="label">Danger</span>
+            Media never touches RelayPoint. Only SDP and ICE candidates transit the backbone during call setup; audio/video go WebRTC peer-to-peer, relayed by coturn only when NAT requires it. Any design that routes media through NATS is wrong.
+          </div>
+        </section>
+
+        <section aria-labelledby="actors">
+          <h2 id="actors" class="anchored"><a class="anchor" href="#actors" aria-label="Link to this section">#</a>Actors</h2>
+          <p>Actors are the people and internal services that drive or consume the signaling backbone.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Actor</th><th>Kind</th><th>Role</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Agent (web client)</td><td>Person, browser</td><td>A Desk agent who receives interaction offers, chats, and takes calls. Connects with <code>nats.ws</code> over WebSocket.</td></tr>
+                <tr><td>Customer (web client)</td><td>Person, browser</td><td>An end user who starts an interaction (chat or call) and exchanges signaling with the assigned agent.</td></tr>
+                <tr><td>Routing engine</td><td>Internal service</td><td>Delivers interaction offers to a target user via NATS request/reply with a timeout; applies RONA (redirect-on-no-answer) and grants interaction ACLs on accept.</td></tr>
+                <tr><td>Presence service</td><td>Internal service</td><td>Derives per-user presence from <code>$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}</code> and publishes it on <code>presence.&lt;userId&gt;</code>. Written in Go or TS.</td></tr>
+                <tr><td>KafaConnect Desk</td><td>Consuming product</td><td>Embeds RelayPoint as a submodule and maps Interactions to Desk Sessions and <code>.log</code> events to the CustomerTimeline.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="external-systems">
+          <h2 id="external-systems" class="anchored"><a class="anchor" href="#external-systems" aria-label="Link to this section">#</a>External systems</h2>
+          <p>External systems are the infrastructure RelayPoint depends on or integrates with at the edges.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>System</th><th>Protocol</th><th>Purpose</th><th>Phase</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Browser (via nats.ws)</td><td>WSS / WebSocket</td><td>The web client transport; NATS' official browser WebSocket client connects to the <code>websocket{}</code> listener.</td><td>Phase 1</td></tr>
+                <tr><td>coturn</td><td>STUN / TURN</td><td>NAT traversal for WebRTC. STUN for candidate discovery; TURN relay only when a direct path fails.</td><td>Phase 1</td></tr>
+                <tr><td>Observability stack</td><td>$SYS + Prometheus scrape</td><td>nats-surveyor / prometheus-nats-exporter export NATS metrics to Prometheus; Grafana visualizes them.</td><td>Phase 1</td></tr>
+                <tr><td>MQTT-mobile bridge</td><td>MQTT 3.1.1</td><td>Future mobile transport over the <code>mqtt{}</code> listener. Configured now, unused until the mobile phase; the <code>a.b.c &harr; a/b/c</code> auto-map keeps the bridge rework-free.</td><td>Deferred</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="relationships">
+          <h2 id="relationships" class="anchored"><a class="anchor" href="#relationships" aria-label="Link to this section">#</a>Relationships</h2>
+          <p>Each edge in the context diagram, with its direction and protocol.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>From</th><th>To</th><th>Protocol</th><th>Carries</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Agent / Customer (web)</td><td>RelayPoint</td><td>WSS / nats.ws</td><td>Chat, presence, SDP/ICE, notifications (NATS subjects).</td></tr>
+                <tr><td>RelayPoint</td><td>Routing engine</td><td>NATS request/reply</td><td>Offer delivery and accept/reject; RONA requeue.</td></tr>
+                <tr><td>RelayPoint</td><td>Presence service</td><td>NATS <code>$SYS</code></td><td>Connect/disconnect events the service turns into presence.</td></tr>
+                <tr><td>Web client</td><td>coturn</td><td>STUN / TURN</td><td>Candidate discovery and, if NAT requires, media relay.</td></tr>
+                <tr><td>Web client</td><td>Web client</td><td>WebRTC P2P</td><td>Audio/video media — bypasses RelayPoint entirely.</td></tr>
+                <tr><td>RelayPoint / coturn</td><td>Observability</td><td>$SYS + scrape</td><td>Metrics for Prometheus and Grafana.</td></tr>
+                <tr><td>KafaConnect Desk</td><td>RelayPoint</td><td>Submodule + nats.ws</td><td>Consumes Interactions as Sessions and <code>.log</code> events as timeline facts.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="scope-boundary">
+          <h2 id="scope-boundary" class="anchored"><a class="anchor" href="#scope-boundary" aria-label="Link to this section">#</a>Scope boundary</h2>
+          <p>RelayPoint owns the signaling/control plane and explicitly does not own the media plane.</p>
+          <ul>
+            <li><strong>Owns:</strong> chat transport, presence, WebRTC SDP/ICE exchange, notifications — all over NATS subjects — plus the presence service and auth at the NATS edge.</li>
+            <li><strong>Does not own:</strong> the media plane. Audio/video never touch NATS; WebRTC media flows peer-to-peer, relayed by coturn only when NAT requires it. A server-side SFU/media-server is a later concern.</li>
+          </ul>
+        </section>
+
+        <section aria-labelledby="related">
+          <h2 id="related" class="anchored"><a class="anchor" href="#related" aria-label="Link to this section">#</a>Related documents</h2>
+          <ul>
+            <li><a href="./containers.html">Containers</a> — zoom into the deployable parts of RelayPoint.</li>
+            <li><a href="./subject-model.html">Subject Model</a> — the subjects, envelope, and ACLs behind every edge above.</li>
+            <li><a href="./core-flows/index.html">Core Flows</a> — offer, chat, and call sequences plus deployment.</li>
+            <li><a href="./index.html">Architecture hub</a> — back to the index.</li>
+          </ul>
+        </section>
+      </article>
+    </main>
+
+    <footer class="site">
+      <p>Last updated 2026-06-08 &middot; version 1.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
+    </footer>
+
+  </div>
+</body>
+</html>

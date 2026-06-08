@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Subject Model — Kafa Connect Docs</title>
+  <meta name="description" content="The unified-Interaction NATS subject model for RelayPoint: subjects, envelope, QoS split, streams, offer/RONA, ACLs, and the Desk mapping.">
+  <meta name="author" content="Kafa Connect">
+
+  <script type="application/json" id="doc-meta">
+  {
+    "title": "Subject Model",
+    "summary": "The unified-Interaction NATS subject model for RelayPoint: subjects, envelope, QoS split, streams, offer/RONA, ACLs, and the Desk mapping.",
+    "version": "1.0.0",
+    "updated": "2026-06-08",
+    "status": "stable",
+    "tags": ["architecture", "subjects", "nats", "jetstream", "webrtc", "multi-tenant"],
+    "audience": ["developers", "architects"]
+  }
+  </script>
+
+  <style>
+    :root {
+      --measure: 72ch;
+      --gap: 1.5rem;
+      --radius: 8px;
+      --bg: #ffffff;
+      --bg-soft: #f6f8fa;
+      --bg-code: #f3f4f6;
+      --fg: #1f2328;
+      --fg-soft: #57606a;
+      --border: #d0d7de;
+      --link: #0969da;
+      --accent: #0969da;
+      --note-bg: #ddf4ff;     --note-bd: #54aeff;
+      --warn-bg: #fff8c5;     --warn-bd: #d4a72c;
+      --danger-bg: #ffebe9;   --danger-bd: #ff8182;
+      --tip-bg: #dafbe1;      --tip-bd: #4ac26b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --bg-soft: #161b22;
+        --bg-code: #161b22;
+        --fg: #e6edf3;
+        --fg-soft: #9198a1;
+        --border: #30363d;
+        --link: #4493f8;
+        --accent: #4493f8;
+        --note-bg: #0c2d4a;   --note-bd: #1f6feb;
+        --warn-bg: #341a00;   --warn-bd: #9e6a03;
+        --danger-bg: #3c1618; --danger-bd: #b62324;
+        --tip-bg: #0f2d18;    --tip-bd: #238636;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      font-size: 17px;
+      line-height: 1.65;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      max-width: 64rem;
+      margin: 0 auto;
+      padding: 0 var(--gap);
+    }
+    @media (min-width: 60rem) {
+      .page { grid-template-columns: 16rem minmax(0, 1fr); gap: 2.5rem; }
+    }
+
+    header.site {
+      grid-column: 1 / -1;
+      padding: 1.25rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    header.site .brand { font-weight: 600; color: var(--fg-soft); text-decoration: none; }
+
+    nav.toc {
+      align-self: start;
+      font-size: 0.9rem;
+      padding-top: 2rem;
+    }
+    @media (min-width: 60rem) {
+      nav.toc { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
+    }
+    nav.toc h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-soft); margin: 0 0 0.5rem; }
+    nav.toc ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--border); }
+    nav.toc li { margin: 0; }
+    nav.toc a { display: block; padding: 0.2rem 0 0.2rem 0.75rem; color: var(--fg-soft); text-decoration: none; border-left: 2px solid transparent; margin-left: -2px; }
+    nav.toc a:hover { color: var(--link); }
+    nav.toc a.lvl-3 { padding-left: 1.6rem; font-size: 0.85em; }
+
+    main { padding: 2rem 0 4rem; min-width: 0; }
+    article { max-width: var(--measure); }
+
+    h1, h2, h3, h4 { line-height: 1.25; font-weight: 600; scroll-margin-top: 1.5rem; }
+    h1 { font-size: 2rem; margin: 0 0 0.25rem; }
+    article > .summary { font-size: 1.15rem; color: var(--fg-soft); margin: 0 0 1.5rem; }
+    h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 1.2rem; margin: 2rem 0 0.75rem; }
+
+    .anchored { position: relative; }
+    .anchored .anchor {
+      position: absolute; left: -1.1em; padding-right: 0.4em;
+      opacity: 0; text-decoration: none; color: var(--fg-soft); font-weight: 400;
+    }
+    .anchored:hover .anchor, .anchor:focus { opacity: 1; }
+
+    a { color: var(--link); }
+    p, ul, ol { margin: 0 0 var(--gap); }
+    li { margin: 0.25rem 0; }
+
+    code, pre, kbd { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+    :not(pre) > code {
+      background: var(--bg-code); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.88em;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1rem; overflow: auto; font-size: 0.88rem; line-height: 1.5; margin: 0 0 var(--gap);
+    }
+    pre code { background: none; border: 0; padding: 0; }
+
+    .table-wrap { overflow-x: auto; margin: 0 0 var(--gap); }
+    table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--border); }
+    thead th { background: var(--bg-soft); }
+    tbody tr:nth-child(even) { background: var(--bg-soft); }
+
+    .callout {
+      border: 1px solid var(--border); border-left-width: 4px;
+      border-radius: var(--radius); padding: 0.75rem 1rem; margin: 0 0 var(--gap); background: var(--bg-soft);
+    }
+    .callout > :last-child { margin-bottom: 0; }
+    .callout .label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+    .callout.note   { background: var(--note-bg);   border-left-color: var(--note-bd); }
+    .callout.tip    { background: var(--tip-bg);    border-left-color: var(--tip-bd); }
+    .callout.warn   { background: var(--warn-bg);   border-left-color: var(--warn-bd); }
+    .callout.danger { background: var(--danger-bg); border-left-color: var(--danger-bd); }
+
+    blockquote { margin: 0 0 var(--gap); padding: 0 1rem; border-left: 4px solid var(--border); color: var(--fg-soft); }
+
+    footer.site {
+      grid-column: 1 / -1;
+      border-top: 1px solid var(--border);
+      padding: 1.5rem 0; margin-top: 2rem; color: var(--fg-soft); font-size: 0.9rem;
+    }
+
+    @media print {
+      :root { --bg:#fff; --fg:#000; --fg-soft:#333; }
+      body { font-size: 11pt; }
+      nav.toc, header.site .brand { display: none; }
+      .page { display: block; max-width: none; }
+      a { color: #000; text-decoration: underline; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #555; }
+      pre, table, .callout, blockquote { page-break-inside: avoid; }
+      h2, h3 { page-break-after: avoid; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+
+    <header class="site">
+      <a class="brand" href="./index.html">Kafa Connect Docs</a>
+    </header>
+
+    <nav class="toc" aria-label="Table of contents">
+      <h2>On this page</h2>
+      <ol>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#subject-table">Subject table</a></li>
+        <li><a href="#event-envelope">Event envelope</a></li>
+        <li><a href="#qos-split">QoS split: log vs signal</a>
+          <ol>
+            <li><a class="lvl-3" href="#log-event-types">.log event types</a></li>
+            <li><a class="lvl-3" href="#signal-event-types">.signal event types</a></li>
+          </ol>
+        </li>
+        <li><a href="#jetstream-streams">JetStream streams</a></li>
+        <li><a href="#offer-rona">Offer and RONA</a></li>
+        <li><a href="#subscription-discipline">Subscription discipline</a></li>
+        <li><a href="#why-hybrid">Why the hybrid QoS split won</a></li>
+        <li><a href="#desk-mapping">Desk mapping</a></li>
+        <li><a href="#multi-tenant-acls">Multi-tenant ACLs</a></li>
+        <li><a href="#related">Related documents</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <article>
+        <h1>Subject Model</h1>
+        <p class="summary">The heart of RelayPoint: the unified-Interaction NATS subject layout, the event envelope, the durable-vs-ephemeral QoS split, the JetStream streams, offer/RONA mechanics, client subscription discipline, the Desk mapping, and multi-tenant ACLs.</p>
+
+        <section aria-labelledby="overview">
+          <h2 id="overview" class="anchored"><a class="anchor" href="#overview" aria-label="Link to this section">#</a>Overview</h2>
+          <p>
+            Every chat, voice, video, email, or social exchange is modeled as one <strong>Interaction</strong>.
+            The <strong>medium is a field in the event payload, never part of the subject</strong> — there are no medium-specific subjects such as <code>call.invite</code> or <code>chat.offer</code>.
+            A single conversation that starts as chat and escalates to a voice call keeps the same interaction subjects throughout; only the <code>event_type</code> and <code>medium</code> in the payload differ.
+          </p>
+          <p>
+            Per interaction there are exactly two update subjects, split by quality of service: a durable, ordered <code>.log</code> on JetStream for facts, and an ephemeral <code>.signal</code> on core NATS for high-rate transient signals.
+            The offer/ring that brings a user into an interaction is a separate, target-addressed routing concern with its own subtree and timeout/RONA semantics — never on the interaction update subjects.
+            All subjects are tenant-prefixed with <code>tenant.&lt;tenantId&gt;.</code> (omitted below for brevity).
+          </p>
+          <div class="callout note">
+            <span class="label">Note</span>
+            Subjects are dot-separated and lowercase. Ids (<code>tenantId</code>, interaction <code>id</code>, <code>userId</code>) are ULID/UUID with no dots or slashes, so they never break the subject hierarchy or the <code>a.b.c &harr; a/b/c</code> MQTT auto-map.
+          </div>
+        </section>
+
+        <section aria-labelledby="subject-table">
+          <h2 id="subject-table" class="anchored"><a class="anchor" href="#subject-table" aria-label="Link to this section">#</a>Subject table</h2>
+          <p>The full Phase 1 subject layout. Every subject is prefixed <code>tenant.&lt;tenantId&gt;.</code></p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Purpose</th><th>Subject</th><th>Transport</th><th>QoS</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Offer / routing</td><td><code>routing.offer.user.&lt;userId&gt;</code> (also team / queue variants)</td><td>core NATS, request/reply</td><td>Timeout &rarr; RONA; not stored</td></tr>
+                <tr><td>Interaction log (durable facts)</td><td><code>interaction.&lt;id&gt;.log</code></td><td>JetStream</td><td>Durable, ordered, replayable</td></tr>
+                <tr><td>Interaction signal (ephemeral)</td><td><code>interaction.&lt;id&gt;.signal</code></td><td>core NATS</td><td>At-most-once, never stored</td></tr>
+                <tr><td>Presence</td><td><code>presence.&lt;userId&gt;</code></td><td>core NATS / KV (from <code>$SYS</code>)</td><td>Latest state</td></tr>
+                <tr><td>Notification</td><td><code>notify.&lt;userId&gt;</code></td><td>JetStream</td><td>Durable, survives reconnect</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <pre><code>tenant.&lt;tenantId&gt;.
+  routing.offer.user.&lt;userId&gt;        (req/reply, timeout -> RONA)
+  routing.offer.team.&lt;teamId&gt;        (variant)
+  routing.offer.queue.&lt;queueId&gt;      (variant)
+  interaction.&lt;id&gt;.log               (JetStream: durable facts)
+  interaction.&lt;id&gt;.signal            (core NATS: ephemeral signals)
+  presence.&lt;userId&gt;                  (core NATS / KV from $SYS)
+  notify.&lt;userId&gt;                    (JetStream: durable)</code></pre>
+        </section>
+
+        <section aria-labelledby="event-envelope">
+          <h2 id="event-envelope" class="anchored"><a class="anchor" href="#event-envelope" aria-label="Link to this section">#</a>Event envelope</h2>
+          <p>Every message — on <code>.log</code> or <code>.signal</code> — carries the same envelope. The business meaning lives in <code>event_type</code> and the medium lives in <code>medium</code>, both inside the payload.</p>
+          <pre><code>{
+  "schema":      "...",          // schema id / version of `data`
+  "event_type":  "message.created",
+  "event_id":    "&lt;ULID&gt;",
+  "sequence":    42,             // per-interaction ordering
+  "occurred_at": "2026-06-08T12:00:00Z",
+  "medium":      "chat",         // chat | voice | video | email | social
+  "data":        { /* event-specific */ }
+}</code></pre>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Field</th><th>Meaning</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>schema</code></td><td>Schema id/version of the <code>data</code> payload.</td></tr>
+                <tr><td><code>event_type</code></td><td>The business event; clients filter on this locally.</td></tr>
+                <tr><td><code>event_id</code></td><td>Unique id for the event (idempotency / dedup).</td></tr>
+                <tr><td><code>sequence</code></td><td>Per-interaction ordering counter.</td></tr>
+                <tr><td><code>occurred_at</code></td><td>Event timestamp.</td></tr>
+                <tr><td><code>medium</code></td><td>The channel — <code>chat</code>, <code>voice</code>, <code>video</code>, <code>email</code>, <code>social</code>. This is the unified-Interaction key: the medium is data, not a subject.</td></tr>
+                <tr><td><code>data</code></td><td>Event-specific payload.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="qos-split">
+          <h2 id="qos-split" class="anchored"><a class="anchor" href="#qos-split" aria-label="Link to this section">#</a>QoS split: log vs signal</h2>
+          <p>
+            The split is by quality of service, not by business domain.
+            Durable facts that must be ordered and replayable go on <code>.log</code> (JetStream).
+            High-rate transient signals that must never be stored go on <code>.signal</code> (core NATS).
+            The <code>event_type</code> distinguishes specific events within each subject.
+          </p>
+
+          <h3 id="log-event-types" class="anchored"><a class="anchor" href="#log-event-types" aria-label="Link to this section">#</a>.log event types</h3>
+          <p>Durable, ordered facts on <code>interaction.&lt;id&gt;.log</code> (JetStream):</p>
+          <ul>
+            <li><code>interaction.started</code> / <code>interaction.ended</code></li>
+            <li><code>message.created</code> / <code>message.updated</code> / <code>message.deleted</code></li>
+            <li><code>participant.joined</code> / <code>participant.left</code></li>
+            <li><code>interaction.accepted</code> / <code>interaction.assigned</code> / <code>interaction.transferred</code> / <code>interaction.held</code> / <code>interaction.resumed</code></li>
+            <li><code>webrtc.offer</code> / <code>webrtc.answer</code></li>
+            <li><code>call.accepted</code> / <code>call.hold</code> / <code>call.ended</code></li>
+            <li><code>recording.started</code> / <code>recording.stopped</code></li>
+          </ul>
+          <div class="callout note">
+            <span class="label">Note</span>
+            WebRTC SDP offer/answer are durable state and live on <code>.log</code> — a reconnecting participant must replay them to rebuild the call. ICE candidates are not state and live on <code>.signal</code>.
+          </div>
+
+          <h3 id="signal-event-types" class="anchored"><a class="anchor" href="#signal-event-types" aria-label="Link to this section">#</a>.signal event types</h3>
+          <p>Ephemeral, at-most-once signals on <code>interaction.&lt;id&gt;.signal</code> (core NATS, never JetStream):</p>
+          <ul>
+            <li><code>webrtc.ice</code> — ICE candidates</li>
+            <li><code>typing.*</code> — typing indicators</li>
+            <li><code>presence.cursor</code> — live cursor position</li>
+            <li><code>media.level</code> — audio level meters</li>
+          </ul>
+        </section>
+
+        <section aria-labelledby="jetstream-streams">
+          <h2 id="jetstream-streams" class="anchored"><a class="anchor" href="#jetstream-streams" aria-label="Link to this section">#</a>JetStream streams</h2>
+          <p>
+            Streams are defined by leaf class, not per interaction.
+            Two streams are required; one is optional; nothing else is stored.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Stream</th><th>Subjects captured</th><th>Storage / notes</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>INTERACTION_LOGS</code></td><td><code>tenant.*.interaction.*.log</code></td><td>File storage; preserves per-interaction ordering.</td></tr>
+                <tr><td><code>NOTIFICATIONS</code></td><td><code>tenant.*.notify.*</code></td><td>Durable; survives reconnect.</td></tr>
+                <tr><td><code>ROUTING_AUDIT</code> (optional)</td><td><code>tenant.*.routing.audit.&gt;</code></td><td>Audit only — NOT live offer delivery.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout danger">
+            <span class="label">Danger</span>
+            There is NO JetStream stream for <code>.signal</code>, for <code>presence.*</code>, or for the live offer subjects (<code>routing.offer.*</code>). Capturing <code>.signal</code> in JetStream would persist ICE floods and typing noise and defeat the entire QoS split.
+          </div>
+        </section>
+
+        <section aria-labelledby="offer-rona">
+          <h2 id="offer-rona" class="anchored"><a class="anchor" href="#offer-rona" aria-label="Link to this section">#</a>Offer and RONA</h2>
+          <p>
+            An offer brings a user who is not yet in an interaction into it.
+            The router publishes a NATS <strong>request/reply</strong> to <code>routing.offer.user.&lt;userId&gt;</code> (team and queue variants exist) carrying a <code>timeout_ms</code>.
+            Offer delivery never shares a subject or stream with interaction updates.
+          </p>
+          <ul>
+            <li><strong>Accept within timeout</strong> — the client replies <code>accept</code> before the deadline; the router grants the user ACL on <code>interaction.&lt;id&gt;.*</code> and returns the <code>interaction_id</code>.</li>
+            <li><strong>No answer or reject &rarr; RONA</strong> — if no valid <code>accept</code> arrives before the timeout, or the client replies <code>reject</code>, the router requeues the interaction (redirect-on-no-answer) and the user is not joined.</li>
+          </ul>
+          <pre><code>router --req--> routing.offer.user.&lt;userId&gt;   (timeout_ms)
+                       |
+          +------------+-------------+
+          | accept (in time)         | timeout / reject
+          v                          v
+   grant ACL on interaction.&lt;id&gt;.*  RONA: requeue interaction
+   return interaction_id            user NOT joined</code></pre>
+        </section>
+
+        <section aria-labelledby="subscription-discipline">
+          <h2 id="subscription-discipline" class="anchored"><a class="anchor" href="#subscription-discipline" aria-label="Link to this section">#</a>Subscription discipline</h2>
+          <p>
+            Clients subscribe to <strong>specific</strong> subjects and filter by <code>event_type</code> locally.
+            They MUST NOT use the <code>interaction.&lt;id&gt;.&gt;</code> wildcard, which would flood the client with every ICE candidate and signal.
+          </p>
+          <ul>
+            <li>Subscribe to the exact subjects you need: <code>interaction.&lt;id&gt;.log</code>, <code>interaction.&lt;id&gt;.signal</code>, <code>routing.offer.user.&lt;userId&gt;</code>, <code>notify.&lt;userId&gt;</code>, <code>presence.&lt;userId&gt;</code>.</li>
+            <li>Filter by <code>event_type</code> in the client, not with a subject wildcard.</li>
+            <li>The WebRTC subsystem subscribes to ICE (on <code>.signal</code>) <strong>only when the user joins the call</strong> — not before — so a chat-only participant never receives ICE traffic.</li>
+          </ul>
+          <div class="callout warn">
+            <span class="label">Warning</span>
+            Never subscribe to <code>interaction.&lt;id&gt;.&gt;</code>. The wildcard collapses the QoS split at the client and re-introduces the ICE flood the <code>.log</code>/<code>.signal</code> separation exists to prevent.
+          </div>
+        </section>
+
+        <section aria-labelledby="why-hybrid">
+          <h2 id="why-hybrid" class="anchored"><a class="anchor" href="#why-hybrid" aria-label="Link to this section">#</a>Why the hybrid QoS split won</h2>
+          <p>
+            The model is a hybrid: a small number of stable subjects (the <strong>payload-event</strong> approach, where <code>event_type</code> lives in the payload) split only along the QoS line into <code>.log</code> and <code>.signal</code> (the <strong>typed-leaves</strong> approach, where the subject leaf encodes a class).
+            The two extremes both lose:
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Approach</th><th>What it does</th><th>Why it loses alone</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Pure payload-event</td><td>One subject per interaction; every event type in the payload.</td><td>Cannot apply different QoS — durable facts and ICE floods share one subject and one storage policy.</td></tr>
+                <tr><td>Pure typed-leaves</td><td>A distinct subject leaf per event type (<code>.message</code>, <code>.ice</code>, <code>.typing</code>, ...).</td><td>Subject explosion and brittle ACLs; clients drift toward the <code>.&gt;</code> wildcard, re-creating the flood.</td></tr>
+                <tr><td>Hybrid (chosen)</td><td>Split by QoS into <code>.log</code> / <code>.signal</code>; keep <code>event_type</code> in the payload.</td><td>Wins: exactly the two QoS classes that matter map to JetStream vs core NATS, while business events stay flexible in the payload.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            The QoS line is the only boundary that demands a separate subject, because it maps to a hard infrastructure choice — JetStream (durable, ordered) versus core NATS (ephemeral, at-most-once).
+            Everything else is a payload concern, so it stays in the envelope.
+          </p>
+        </section>
+
+        <section aria-labelledby="desk-mapping">
+          <h2 id="desk-mapping" class="anchored"><a class="anchor" href="#desk-mapping" aria-label="Link to this section">#</a>Desk mapping</h2>
+          <p>How the model maps onto KafaConnect Desk's domain:</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>RelayPoint</th><th>Desk</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>interaction</code></td><td>Desk <strong>Session</strong></td></tr>
+                <tr><td><code>.log</code> events</td><td><strong>CustomerTimeline</strong> facts</td></tr>
+                <tr><td><code>.signal</code> events</td><td>Not in the timeline — unless a signal causes a durable state change, in which case it is re-emitted on <code>.log</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Because the timeline is built purely from <code>.log</code>, it is fully reconstructable by replaying the <code>INTERACTION_LOGS</code> stream for the session.
+            Ephemeral signals (typing, ICE, cursor, audio level) leave no timeline trace by design.
+          </p>
+        </section>
+
+        <section aria-labelledby="multi-tenant-acls">
+          <h2 id="multi-tenant-acls" class="anchored"><a class="anchor" href="#multi-tenant-acls" aria-label="Link to this section">#</a>Multi-tenant ACLs</h2>
+          <p>
+            Every subject is tenant-prefixed and protected by per-tenant ACLs.
+            A user authenticated for one tenant cannot read or write another tenant's subjects, and gains interaction access only after accepting the offer.
+          </p>
+          <ul>
+            <li><strong>Tenant isolation</strong> — a user authenticated for tenant A subscribing to <code>tenant.&lt;B&gt;.interaction.*.&gt;</code> is denied by NATS.</li>
+            <li><strong>ACL after accept</strong> — before accepting an interaction's offer, a user subscribing to that <code>interaction.&lt;id&gt;.log</code> is denied; the router grants <code>interaction.&lt;id&gt;.*</code> access only on accept.</li>
+          </ul>
+          <div class="callout note">
+            <span class="label">Note</span>
+            Phase 1 auth is user/pass or token at the NATS edge plus subject ACLs scoped per tenant, with interaction ACLs granted on offer-accept. NKEY/JWT auth is deferred to a later phase.
+          </div>
+        </section>
+
+        <section aria-labelledby="related">
+          <h2 id="related" class="anchored"><a class="anchor" href="#related" aria-label="Link to this section">#</a>Related documents</h2>
+          <ul>
+            <li><a href="./core-flows/index.html">Core Flows</a> — these subjects in action: offer, chat, and call sequences.</li>
+            <li><a href="./containers.html">Containers</a> — the NATS server and streams that host these subjects.</li>
+            <li><a href="./context.html">System Context</a> — the actors that publish and subscribe.</li>
+            <li><a href="./index.html">Architecture hub</a> — back to the index.</li>
+          </ul>
+        </section>
+      </article>
+    </main>
+
+    <footer class="site">
+      <p>Last updated 2026-06-08 &middot; version 1.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
+    </footer>
+
+  </div>
+</body>
+</html>

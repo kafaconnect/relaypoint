@@ -1,0 +1,47 @@
+schema: spec-driven
+
+context: |
+  Project: RelayPoint — NATS Web Signaling Backbone
+  Real-time signaling backbone for web apps; the signaling service for KafaConnect Desk
+  (consumed there as a submodule), built standalone + reusable. Web-first; mobile (MQTT)
+  and HA cluster deferred.
+
+  Hard rule: 100% open source dependencies. The project is source-available — free for
+  internal use; commercial distribution inside a product sold to others needs a license (see LICENSE).
+
+  Tech stack:
+  - NATS server (single node, JetStream enabled) — backbone for client signaling AND microservices (NATS micro)
+  - Client transport: WebSocket (NATS native websocket{}); web client = nats.ws
+  - MQTT bridge: NATS mqtt{} (3.1.1) — configured, unused until the mobile phase
+  - Media: WebRTC peer-to-peer, NEVER through NATS; NAT traversal via coturn (STUN/TURN)
+  - Presence service: Go or TS backend subscribing to $SYS connection events
+  - Auth (Phase 1): user/pass or token; NKEY/JWT later
+  - Observability: nats-surveyor / prometheus-nats-exporter → Prometheus → Grafana
+
+  Locked architecture decisions:
+  - NATS is the single backbone for both client signaling and microservices.
+  - Media never touches NATS — only SDP/ICE transit it; audio/video are WebRTC-direct (SFU later).
+  - Subject↔topic auto-map (a.b.c ↔ a/b/c) keeps the future MQTT-mobile bridge rework-free.
+  - Presence derived from $SYS.ACCOUNT.*.{CONNECT,DISCONNECT}, not MQTT LWT.
+  - Single node now; 3-node JetStream RAFT cluster is the HA path, deferred.
+
+  Conventions:
+  - Subjects: dot-separated, lowercase.
+  - Ephemeral (ICE, typing, presence ping) on core NATS (at-most-once); durable (notification) on JetStream.
+  - Subject layout: chat.dm.<a>.<b> / chat.room.<roomId>(.typing); presence.<userId>;
+    call.invite.<calleeId> / call.<callId>.ice.<fromUserId> / call.<callId>.control; notify.<userId> (JetStream).
+
+rules:
+  proposal:
+    - State From, To, Reason, and Impact for each meaningful change.
+  specs:
+    - Use behavior-first requirements with `### Requirement:` headings.
+    - Include at least one `#### Scenario:` per requirement, each with a stable scenario id.
+    - Every scenario must be testable; it is satisfied by an automated test tagged `// @spec:<scenario-id>`.
+    - A subject/transport change must name the exact NATS subject(s) and stream(s) affected.
+  design:
+    - Reference existing project patterns and ADRs before introducing new ones.
+    - Media decisions must preserve the "media never touches NATS" rule.
+  tasks:
+    - Use checklists verifiable through code, tests, docs, or CI output.
+    - "Definition of Done: openspec validate --strict; lint/typecheck/test green; every scenario has a // @spec: test; independent cross-review done; ADR if architecture changed."

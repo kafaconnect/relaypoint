@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Containers — Kafa Connect Docs</title>
+  <meta name="description" content="C4 Level 2 container view of RelayPoint: NATS server, presence service, coturn, observability, and the web client.">
+  <meta name="author" content="Kafa Connect">
+
+  <script type="application/json" id="doc-meta">
+  {
+    "title": "Containers",
+    "summary": "C4 Level 2 container view of RelayPoint: NATS server, presence service, coturn, observability, and the web client.",
+    "version": "1.0.0",
+    "updated": "2026-06-08",
+    "status": "stable",
+    "tags": ["architecture", "c4", "containers", "nats", "coturn"],
+    "audience": ["developers", "architects"]
+  }
+  </script>
+
+  <style>
+    :root {
+      --measure: 72ch;
+      --gap: 1.5rem;
+      --radius: 8px;
+      --bg: #ffffff;
+      --bg-soft: #f6f8fa;
+      --bg-code: #f3f4f6;
+      --fg: #1f2328;
+      --fg-soft: #57606a;
+      --border: #d0d7de;
+      --link: #0969da;
+      --accent: #0969da;
+      --note-bg: #ddf4ff;     --note-bd: #54aeff;
+      --warn-bg: #fff8c5;     --warn-bd: #d4a72c;
+      --danger-bg: #ffebe9;   --danger-bd: #ff8182;
+      --tip-bg: #dafbe1;      --tip-bd: #4ac26b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --bg-soft: #161b22;
+        --bg-code: #161b22;
+        --fg: #e6edf3;
+        --fg-soft: #9198a1;
+        --border: #30363d;
+        --link: #4493f8;
+        --accent: #4493f8;
+        --note-bg: #0c2d4a;   --note-bd: #1f6feb;
+        --warn-bg: #341a00;   --warn-bd: #9e6a03;
+        --danger-bg: #3c1618; --danger-bd: #b62324;
+        --tip-bg: #0f2d18;    --tip-bd: #238636;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      font-size: 17px;
+      line-height: 1.65;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      max-width: 64rem;
+      margin: 0 auto;
+      padding: 0 var(--gap);
+    }
+    @media (min-width: 60rem) {
+      .page { grid-template-columns: 16rem minmax(0, 1fr); gap: 2.5rem; }
+    }
+
+    header.site {
+      grid-column: 1 / -1;
+      padding: 1.25rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    header.site .brand { font-weight: 600; color: var(--fg-soft); text-decoration: none; }
+
+    nav.toc {
+      align-self: start;
+      font-size: 0.9rem;
+      padding-top: 2rem;
+    }
+    @media (min-width: 60rem) {
+      nav.toc { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
+    }
+    nav.toc h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-soft); margin: 0 0 0.5rem; }
+    nav.toc ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--border); }
+    nav.toc li { margin: 0; }
+    nav.toc a { display: block; padding: 0.2rem 0 0.2rem 0.75rem; color: var(--fg-soft); text-decoration: none; border-left: 2px solid transparent; margin-left: -2px; }
+    nav.toc a:hover { color: var(--link); }
+    nav.toc a.lvl-3 { padding-left: 1.6rem; font-size: 0.85em; }
+
+    main { padding: 2rem 0 4rem; min-width: 0; }
+    article { max-width: var(--measure); }
+
+    h1, h2, h3, h4 { line-height: 1.25; font-weight: 600; scroll-margin-top: 1.5rem; }
+    h1 { font-size: 2rem; margin: 0 0 0.25rem; }
+    article > .summary { font-size: 1.15rem; color: var(--fg-soft); margin: 0 0 1.5rem; }
+    h2 { font-size: 1.5rem; margin: 2.5rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 1.2rem; margin: 2rem 0 0.75rem; }
+
+    .anchored { position: relative; }
+    .anchored .anchor {
+      position: absolute; left: -1.1em; padding-right: 0.4em;
+      opacity: 0; text-decoration: none; color: var(--fg-soft); font-weight: 400;
+    }
+    .anchored:hover .anchor, .anchor:focus { opacity: 1; }
+
+    a { color: var(--link); }
+    p, ul, ol { margin: 0 0 var(--gap); }
+    li { margin: 0.25rem 0; }
+
+    code, pre, kbd { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+    :not(pre) > code {
+      background: var(--bg-code); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.88em;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1rem; overflow: auto; font-size: 0.88rem; line-height: 1.5; margin: 0 0 var(--gap);
+    }
+    pre code { background: none; border: 0; padding: 0; }
+
+    .table-wrap { overflow-x: auto; margin: 0 0 var(--gap); }
+    table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--border); }
+    thead th { background: var(--bg-soft); }
+    tbody tr:nth-child(even) { background: var(--bg-soft); }
+
+    .callout {
+      border: 1px solid var(--border); border-left-width: 4px;
+      border-radius: var(--radius); padding: 0.75rem 1rem; margin: 0 0 var(--gap); background: var(--bg-soft);
+    }
+    .callout > :last-child { margin-bottom: 0; }
+    .callout .label { font-weight: 600; display: block; margin-bottom: 0.25rem; }
+    .callout.note   { background: var(--note-bg);   border-left-color: var(--note-bd); }
+    .callout.tip    { background: var(--tip-bg);    border-left-color: var(--tip-bd); }
+    .callout.warn   { background: var(--warn-bg);   border-left-color: var(--warn-bd); }
+    .callout.danger { background: var(--danger-bg); border-left-color: var(--danger-bd); }
+
+    blockquote { margin: 0 0 var(--gap); padding: 0 1rem; border-left: 4px solid var(--border); color: var(--fg-soft); }
+
+    footer.site {
+      grid-column: 1 / -1;
+      border-top: 1px solid var(--border);
+      padding: 1.5rem 0; margin-top: 2rem; color: var(--fg-soft); font-size: 0.9rem;
+    }
+
+    @media print {
+      :root { --bg:#fff; --fg:#000; --fg-soft:#333; }
+      body { font-size: 11pt; }
+      nav.toc, header.site .brand { display: none; }
+      .page { display: block; max-width: none; }
+      a { color: #000; text-decoration: underline; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #555; }
+      pre, table, .callout, blockquote { page-break-inside: avoid; }
+      h2, h3 { page-break-after: avoid; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+
+    <header class="site">
+      <a class="brand" href="./index.html">Kafa Connect Docs</a>
+    </header>
+
+    <nav class="toc" aria-label="Table of contents">
+      <h2>On this page</h2>
+      <ol>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#container-diagram">Container diagram</a></li>
+        <li><a href="#containers">Containers</a>
+          <ol>
+            <li><a class="lvl-3" href="#nats-server">NATS server</a></li>
+            <li><a class="lvl-3" href="#presence-service">Presence service</a></li>
+            <li><a class="lvl-3" href="#coturn">coturn</a></li>
+            <li><a class="lvl-3" href="#observability">Observability</a></li>
+            <li><a class="lvl-3" href="#web-client">Web client</a></li>
+          </ol>
+        </li>
+        <li><a href="#relationships">Relationships</a></li>
+        <li><a href="#media-rule">Media never touches NATS</a></li>
+        <li><a href="#related">Related documents</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <article>
+        <h1>Containers</h1>
+        <p class="summary">C4 Level 2 view of RelayPoint: the deployable containers — a single-node NATS server, the presence service, coturn, the observability stack, and the web client — and the protocol on every relationship.</p>
+
+        <section aria-labelledby="overview">
+          <h2 id="overview" class="anchored"><a class="anchor" href="#overview" aria-label="Link to this section">#</a>Overview</h2>
+          <p>
+            At the container level RelayPoint is a small set of cooperating processes around one NATS server.
+            In Phase 1 the NATS server runs as a single node with JetStream enabled and three listeners active — WebSocket, MQTT, and the system account that exports <code>$SYS</code> events.
+            The presence service, coturn, and the observability stack are separate processes; the web client is browser-side code using <code>nats.ws</code> and the browser WebRTC stack.
+          </p>
+          <p>
+            A 3-node JetStream RAFT cluster is the HA path and is deliberately deferred.
+            Everything below describes the single-node Phase 1 topology.
+          </p>
+        </section>
+
+        <section aria-labelledby="container-diagram">
+          <h2 id="container-diagram" class="anchored"><a class="anchor" href="#container-diagram" aria-label="Link to this section">#</a>Container diagram</h2>
+          <p>Solid arrows transit NATS; the dashed WebRTC path does not.</p>
+          <pre><code>  +-------------------------------------------------------------+
+  |  Web client  (browser)                                      |
+  |   nats.ws  +  WebRTC (RTCPeerConnection)                    |
+  +----+----------------------------------------+---------------+
+       |  WSS / nats.ws (subjects)               |  STUN/TURN
+       |                                         |
+       v                                         v
+  +------------------------------------+   +------------------+
+  |  NATS server  (single node)        |   |  coturn          |
+  |  +------------------------------+  |   |  STUN / TURN     |
+  |  | websocket{}  listener        |  |   +--------+---------+
+  |  | mqtt{} 3.1.1 listener (idle) |  |            |
+  |  | JetStream (file storage)     |  |            | TURN relay
+  |  |  - INTERACTION_LOGS          |  |            | only if NAT
+  |  |  - NOTIFICATIONS             |  |            v
+  |  | core NATS (.signal, presence)|  |   +------------------+
+  |  | $SYS account (conn events)   |  |   | WebRTC P2P media |
+  |  +------------------------------+  |   | browser<-->browser
+  +---+------------+----------------+--+   +------------------+
+      | $SYS        | NATS req/reply | $SYS / monitor
+      | events      | (offer/RONA)   | endpoints
+      v             v                v
+ +------------+ +-------------+ +-----------------------------+
+ | Presence   | | Routing     | | Observability               |
+ | service    | | engine      | | surveyor + nats-exporter -> |
+ | (Go/TS)    | | (NATS micro)| | Prometheus -> Grafana       |
+ +------------+ +-------------+ +-----------------------------+</code></pre>
+        </section>
+
+        <section aria-labelledby="containers">
+          <h2 id="containers" class="anchored"><a class="anchor" href="#containers" aria-label="Link to this section">#</a>Containers</h2>
+
+          <h3 id="nats-server" class="anchored"><a class="anchor" href="#nats-server" aria-label="Link to this section">#</a>NATS server</h3>
+          <p>
+            One NATS server is the single backbone for both client signaling and microservices (NATS <code>micro</code>).
+            It runs four cooperating facilities in one process:
+          </p>
+          <ul>
+            <li><strong>websocket{} listener</strong> — accepts <code>nats.ws</code> browser connections over WSS.</li>
+            <li><strong>mqtt{} listener (3.1.1)</strong> — configured for the future mobile bridge, idle in Phase 1. The <code>a.b.c &harr; a/b/c</code> auto-map keeps that bridge rework-free.</li>
+            <li><strong>JetStream</strong> — file storage for the durable streams <code>INTERACTION_LOGS</code> and <code>NOTIFICATIONS</code>; core NATS carries ephemeral <code>.signal</code> and presence traffic.</li>
+            <li><strong>$SYS account</strong> — exports <code>$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}</code> connection events the presence service consumes.</li>
+          </ul>
+
+          <h3 id="presence-service" class="anchored"><a class="anchor" href="#presence-service" aria-label="Link to this section">#</a>Presence service</h3>
+          <p>
+            A backend process (Go or TS) that subscribes to <code>$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}</code> and publishes per-user state on <code>presence.&lt;userId&gt;</code>.
+            Presence is derived from connection events, not from MQTT Last-Will-and-Testament.
+          </p>
+
+          <h3 id="coturn" class="anchored"><a class="anchor" href="#coturn" aria-label="Link to this section">#</a>coturn</h3>
+          <p>
+            A STUN/TURN server for WebRTC NAT traversal.
+            Clients use STUN to discover candidates; coturn relays media via TURN only when a direct peer-to-peer path cannot be established.
+            coturn is not a NATS client — it sits entirely on the media plane.
+          </p>
+
+          <h3 id="observability" class="anchored"><a class="anchor" href="#observability" aria-label="Link to this section">#</a>Observability</h3>
+          <p>
+            nats-surveyor and prometheus-nats-exporter scrape NATS monitoring and <code>$SYS</code> endpoints and expose metrics to Prometheus; Grafana renders dashboards.
+            All four dependencies are 100% open source, consistent with the project's hard rule.
+          </p>
+
+          <h3 id="web-client" class="anchored"><a class="anchor" href="#web-client" aria-label="Link to this section">#</a>Web client</h3>
+          <p>
+            Browser-side code combining two stacks: <code>nats.ws</code> for the signaling channel over the <code>websocket{}</code> listener, and the browser WebRTC API (<code>RTCPeerConnection</code>) for media.
+            The client follows strict subscription discipline — it subscribes to specific subjects and filters by <code>event_type</code> locally, never to the <code>interaction.&lt;id&gt;.&gt;</code> wildcard.
+            See the <a href="./subject-model.html#subscription-discipline">subject model</a> for the rules.
+          </p>
+        </section>
+
+        <section aria-labelledby="relationships">
+          <h2 id="relationships" class="anchored"><a class="anchor" href="#relationships" aria-label="Link to this section">#</a>Relationships</h2>
+          <p>Every edge between containers, with the protocol it speaks.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>From</th><th>To</th><th>Protocol / edge</th><th>Carries</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Web client</td><td>NATS server</td><td>WSS / nats.ws</td><td>Chat, SDP/ICE, presence, notifications as NATS subjects.</td></tr>
+                <tr><td>Web client</td><td>coturn</td><td>STUN / TURN</td><td>Candidate discovery; TURN media relay only if NAT requires it.</td></tr>
+                <tr><td>Web client</td><td>Web client</td><td>WebRTC P2P</td><td>Audio/video media — does not pass through NATS.</td></tr>
+                <tr><td>NATS server</td><td>Presence service</td><td>NATS <code>$SYS</code></td><td>Connect/disconnect events.</td></tr>
+                <tr><td>Presence service</td><td>NATS server</td><td>NATS subjects</td><td>Publishes <code>presence.&lt;userId&gt;</code>.</td></tr>
+                <tr><td>Routing engine</td><td>NATS server</td><td>NATS req/reply (micro)</td><td>Offer delivery on <code>routing.offer.user.&lt;id&gt;</code>; RONA requeue; ACL grant on accept.</td></tr>
+                <tr><td>Observability</td><td>NATS server</td><td>$SYS / monitor scrape</td><td>Metrics to Prometheus and Grafana.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="media-rule">
+          <h2 id="media-rule" class="anchored"><a class="anchor" href="#media-rule" aria-label="Link to this section">#</a>Media never touches NATS</h2>
+          <div class="callout danger">
+            <span class="label">Danger</span>
+            The NATS server carries only signaling — chat, presence, notifications, and WebRTC SDP/ICE. Audio and video MUST flow WebRTC peer-to-peer (relayed by coturn only when NAT requires it) and MUST NEVER transit the NATS server. A future SFU/media-server is a separate concern; it does not change this rule.
+          </div>
+          <p>
+            This boundary is what keeps the single-node NATS server viable: it never bears media bitrate, only low-rate control messages and the brief SDP/ICE exchange during call setup.
+          </p>
+        </section>
+
+        <section aria-labelledby="related">
+          <h2 id="related" class="anchored"><a class="anchor" href="#related" aria-label="Link to this section">#</a>Related documents</h2>
+          <ul>
+            <li><a href="./context.html">System Context</a> — the L1 view these containers sit inside.</li>
+            <li><a href="./subject-model.html">Subject Model</a> — the subjects, streams, and ACLs on the NATS server.</li>
+            <li><a href="./core-flows/index.html">Core Flows</a> — how these containers cooperate over time, plus the deployment view.</li>
+            <li><a href="./index.html">Architecture hub</a> — back to the index.</li>
+          </ul>
+        </section>
+      </article>
+    </main>
+
+    <footer class="site">
+      <p>Last updated 2026-06-08 &middot; version 1.0.0 &middot; <a href="./index.html">Architecture hub</a></p>
+    </footer>
+
+  </div>
+</body>
+</html>
