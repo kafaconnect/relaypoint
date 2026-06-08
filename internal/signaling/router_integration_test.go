@@ -7,6 +7,7 @@
 package signaling
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -37,9 +38,9 @@ func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 	if err := EnsureLogStream(rjs); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	r := NewRouter(rnc, rjs)
+	r := NewRouter(NewJetStreamStore(rjs))
 	sub, err := rnc.QueueSubscribe("tenant.*.interaction.*.cmd", "router", func(m *nats.Msg) {
-		b, _ := json.Marshal(r.HandleCommand(m.Subject, m.Data))
+		b, _ := json.Marshal(r.HandleCommand(context.Background(), m.Subject, m.Data))
 		if m.Reply != "" {
 			_ = m.Respond(b)
 		}
