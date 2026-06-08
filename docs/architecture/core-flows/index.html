@@ -212,8 +212,8 @@
           <ol>
             <li>The router publishes a request to <code>routing.offer.user.&lt;userId&gt;</code> with a <code>timeout_ms</code>.</li>
             <li>The client's offer subscription receives the offer and shows the ring to the user.</li>
-            <li><strong>Accept path:</strong> the client replies <code>accept</code> before the timeout.</li>
-            <li>The router grants the user ACL on <code>interaction.&lt;id&gt;.*</code> and returns the <code>interaction_id</code> in the reply.</li>
+            <li><strong>Accept path:</strong> the callee's client replies <code>accept</code> before the timeout.</li>
+            <li>The router grants the callee ACL on <code>interaction.&lt;id&gt;.*</code> and returns the <code>interaction_id</code> in the reply. The acceptance is recorded as <code>interaction.accepted</code> (a.k.a. <code>call.accepted</code>) on <code>interaction.&lt;id&gt;.log</code>, authored by the callee/router — it is NOT a caller→callee message.</li>
             <li>The client subscribes to <code>interaction.&lt;id&gt;.log</code> (and <code>.signal</code> once it joins media) and consumes the durable backlog.</li>
             <li><strong>RONA path:</strong> if no valid <code>accept</code> arrives before the timeout, or the client replies <code>reject</code>, the router requeues the interaction (redirect-on-no-answer); the user is not joined.</li>
           </ol>
@@ -264,17 +264,20 @@
             A call escalates an existing interaction; it reuses the same interaction subjects.
             SDP offer/answer are durable state and go on <code>.log</code>; ICE candidates are ephemeral and go on <code>.signal</code>; the actual media is WebRTC peer-to-peer.
           </p>
+          <div class="callout note">
+            <span class="label">Precondition</span>
+            The offer is already accepted and the callee is in the interaction (see <a href="#offer-flow">Offer to accept or RONA</a>). The acceptance was recorded by the callee/router as <code>interaction.accepted</code> — it is not part of the WebRTC setup below.
+          </div>
           <ol>
-            <li>The caller offers the call: an envelope with <code>event_type: call.accepted</code>/<code>webrtc.offer</code> semantics begins on <code>interaction.&lt;id&gt;.log</code> (the offer/ring to a not-yet-joined user uses the <a href="#offer-flow">routing offer</a> instead).</li>
-            <li>The callee accepts; <code>call.accepted</code> is published on <code>interaction.&lt;id&gt;.log</code> (durable).</li>
-            <li>The caller publishes <code>webrtc.offer</code> (SDP) on <code>interaction.&lt;id&gt;.log</code>; the callee replies with <code>webrtc.answer</code> (SDP) on <code>.log</code> — both durable so a reconnecting peer can rebuild the call.</li>
-            <li>On joining the call, each peer subscribes to ICE and exchanges <code>webrtc.ice</code> candidates on <code>interaction.&lt;id&gt;.signal</code> (ephemeral). Candidates are discovered via coturn STUN.</li>
+            <li>The caller publishes <code>webrtc.offer</code> (SDP) on <code>interaction.&lt;id&gt;.log</code> → the callee — durable so a reconnecting peer can rebuild the call.</li>
+            <li>The callee replies with <code>webrtc.answer</code> (SDP) on <code>interaction.&lt;id&gt;.log</code> → the caller — also durable.</li>
+            <li>On joining the call, each peer subscribes to ICE and exchanges <code>webrtc.ice</code> candidates both ways on <code>interaction.&lt;id&gt;.signal</code> (ephemeral). Candidates are discovered via coturn STUN.</li>
             <li>The peers establish a direct WebRTC connection and audio/video flows peer-to-peer. If NAT blocks a direct path, coturn relays the media via TURN.</li>
             <li>No media packet passes through NATS — only SDP (on <code>.log</code>) and ICE (on <code>.signal</code>) did, during setup.</li>
           </ol>
           <pre><code> Caller                 NATS                  Callee            coturn
    |                      |                       |                |
-   |-- call.accepted -----| (.log, durable) -----&gt;|                |
+   |   (precondition: offer accepted; callee in interaction)      |
    |-- webrtc.offer (SDP)-| (.log, durable) -----&gt;|                |
    |&lt;- webrtc.answer (SDP)| (.log, durable) ------|                |
    |   (join call -> subscribe ICE on .signal)    |                |

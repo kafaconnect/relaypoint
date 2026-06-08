@@ -103,6 +103,15 @@ Every subject MUST be tenant-prefixed and protected by per-tenant ACLs. A user M
 read or write another tenant's subjects, and MUST gain `interaction.<id>.*` access only
 after accepting the offer for that interaction.
 
+Per-interaction grants MUST be enforced dynamically via a **NATS authorization service
+using the server's auth callout** (`authorization { auth_callout { ... } }`), NOT via
+static or tenant-wide `interaction.*` permissions. The callout service mints each
+connection's allowed subjects from the Phase-1 token, and on offer-accept the accepting
+user's authorization is updated/issued to include ONLY
+`tenant.<tid>.interaction.<id>.>` for the accepted interaction (plus that user's own
+`routing.offer.user.<self>`, `notify.<self>`, `presence.<self>`). This works with the
+Phase-1 user/pass or token model; NKEY/JWT remains deferred.
+
 #### Scenario: Cross-tenant subscription denied
 - **id:** `signaling.tenant-isolation`
 - **WHEN** a user authenticated for tenant A subscribes to `tenant.<B>.interaction.*.>`
@@ -112,4 +121,11 @@ after accepting the offer for that interaction.
 - **id:** `signaling.acl-after-accept`
 - **GIVEN** a user who has not accepted an interaction's offer
 - **WHEN** they subscribe to that `interaction.<id>.log`
-- **THEN** access is denied until the router grants ACL on accept
+- **THEN** the auth-callout service has not granted that subject and NATS denies the subscription until the user accepts the offer
+- **AND** on accept the grant is delivered to the already-connected client via a short-lived interaction-scoped token over which the client reconnects, so the auth-callout authorizes `tenant.<tid>.interaction.<id>.>` for the new connection (the callout authorizes at CONNECT time)
+
+#### Scenario: Interaction grant is scoped to the accepted interaction only
+- **id:** `signaling.acl-interaction-scoped`
+- **GIVEN** a user whose auth-callout authorization was issued on accepting interaction X, granting only `tenant.<tid>.interaction.X.>`
+- **WHEN** they subscribe to a different `tenant.<tid>.interaction.Y.log` they did not accept
+- **THEN** NATS denies the subscription (the grant does not include `interaction.*` or interaction Y)

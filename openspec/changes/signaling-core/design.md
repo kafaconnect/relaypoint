@@ -40,8 +40,40 @@
 - Client: `nats.ws` over the `websocket{}` listener. `mqtt{}` (3.1.1) configured, unused
   until the mobile phase; `a.b.c ↔ a/b/c` auto-map keeps that bridge rework-free.
 - Presence service subscribes `$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}` → `presence.<userId>`.
+  It connects under the system (`SYS`) account to read `$SYS`, and publishes
+  `presence.<userId>` on the `APP` account over a **separate APP connection** (two
+  connections: one SYS for reads, one APP for writes).
 - Auth (Phase 1): user/pass or token at the edge + subject ACLs (tenant scope; interaction
-  ACL granted on offer-accept). NKEY/JWT deferred.
+  ACL granted on offer-accept). NKEY/JWT deferred. See **Authorization** below.
+
+### Authorization
+
+Static permissions cannot safely express per-interaction grants: Phase-1 auth is just
+user/pass or token, clients connect directly over `nats.ws`, and the set of interactions a
+user may touch is decided at runtime by offer-accept. Granting tenant-wide
+`interaction.*` would defeat the `acl-after-accept` requirement.
+
+We therefore run a **NATS authorization service via the server's auth callout**
+(`authorization { auth_callout { issuer/account/auth_users... } }`). The callout service
+authenticates each connection's Phase-1 token and **mints that connection's allowed
+subjects** — initially only the user's own `routing.offer.user.<self>`, `notify.<self>`,
+`presence.<self>` (plus tenant-prefixed publish to offer replies). It holds NO
+`interaction.*` permission.
+
+On **offer-accept**, the router records the accept and the accepting user's authorization
+is **updated/re-issued through the callout** to add ONLY
+`tenant.<tid>.interaction.<id>.>` for that one interaction. A user authorized for
+interaction X thus cannot subscribe to interaction Y. This keeps grants dynamic and
+least-privilege under the Phase-1 token model; NKEY/JWT (and per-user signing keys) remain
+deferred.
+
+Because the auth callout authorizes at **CONNECT time**, an already-connected `nats.ws`
+client cannot have its existing connection's permissions widened in place. So on accept the
+router issues the client a short-lived **interaction-scoped token** and the client
+**reconnects** (transparent over `nats.ws`); the callout re-authenticates that token and
+mints the new connection's subjects, now including `tenant.<tid>.interaction.<id>.>`. The
+interaction subtree is therefore authorized for the reconnected connection, not retrofitted
+onto the old one.
 
 ## Client subscription discipline
 

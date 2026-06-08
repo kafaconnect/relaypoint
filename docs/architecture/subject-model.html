@@ -427,11 +427,18 @@
           </p>
           <ul>
             <li><strong>Tenant isolation</strong> — a user authenticated for tenant A subscribing to <code>tenant.&lt;B&gt;.interaction.*.&gt;</code> is denied by NATS.</li>
-            <li><strong>ACL after accept</strong> — before accepting an interaction's offer, a user subscribing to that <code>interaction.&lt;id&gt;.log</code> is denied; the router grants <code>interaction.&lt;id&gt;.*</code> access only on accept.</li>
+            <li><strong>ACL after accept</strong> — before accepting an interaction's offer, a user subscribing to that <code>interaction.&lt;id&gt;.log</code> is denied; the grant for <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.&gt;</code> is issued only on accept.</li>
+            <li><strong>Scoped grants</strong> — a user authorized for interaction X holds only <code>tenant.&lt;tid&gt;.interaction.X.&gt;</code>, never <code>interaction.*</code>, so they cannot reach an interaction Y they did not accept.</li>
           </ul>
+          <p>
+            Per-interaction grants are enforced dynamically by a <strong>NATS authorization service using the server's auth callout</strong> (<code>authorization { auth_callout { … } }</code>). The callout authenticates each connection's Phase-1 token and mints that connection's allowed subjects — initially only the user's own <code>routing.offer.user.&lt;self&gt;</code>, <code>notify.&lt;self&gt;</code>, and <code>presence.&lt;self&gt;</code>. On offer-accept, the accepting user's authorization is re-issued to add only <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.&gt;</code> for that interaction. Static permissions cannot express these runtime, per-interaction grants safely, so tenant-wide <code>interaction.*</code> access is never used.
+          </p>
+          <p>
+            Because the auth callout authorizes at <strong>CONNECT time</strong>, an already-connected <code>nats.ws</code> client cannot have its live connection widened in place. On accept the router hands the client a short-lived <strong>interaction-scoped token</strong> and the client <strong>reconnects</strong> (transparent over <code>nats.ws</code>); the callout then authorizes that interaction's <code>tenant.&lt;tid&gt;.interaction.&lt;id&gt;.&gt;</code> subtree for the new connection.
+          </p>
           <div class="callout note">
             <span class="label">Note</span>
-            Phase 1 auth is user/pass or token at the NATS edge plus subject ACLs scoped per tenant, with interaction ACLs granted on offer-accept. NKEY/JWT auth is deferred to a later phase.
+            Phase 1 auth is user/pass or token at the NATS edge, with per-interaction subjects granted through the auth callout on offer-accept. NKEY/JWT auth is deferred to a later phase.
           </div>
         </section>
 

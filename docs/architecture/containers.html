@@ -266,6 +266,9 @@
             A backend process (Go or TS) that subscribes to <code>$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}</code> and publishes per-user state on <code>presence.&lt;userId&gt;</code>.
             Presence is derived from connection events, not from MQTT Last-Will-and-Testament.
           </p>
+          <p>
+            It holds two NATS connections: it connects under the system (<code>SYS</code>) account to subscribe <code>$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}</code> (only the <code>SYS</code> account can read <code>$SYS</code>), and publishes <code>presence.&lt;userId&gt;</code> on the <code>APP</code> account over a separate <code>APP</code> connection.
+          </p>
 
           <h3 id="coturn" class="anchored"><a class="anchor" href="#coturn" aria-label="Link to this section">#</a>coturn</h3>
           <p>
