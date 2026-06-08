@@ -20,16 +20,22 @@ context: |
 
   Locked architecture decisions:
   - NATS is the single backbone for both client signaling and microservices.
-  - Media never touches NATS — only SDP/ICE transit it; audio/video are WebRTC-direct (SFU later).
+  - Router-authoritative: a stateful router/interaction service is the trusted-server writer of every
+    interaction.<id>.log fact; clients are read-only on .log and send intents on .cmd; ICE/typing on ephemeral .signal.<userId>.
+  - Unified Interaction: one interaction per conversation; medium is a payload field, never a subject.
+  - Media never touches NATS — only the opaque media descriptor + ICE transit it; audio/video are WebRTC-direct
+    (coturn on NAT). Descriptor tagged by media_profile (Phase-1: webrtc-p2p); WebRTC SDP/ICE/glare choreography is
+    that profile, owned by the client SDK (MediaAdapter port); vendor/SFU is a future profile.
   - Subject↔topic auto-map (a.b.c ↔ a/b/c) keeps the future MQTT-mobile bridge rework-free.
   - Presence derived from $SYS.ACCOUNT.*.{CONNECT,DISCONNECT}, not MQTT LWT.
   - Single node now; 3-node JetStream RAFT cluster is the HA path, deferred.
 
   Conventions:
-  - Subjects: dot-separated, lowercase.
-  - Ephemeral (ICE, typing, presence ping) on core NATS (at-most-once); durable (notification) on JetStream.
-  - Subject layout: chat.dm.<a>.<b> / chat.room.<roomId>(.typing); presence.<userId>;
-    call.invite.<calleeId> / call.<callId>.ice.<fromUserId> / call.<callId>.control; notify.<userId> (JetStream).
+  - Subjects: dot-separated, lowercase, prefixed tenant.<tenantId>.; ids are ULID/UUID.
+  - Ephemeral (ICE, typing, presence) on core NATS (at-most-once); durable facts (.log) and notifications on JetStream.
+  - Subject layout (unified-interaction, router-authoritative):
+    interaction.<id>.log (JetStream, router-written) / interaction.<id>.cmd (client intents) / interaction.<id>.signal.<userId> (ephemeral);
+    routing.offer.user.<userId>(.control) + routing.audit.>; presence.<userId>; notify.<userId> (JetStream).
 
 rules:
   proposal:

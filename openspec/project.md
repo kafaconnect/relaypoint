@@ -37,20 +37,31 @@ inside a product sold to third parties (see `LICENSE`).
 ## Architecture Decisions (locked)
 
 - NATS is the **single backbone** for both client signaling and microservices (NATS `micro`).
-- **Media never touches NATS** — only SDP/ICE transit it; audio/video go WebRTC-direct (SFU later).
+- **Router-authoritative.** A stateful **router/interaction service** is the trusted-server
+  writer of every `interaction.<id>.log` fact and owns the offer/call/interaction state machines.
+  Clients are READ-only on `.log` and publish intents as COMMANDS on `interaction.<id>.cmd`;
+  high-rate ICE/typing ride an ephemeral per-publisher `interaction.<id>.signal.<userId>`.
+- **Unified Interaction.** One interaction per conversation across all media; the **medium is a
+  payload field**, never a subject (no `call.invite` / `chat.offer`).
+- **Media never touches NATS** — only the (opaque) media-negotiation descriptor + ICE transit it;
+  audio/video go WebRTC-direct (coturn on NAT). The descriptor is an opaque blob tagged by
+  `media_profile` (Phase-1: `webrtc-p2p`); the WebRTC SDP/ICE/glare choreography is that profile,
+  owned by the client **SDK** (`MediaAdapter` port) — a vendor/SFU adapter is a future profile.
 - **Subject ↔ topic auto-map** (`a.b.c` ↔ `a/b/c`) keeps the future MQTT-mobile bridge rework-free.
 - **Presence is derived** from `$SYS.ACCOUNT.*.{CONNECT,DISCONNECT}` — not MQTT LWT.
 - **Single node now;** a 3-node JetStream RAFT cluster is the HA path, deferred.
 
 ## Conventions
 
-- **Subjects:** dot-separated, lowercase.
-- **Ephemeral** (ICE, typing, presence ping) on **core NATS** (at-most-once).
-- **Durable** (notification) on **JetStream**.
-- **Subject layout:**
-  - chat: `chat.dm.<userA>.<userB>`, `chat.room.<roomId>`, typing `chat.room.<roomId>.typing`
-  - presence: `presence.<userId>`
-  - call: invite `call.invite.<calleeId>` (request/reply), ICE `call.<callId>.ice.<fromUserId>`, control `call.<callId>.control`
+- **Subjects:** dot-separated, lowercase, prefixed `tenant.<tenantId>.`; ids are ULID/UUID.
+- **Ephemeral** (ICE, typing, presence) on **core NATS** (at-most-once); **durable** facts
+  (`.log`) and notifications on **JetStream**.
+- **Subject layout** (unified-interaction, router-authoritative):
+  - interaction: `interaction.<id>.log` (JetStream, router-written), `interaction.<id>.cmd`
+    (client intents, write-only), `interaction.<id>.signal.<userId>` (core NATS, ephemeral, ICE/typing)
+  - routing: `routing.offer.user.<userId>` (request/reply + `_INBOX`), `routing.offer.user.<userId>.control`
+    (terminal push), `routing.audit.>` (JetStream)
+  - presence: `presence.<userId>` (presence service is the sole publisher)
   - notification: `notify.<userId>` (JetStream)
 
 ## Phases
@@ -62,4 +73,7 @@ inside a product sold to third parties (see `LICENSE`).
 ## Current OpenSpec state
 
 - No shipped capabilities yet. Active change: **`signaling-core`** — the Phase-1 backbone.
+- Planned change: **`client-sdk`** — `@relaypoint/client` (TS browser) + `relaypoint-go` (Go
+  server) SDKs over the `signaling-core` contract; `MediaAdapter` + `MediaCredentialProvider`
+  ports; design-first (implementation follows a buildable server).
 - See `docs/architecture/` once authored; ADRs in `docs/architecture/decisions/`.

@@ -13,11 +13,13 @@ A Phase-1 single-node NATS signaling backbone built on a **unified Interaction**
 assignment, RONA/timers, the NATS-KV offer store, the orphaned reaper, and auth-callout
 grant/revoke. Clients are READ-only on `.log` and publish intents as COMMANDS on
 `interaction.<id>.cmd`; high-rate transient signals (ICE/typing) ride an ephemeral,
-rate-limited `interaction.<id>.signal` (core NATS, never JetStream). The design is
+rate-limited per-publisher `interaction.<id>.signal.<userId>` (core NATS, never JetStream;
+subscribers read `.signal.*`). The design is
 **lifecycle-complete**: the full offer lifecycle (cancel/withdraw/accepted_elsewhere/
 fast-RONA/expiry, reconnect-during-ring), the 1:1 WebRTC call lifecycle (glare/perfect-
-negotiation, ICE-buffered-until-SDP, renegotiation/ICE-restart, hold/resume, cold/warm
-transfer, setup-cancel, media-failure), the interaction state machine (abandon/withdraw,
+negotiation, ICE-buffered-until-SDP, renegotiation/ICE-restart, hold/resume, **cold/blind
+transfer only in M1** (warm/consultative + multiparty deferred to a future SFU adapter),
+setup-cancel, media-failure), the interaction state machine (abandon/withdraw,
 orphaned reaper, offline-vs-left), delivery/ordering/idempotency (router `sequence`,
 `Nats-Msg-Id` dedup, `ref_id`, gap-replay), and failure modes (token-expiry/max connection
 lifetime, presence debounce, RONA penalty-box, router-crash recovery via KV + sweeper).
@@ -41,7 +43,8 @@ Session/CustomerTimeline and keeping high-rate ICE off JetStream.
   owner; offer/timer engine; KV offer store; orphaned reaper; auth-callout authorizer).
 - New/changed subjects: `interaction.<id>.cmd` (client commands), router-only
   `interaction.<id>.log`, `routing.offer.user.<userId>.control` (terminal push),
-  `routing.audit.>` (privileged-control audit); `.signal` rate-limited.
+  `routing.audit.>` (privileged-control audit); per-publisher
+  `interaction.<id>.signal.<userId>` (subscribers read `.signal.*`) rate-limited.
 - NATS config: JetStream, `websocket{}`, `mqtt{}`, `$SYS`, auth callout, tenant-scoped ACLs
   (clients read-only on `.log`, presence subscribe-only), KV bucket for offer state.
 - Establishes the subject contract, the router-authoritative security boundary, and the

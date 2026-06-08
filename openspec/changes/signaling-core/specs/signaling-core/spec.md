@@ -2,10 +2,17 @@
 
 All subjects are prefixed `tenant.<tenantId>.` (omitted below for brevity). Subjects are
 dot-separated, lowercase; ids are ULID/UUID (no dots/slashes). Event envelope:
-`{ schema, event_type, event_id, sequence, occurred_at, tenant_id, actor_id, medium, ref_id?, data }`.
-The **router/interaction service** is the single authoritative writer of every
+`{ schema, event_type, event_id, sequence, occurred_at, tenant_id, actor_id, medium, media_profile?, command_id?, caused_by?, ref_id?, data }`
+(`command_id` rides on COMMANDS; the resulting `.log` fact carries `caused_by = command_id`).
+Event-specific fields (e.g. `negotiation_id`, `object_ref`, `failure_reason`) ride INSIDE `data`,
+never as top-level envelope fields.
+Wire fields are **snake_case** — this envelope is the authoritative wire contract; SDKs MAY
+project these fields into their own idiom (e.g. a camelCase TS surface) but the wire form is
+normative.
+The **router/interaction service** is the authoritative writer of every
 `interaction.<id>.log` fact; clients are READ-only on `.log` and publish COMMANDS on
-`interaction.<id>.cmd`.
+`interaction.<id>.cmd`. Write access to `.log` is a **trusted-server** capability, never a
+client one (see the authority model below).
 
 ## ADDED Requirements
 
@@ -16,7 +23,40 @@ fact. Clients MUST publish intents as COMMANDS on `interaction.<id>.cmd` (write-
 read-only on `.log`). For each command the router MUST validate tenant scope, actor identity
 and role, state-machine legality, and `author == the connection's authenticated identity`,
 then assign a monotonic per-interaction `sequence` and append the authoritative `.log` fact.
-Illegal transitions and forged authorship MUST be rejected.
+Illegal transitions and forged authorship MUST be rejected. Write access to `.log` MUST be a
+**trusted-server** capability, never a client one: Phase-1's sole writer is the router, but the
+authority model MUST permit additional trusted server-side authorities (e.g. a future
+media/recording egress) to be granted write of the media-plane facts they alone observe, rather
+than forcing those through the router — clients remain non-writers regardless.
+
+Each COMMAND MUST carry a client-generated `command_id` (idempotency key). The router MUST
+dedup on `command_id`: a retried identical command MUST NOT append a second `.log` fact. The
+authoritative `.log` fact the command produces MUST carry `caused_by = command_id`, so the
+issuer correlates the exactly-once effect of its command.
+
+Each command MUST be issued as a NATS **request/reply** on `interaction.<id>.cmd` carrying a
+reply `_INBOX` (the same pattern as the offer ring). The router MUST reply with a
+`CommandResult { command_id, status: "accepted" | "rejected", caused_by?, reason? }`. On
+`accepted` the result MUST carry `caused_by` = the correlation of the produced `.log` fact (i.e.
+`caused_by = command_id`, the key the authoritative fact is stamped with), so the issuer can
+correlate the effect; on `rejected` the result MUST carry a `reason`. The `CommandResult` is an
+EPHEMERAL ack on core NATS — it MUST NEVER be persisted to JetStream — and the authoritative
+effect remains the `.log` fact (the result is a correlation/ack, NOT the source of truth). The
+reply MUST go only to the issuer's own reply `_INBOX`; it MUST NOT leak to any other user.
+
+A retried command reusing a `command_id` with an IDENTICAL payload MUST replay the original
+`CommandResult` (idempotent — no second `.log` fact, the same `accepted`/`caused_by`). Reusing
+the SAME `command_id` with a DIFFERENT payload MUST be rejected as `conflict` (`status =
+"rejected"`, `reason = conflict`): the key is bound to its original request, so a divergent
+payload under a reused key is a client bug, never a silent second effect.
+
+As the single authority, the router MUST serialize **interaction-level** commands against the
+current state via a state-guard / compare-and-set, so concurrent commands from different actors
+do not race. A second `interaction.transfer.requested` while the interaction is already
+`transferring` MUST be rejected (one transfer in flight at a time). A `recording.started` while
+recording is already in effect MUST be idempotent or rejected (never a second concurrent
+recording). These are distinct from `command_id` retry-dedup: they guard DIFFERENT commands that
+target the same interaction state.
 
 #### Scenario: Client cannot write the log directly
 - **id:** `signaling.cmd.log-write-only-router`
@@ -43,6 +83,36 @@ Illegal transitions and forged authorship MUST be rejected.
 - **GIVEN** an interaction already in terminal state `ended`
 - **WHEN** a client sends a `resume`/`send_message` command for it
 - **THEN** the router rejects the command as an illegal transition and writes no `.log` fact
+
+#### Scenario: Retried command with the same command_id is idempotent
+- **id:** `signaling.cmd.idempotent-command-id`
+- **GIVEN** a client publishes a `send_message` command carrying `command_id = K`
+- **WHEN** the client times out and retries the same command with the SAME `command_id = K`
+- **THEN** the router dedups on `command_id` and appends exactly ONE `.log` fact (no second fact for the retry)
+- **AND** that fact carries `caused_by = K`, so the client correlates the single exactly-once effect of its command
+- **AND** a command the router rejects returns a result to the issuer carrying `command_id = K` and a reason
+
+#### Scenario: Command result is an ephemeral request/reply ack on the issuer's inbox
+- **id:** `signaling.cmd.result-transport`
+- **GIVEN** a client that publishes a command as a NATS request on `interaction.<id>.cmd` carrying a reply `_INBOX`
+- **WHEN** the router processes it
+- **THEN** for an accepted command the router replies on that `_INBOX` with `CommandResult { command_id, status: "accepted", caused_by }` where `caused_by` references the produced `.log` fact (= `command_id`), and the authoritative effect is the `.log` fact (the result is a correlation/ack, not the source of truth)
+- **AND** for a rejected/illegal/forged/conflict command the router replies on the issuer's `_INBOX` with `CommandResult { command_id, status: "rejected", reason }` and writes no `.log` fact
+- **AND** the `CommandResult` is ephemeral on core NATS (never JetStream) and is delivered only to the issuer's own reply `_INBOX` — it does NOT leak to any other user
+
+#### Scenario: Reused command_id with a divergent payload is a conflict
+- **id:** `signaling.cmd.command-id-conflict`
+- **GIVEN** a command accepted under `command_id = K` with payload P
+- **WHEN** the client retries with `command_id = K` and an IDENTICAL payload P, versus reuses `command_id = K` with a DIFFERENT payload P'
+- **THEN** the identical retry replays the ORIGINAL `CommandResult` (idempotent — no second `.log` fact, same `accepted`/`caused_by = K`)
+- **AND** the divergent reuse is rejected with `CommandResult { command_id: K, status: "rejected", reason: "conflict" }` (the key is bound to its original request — a client bug), writing no `.log` fact and producing no second effect
+
+#### Scenario: Concurrent interaction-level commands are serialized by a state guard
+- **id:** `signaling.cmd.concurrent-interaction-guard`
+- **GIVEN** an interaction whose state the router guards via compare-and-set
+- **WHEN** a second `interaction.transfer.requested` arrives while the interaction is already `transferring`, or a `recording.started` arrives while recording is already in effect
+- **THEN** the router rejects the second transfer (one transfer in flight at a time) and treats the duplicate recording-start as idempotent-or-rejected (never a second concurrent recording), each with a `command_id`-bearing rejection result where rejected
+- **AND** these state-guard rejections are distinct from `command_id` retry-dedup (they guard different commands targeting the same interaction state)
 
 ### Requirement: Single-node NATS backbone (JetStream + WebSocket + MQTT + $SYS)
 The system MUST run one NATS server with JetStream enabled, the WebSocket and MQTT (3.1.1)
@@ -86,6 +156,21 @@ separate ringing reply (it would consume the inbox). Non-reply terminals
 NOT via the reply. The reply `_INBOX` MUST carry a one-time nonce bound to
 `tenant_id`/`offer_id`/`target`.
 
+The offer ring is pure **routing**: the media engine/vendor is NOT in the offer. The ring
+payload MUST carry the interaction `medium` (chat/voice/video) and an OPTIONAL opaque
+`context_preview` (a router-supplied trimmed projection of the interaction's opaque `context`,
+e.g. a customer display name) alongside `offer_id`/`timeout_ms`/nonce, so the agent knows what
+kind of interaction it is BEFORE accepting. RelayPoint never parses `context_preview`. The media
+engine / `media_profile` MUST NOT be carried in the offer; it is bound only at media-setup
+(`media_profile` + MediaAdapter + MediaCredentials).
+
+#### Scenario: Offer ring carries medium and an opaque context preview
+- **id:** `signaling.offer.medium-context-preview`
+- **GIVEN** the router rings `routing.offer.user.<userId>` with `offer_id`, `timeout_ms`, and a nonce
+- **WHEN** the ring payload is delivered to the agent
+- **THEN** it also carries the interaction `medium` (chat/voice/video) and an OPTIONAL opaque `context_preview` (router-supplied trimmed projection of the interaction's opaque `context`, e.g. a customer display name, which RelayPoint never parses), so the agent knows the kind of interaction before deciding
+- **AND** the media engine / `media_profile` is NOT in the offer; it is bound only later at media-setup (`media_profile` + MediaAdapter + MediaCredentials)
+
 #### Scenario: Offer accepted within timeout
 - **id:** `signaling.offer.accept`
 - **GIVEN** the router rings `routing.offer.user.<userId>` with `offer_id`, `timeout_ms`, and a nonce
@@ -97,6 +182,12 @@ NOT via the reply. The reply `_INBOX` MUST carry a one-time nonce bound to
 - **GIVEN** a ringing offer with a timeout
 - **WHEN** the client replies `reject` (→ `rejected`) OR no valid accept arrives before the timeout (→ `timed_out_rona`)
 - **THEN** the router drives the offer to that terminal state, publishes it on `routing.offer.user.<userId>.control`, requeues the interaction, and does not join the user
+
+#### Scenario: Offer expiry is distinct from no-answer RONA
+- **id:** `signaling.offer.expired-vs-rona`
+- **GIVEN** an offer whose TTL elapses BEFORE the ring is delivered/accepted (e.g. the request is published but the target never effectively rings within the offer's lifetime)
+- **WHEN** the offer TTL passes with no accept
+- **THEN** the router drives the offer to `expired` and pushes it on `routing.offer.user.<userId>.control`, distinct from `timed_out_rona` (the target rang but did not answer within the answer timeout)
 
 #### Scenario: Fast-RONA when the target has no subscriber
 - **id:** `signaling.offer.no-responder-fast-rona`
@@ -153,26 +244,49 @@ on `.log` is router-assigned; clients never set it.
 - **WHEN** `webrtc.ice` / `typing` events are published on `interaction.<id>.signal.<userId>` (subscribers read `interaction.<id>.signal.*`)
 - **THEN** they are delivered at-most-once on core NATS and are NOT stored by JetStream
 
-### Requirement: Media stays off NATS
-The system MUST carry only **SDP/ICE** over NATS (SDP offer/answer as durable state on
-`.log`; ICE candidates ephemerally on the per-publisher `.signal.<userId>`); audio/video MUST flow over WebRTC
-peer-to-peer (relayed by coturn only when NAT requires it).
+### Requirement: Media stays off NATS; the media descriptor is opaque
+The system MUST carry only the **media-negotiation descriptor** (SDP today) and ICE over NATS
+(descriptor as durable state on `.log`; ICE candidates ephemerally on the per-publisher
+`.signal.<userId>`); audio/video MUST flow over WebRTC peer-to-peer (relayed by coturn only when
+NAT requires it). The media-negotiation descriptor MUST be treated as an **opaque blob** that
+neither NATS nor the router parses; the carrying event MUST include a `media_profile`
+discriminator (Phase-1: `webrtc-p2p`) so an alternative media engine can ride the same signaling
+plane — or bring its own — WITHOUT baking SDP-as-format into the universal contract.
 
 #### Scenario: Call media bypasses the broker
 - **id:** `signaling.media-bypass-broker`
 - **GIVEN** two browser tabs in an established call
 - **WHEN** audio/video flows between them
-- **THEN** no media packet passes through NATS (only SDP/ICE did, during setup)
+- **THEN** no media packet passes through NATS (only the SDP descriptor + ICE did, during setup)
+
+#### Scenario: Router records the media descriptor without parsing it
+- **id:** `signaling.media-descriptor-opaque`
+- **GIVEN** a call command whose payload carries a media-negotiation descriptor and `media_profile = webrtc-p2p`
+- **WHEN** the router records it on `.log`
+- **THEN** the router stores the descriptor as an opaque blob (it neither parses nor validates SDP) and orders it by `sequence`, so a different `media_profile` can carry a non-SDP descriptor on the same plane
 
 ### Requirement: 1:1 call / WebRTC lifecycle
 The system MUST support a 1:1 WebRTC call state machine:
 `idle → setup_offered → answered → ice_connecting → connected →
 { renegotiating | held | transferring | reconnecting } → connected`, with terminal states
 `{ cancelled | ended | media_failed | setup_failed }`. Multi-party / conference is
-explicitly DEFERRED (Phase 1 is 1:1). Glare MUST be resolved by perfect-negotiation with a
+explicitly DEFERRED (Phase 1 is 1:1). Transfer in M1 is **cold/blind only** and is interaction
+**re-routing**, not a media-call property. The router MUST record the cold-transfer lifecycle as
+ordered `.log` facts: `interaction.transfer.requested`, `interaction.transfer.accepted`,
+`interaction.transfer.rejected`, `interaction.transfer.cancelled`,
+`interaction.transfer.failed`, and the existing `interaction.transferred`. On a request the
+router offers the new target on the routing tree; **on accept it grants the new leg's ACL FIRST
+and only THEN revokes the old leg's** (new-active-before-old-revoked, so there is NO media gap),
+emitting `interaction.transfer.accepted` then `interaction.transferred`. On target
+reject/RONA/cancel/fail (`interaction.transfer.rejected`/`.cancelled`/`.failed`) the router
+**retains the ORIGINAL leg** — the old ACL is never revoked and the original call continues.
+Warm/consultative transfer and multiparty are DEFERRED to a future SFU adapter. Glare MUST be resolved by perfect-negotiation with a
 deterministic polite/impolite role. Incoming ICE MUST be buffered until the matching SDP is
 applied. Renegotiation/ICE-restart MUST carry a `negotiation_id`/generation and discard
-stale (lower-generation) signaling.
+stale (lower-generation) signaling. The `webrtc.*` event types and the
+perfect-negotiation/glare/ICE-buffering **choreography are the `webrtc-p2p` media profile**,
+owned by the client/SDK; the router only records and orders the (opaque) media descriptors and
+MUST NOT enforce negotiation policy.
 
 #### Scenario: Setup, answer, connect
 - **id:** `signaling.call.setup-connect`
@@ -204,11 +318,24 @@ stale (lower-generation) signaling.
 - **WHEN** a participant issues hold (→ `call.held`) and later resume (→ `call.resumed`)
 - **THEN** the SDP direction changes accordingly (local/remote/both) and the state returns to `connected` on resume
 
-#### Scenario: Cold and warm transfer
+#### Scenario: Cold/blind transfer re-routes the interaction
 - **id:** `signaling.call.transfer`
-- **GIVEN** a connected call and an `interaction.transfer.requested` command
-- **WHEN** the router offers the new target and the target accepts
-- **THEN** the router bridges the legs, emits `interaction.transferred`, grants the new leg's ACL, and revokes the old leg's ACL (cold = no overlap, warm = brief overlap)
+- **GIVEN** a connected call and an `interaction.transfer.requested` command (cold/blind re-route)
+- **WHEN** the router offers the new target on the routing tree and the target accepts
+- **THEN** the router grants the new leg's ACL and revokes the old leg's ACL with NO warm overlap (the old leg is torn down as the new leg joins), and emits `interaction.transfer.accepted` then `interaction.transferred`
+- **AND** warm/consultative and multiparty transfer are not part of M1 (deferred to a future SFU adapter)
+
+#### Scenario: Transfer non-accept retains the original leg
+- **id:** `signaling.call.transfer-non-accept`
+- **GIVEN** a connected call and an `interaction.transfer.requested` whose offered target rejects, RONAs, is cancelled by the originator, or fails
+- **WHEN** the router records the corresponding terminal (`interaction.transfer.rejected` / `interaction.transfer.cancelled` / `interaction.transfer.failed`)
+- **THEN** the router does NOT revoke the original leg's ACL and the original call continues uninterrupted (no `interaction.transferred` is emitted)
+
+#### Scenario: Transfer grants the new leg before revoking the old
+- **id:** `signaling.call.transfer-leg-handover`
+- **GIVEN** an `interaction.transfer.requested` whose target accepts
+- **WHEN** the router commits the handover
+- **THEN** it grants the new leg's ACL FIRST and only THEN revokes the old leg's ACL (new-active-before-old-revoked), so there is no window in which neither leg is media-authorized (no media gap)
 
 #### Scenario: Setup cancel before connect
 - **id:** `signaling.call.setup-cancel`
@@ -222,13 +349,82 @@ stale (lower-generation) signaling.
 - **WHEN** the peer enters `reconnecting` (grace) and attempts fallback ICE servers
 - **THEN** if connectivity is not restored the router records `call.media_failed`; coturn-unavailable yields `media_failed` with the fallback ICE servers tried
 
+### Requirement: Recording consent and retention are first-class facts
+The router MUST record the recording lifecycle on `.log` as ordered facts:
+`recording.consent.requested`, `recording.consent.granted`, `recording.consent.denied`,
+`recording.started`, `recording.stopped`, `recording.upload.completed`, and
+`recording.upload.failed`. Each fact's `data` MUST carry, as applicable, `retention_policy`,
+`recorder_id`, `object_ref?` (the stored artifact reference) and `failure_reason?`. The
+**capture mechanism is NOT core**: producing the media bytes (e.g. a client-side `MediaRecorder`
+for `webrtc-p2p`, or a future server/egress recorder) is the SDK/adapter's job and is
+profile-specific. Core owns only the facts — it records and orders them, never the bytes.
+
+The router MUST enforce recording **state legality** on `.log`: `recording.started` MUST be
+rejected unless a `recording.consent.granted` is in effect; after a `recording.consent.denied`
+a `recording.started` MUST be rejected; `recording.stopped` and the upload facts
+(`recording.upload.completed`/`recording.upload.failed`) are valid only for a recording that was
+started; and a retried start/stop (same `command_id`) is idempotent (no second fact).
+
+#### Scenario: Consent lifecycle recorded as facts
+- **id:** `signaling.recording.consent-facts`
+- **GIVEN** a recording flow on an interaction
+- **WHEN** consent is requested, then granted (or denied), and recording starts then stops
+- **THEN** the router records `recording.consent.requested`, then `recording.consent.granted` (or `recording.consent.denied`), `recording.started`, and `recording.stopped` as ordered `.log` facts carrying `retention_policy` and `recorder_id`
+- **AND** core records only the facts; it does not capture or store the media bytes (that is the profile-specific adapter's job)
+
+#### Scenario: Upload status recorded as facts
+- **id:** `signaling.recording.upload-status-facts`
+- **GIVEN** a stopped recording whose bytes are being uploaded by the profile-specific recorder
+- **WHEN** the upload completes (or fails)
+- **THEN** the router records `recording.upload.completed` carrying `object_ref` (or `recording.upload.failed` carrying `failure_reason`) as an ordered `.log` fact
+
+#### Scenario: Recording state legality is enforced
+- **id:** `signaling.recording.state-legality`
+- **GIVEN** the recording fact lifecycle on an interaction
+- **WHEN** a `recording.started` arrives with no `recording.consent.granted` in effect, or after a `recording.consent.denied`, or a `recording.stopped`/upload fact arrives for a recording that was never started
+- **THEN** the router rejects each as an illegal recording transition and writes no `.log` fact
+- **AND** a `recording.started` only after `recording.consent.granted` is accepted, and a retried start/stop carrying the same `command_id` is idempotent (no second fact)
+
+### Requirement: Interaction carries opaque context (metadata)
+The router MUST record `interaction.context.updated` facts on `.log` carrying an opaque
+`context` object that RelayPoint NEVER parses (Desk populates it with customer / integration /
+custom data). The `context` is medium-agnostic and is ordered and replayable like any other
+fact; the latest applied `interaction.context.updated` is the current context. The router treats
+`context` as an opaque blob — it neither validates nor interprets its shape — exactly as it
+treats the media descriptor.
+
+#### Scenario: Context updates recorded as ordered facts
+- **id:** `signaling.interaction.context-updated`
+- **GIVEN** an interaction whose Desk-supplied customer/integration data changes over time
+- **WHEN** a client issues a command to update the context
+- **THEN** the router records an `interaction.context.updated` fact on `.log` carrying the opaque `context` object, ordered by `sequence`
+- **AND** the router never parses or validates the `context` shape (opaque blob), and a replaying consumer reconstructs the latest context from these facts
+
 ### Requirement: Interaction lifecycle state machine
-The interaction MUST follow an explicit state machine and the router MUST reject invalid
-transitions (e.g. no resume after `ended`). When the customer leaves before/after assignment
-(`interaction.abandoned`) the router MUST withdraw any ringing offers. The router MUST run an
-**orphaned reaper**: if all participants are offline (per presence) for more than N minutes
-it MUST inject `interaction.ended` with reason `orphaned`. `participant.offline` (transient,
-presence-driven) MUST be distinguished from `participant.left` (explicit/permanent).
+The interaction MUST follow an explicit state machine with the enumerated states
+`new → routing → active → { transferring } → ended`, where `transferring` is a sub-state of
+`active` that returns to `active` on transfer success/failure (the interaction itself does not
+end on a cold transfer; only the transferred media leg is torn down — see the call state
+machine). `abandoned` is a terminal reason reachable from `routing` (customer abandons
+pre-assignment) or from `active` (customer abandons post-assignment), and the router drives the
+interaction to `ended[abandoned]`. Participant presence is tracked as the `offline` (transient)
+and `left` (permanent) sub-states of `active`, which do NOT themselves end the interaction. The
+ONLY legal transitions are: `new → routing`, `new → active` (direct assignment),
+`routing → active` (offer accepted), `routing → ended` (abandoned/no-route), `active →
+transferring`, `transferring → active`, and `active → ended` (ended/abandoned/orphaned). The
+router MUST reject any transition outside this set (e.g. no resume/transfer/message after
+`ended`). When the customer leaves before/after assignment (`interaction.abandoned`) the router
+MUST withdraw any ringing offers. The router MUST run an **orphaned reaper**: if all
+participants are offline (per presence) for more than N minutes it MUST inject
+`interaction.ended` with reason `orphaned`. `participant.offline` (transient, presence-driven)
+MUST be distinguished from `participant.left` (explicit/permanent).
+
+#### Scenario: Interaction state machine enumerates legal states and rejects others
+- **id:** `signaling.interaction.state-machine`
+- **GIVEN** the interaction state machine `new → routing → active → { transferring } → ended` with `abandoned` reachable pre/post-assignment and `offline`/`left` as `active` sub-states
+- **WHEN** the router evaluates a transition request
+- **THEN** it admits only the legal set (`new→routing`, `new→active`, `routing→active`, `routing→ended`, `active→transferring`, `transferring→active`, `active→ended`) and `transferring` resolves back to `active` (the interaction does not end on a cold transfer)
+- **AND** any transition outside that set (e.g. `ended→active`, `routing→transferring`) is rejected and the `.log` is unchanged
 
 #### Scenario: Invalid transition rejected
 - **id:** `signaling.interaction.invalid-transition`
@@ -279,6 +475,28 @@ JetStream. `notify.<userId>` is advisory and reconciled by `.log` replay.
 - **GIVEN** a consumer tracking the last applied `sequence`
 - **WHEN** it observes a gap in router-assigned `sequence`
 - **THEN** it pauses live apply and replays from JetStream until the gap is filled, then resumes
+
+### Requirement: Time authority and clock-skew immunity
+All ordering, staleness, and expiry decisions MUST use the router-assigned monotonic `sequence`
+and the negotiation `generation` and server-authoritative timers — NEVER client wall-clock time.
+`occurred_at` is **informational/display only**; it MUST NOT drive ordering, staleness, dedup, or
+any security/authorization decision. Token/ticket/credential expiry MUST be expressed as a
+server-issued **relative TTL** (or validated against server time), so a skewed client clock
+cannot cause a wrong accept/ignore; server rejection (max-connection-lifetime / auth-callout) is
+the authoritative backstop. Clients/SDKs SHOULD derive a server-clock offset from server
+responses rather than trusting the local wall-clock.
+
+#### Scenario: occurred_at is informational and never flips ordering
+- **id:** `signaling.time.occurred-at-informational`
+- **GIVEN** `.log` facts whose `occurred_at` timestamps are out of order with respect to their router-assigned `sequence` (e.g. a skewed writer or display clock)
+- **WHEN** a consumer orders and applies the facts
+- **THEN** they are ordered strictly by `sequence` and `occurred_at` never flips the ordering, staleness, dedup, or any security/authorization decision (it is display-only)
+
+#### Scenario: Expiry is enforced by a server relative-TTL / server-authoritative timer
+- **id:** `signaling.time.relative-ttl-expiry`
+- **GIVEN** a token/ticket/credential whose expiry is expressed as a server-issued relative TTL (or validated against server time) and a client whose wall-clock is skewed
+- **WHEN** the client evaluates whether the item is still valid
+- **THEN** expiry is enforced by the server via the relative TTL / server-authoritative timer (max-connection-lifetime / auth-callout rejection is authoritative), and the skewed client clock does not bypass nor prematurely trigger expiry
 
 ### Requirement: Failure-mode handling
 The system MUST bound token-expiry exposure: because auth-callout runs only at CONNECT, the
