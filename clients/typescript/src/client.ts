@@ -1,10 +1,3 @@
-// RelayPointClient (chat subset): owns the connection lifecycle and token refresh. It connects
-// via the injected Transport using a token from getToken(); on a transient drop (or the
-// server-enforced max connection lifetime / token expiry) it re-fetches a token and reconnects
-// transparently, then re-attaches each open interaction's subscriptions. getToken() failure is
-// retried with backoff and becomes a fatal auth_failed after the schedule is exhausted — it
-// never loops forever. Connection state is observable via `state` and on("state").
-
 import { Emitter } from "./emitter.js";
 import { AuthFailedError } from "./errors.js";
 import { InteractionHandle } from "./interaction.js";
@@ -19,11 +12,8 @@ export interface RelayPointClientOptions {
   readonly requestTimeoutMs?: number;
   readonly sendRetries?: number;
   readonly medium?: string;
-  // backoff schedule for getToken() retries; its length bounds attempts before auth_failed
-  readonly authBackoffMs?: number[];
-  // backoff schedule for transport.connect() retries (a flapping network on connect/reconnect);
-  // its length bounds attempts before the client gives up and reports "disconnected"
-  readonly connectBackoffMs?: number[];
+  readonly authBackoffMs?: number[]; // length bounds getToken retries before auth_failed
+  readonly connectBackoffMs?: number[]; // length bounds transport.connect retries
 }
 
 export interface RelayPointClientDeps {
@@ -74,8 +64,7 @@ export class RelayPointClient {
     try {
       await this.establish();
     } catch (err) {
-      // tokenWithRetry already set "failed" on auth exhaustion; a transport-connect exhaustion
-      // leaves us "disconnected". Either way we leave "connecting" — never strand the state.
+      // never strand "connecting": auth exhaustion is already "failed", else "disconnected"
       if (!(err instanceof AuthFailedError)) this.setState("disconnected");
       throw err;
     }
@@ -140,10 +129,8 @@ export class RelayPointClient {
     }
   }
 
-  // Mint a token and open the transport, retrying a failing transport.connect() with backoff —
-  // a connect/reconnect must survive a still-flapping network (nats.ws auto-reconnect is
-  // disabled so the SDK can refresh the token per connection). getToken() exhaustion is fatal
-  // (AuthFailedError, propagated); transport.connect() exhaustion throws the last error.
+  // Retries a failing transport.connect() because nats.ws auto-reconnect is disabled (the SDK
+  // refreshes the token per connection).
   private async establish(): Promise<void> {
     for (let attempt = 0; !this.closed; attempt++) {
       const token = await this.tokenWithRetry();
@@ -157,11 +144,9 @@ export class RelayPointClient {
     }
   }
 
-  // Resolve a token, retrying getToken() failures with backoff. Exhaustion is fatal: emit
-  // auth_failed, transition to "failed", and throw — the SDK never silently loops forever.
   private async tokenWithRetry(): Promise<string> {
     let lastErr: unknown;
-    const attempts = Math.max(1, this.authBackoff.length); // always try at least once
+    const attempts = Math.max(1, this.authBackoff.length); // try once even if backoff is empty
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
         return await this.options.getToken();

@@ -1,8 +1,3 @@
-// InteractionHandle (chat subset): a read-only ordered `.log` stream, a write-only `.cmd`
-// command path, own-author `.signal` publish, and the latest opaque interaction context
-// (metadata). It NEVER writes `.log` and NEVER assigns `sequence` — the router is the sole
-// authoritative writer. The handle depends only on the Transport port.
-
 import { decodeLogEvent, encodeCommand, encodeSignal, decodeCommandResult } from "./codec.js";
 import { Delivery } from "./delivery.js";
 import { Emitter } from "./emitter.js";
@@ -13,7 +8,7 @@ import type { Command, CommandResult, DeliveryState, LogEvent, SignalEvent } fro
 
 export interface InteractionConfig {
   readonly requestTimeoutMs: number;
-  readonly sendRetries: number; // retries reuse the same command_id (router dedups)
+  readonly sendRetries: number;
   readonly medium: string;
 }
 
@@ -43,8 +38,6 @@ export class InteractionHandle {
     });
   }
 
-  // Lazily open the live `.log` subscription on first use; the client re-invokes this after a
-  // reconnect so delivery resumes (a gap during the drop is healed by replay).
   open(): void {
     if (this.opened) return;
     this.opened = true;
@@ -58,8 +51,7 @@ export class InteractionHandle {
     });
   }
 
-  // Called by the client after a reconnect: re-attach the live subscription on the new
-  // connection. Delivery's gap-replay fills anything missed while disconnected.
+  // After a reconnect: re-attach the live subscription; gap-replay fills what was missed.
   resubscribe(): void {
     if (this.opened) this.subscribeLive();
   }
@@ -72,7 +64,7 @@ export class InteractionHandle {
 
   private onApplied(ev: LogEvent): void {
     if (ev.eventType === "interaction.context.updated") {
-      this._metadata = ev.data; // opaque — the SDK never parses it
+      this._metadata = ev.data;
       this.emitter.emit("metadata", ev.data);
     }
   }
@@ -101,8 +93,8 @@ export class InteractionHandle {
         }
         return result;
       } catch (err) {
-        if (err instanceof CommandRejectedError) throw err; // a verdict, not a transport failure
-        lastErr = err; // transport timeout / no-responder — retry with the SAME command_id
+        if (err instanceof CommandRejectedError) throw err; // a verdict, don't retry
+        lastErr = err; // transport failure — retry reuses the same command_id (router dedups)
       }
     }
     throw lastErr;

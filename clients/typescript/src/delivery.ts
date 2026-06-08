@@ -1,27 +1,18 @@
-// Ordered `.log` delivery: facts are delivered to the consumer strictly in ascending
-// router-assigned `sequence`. A fact at or below the last applied sequence is a duplicate
-// (dropped). A gap (sequence > applied + 1) pauses live apply and replays from the durable
-// store until contiguous, then resumes live. If replay cannot reach the store, delivery
-// surfaces a degraded state and retries with bounded backoff — facts are NEVER dropped past
-// the gap, the stream never resumes live over an unfilled gap, and recovery never loops
-// forever (after the backoff schedule is exhausted it fails terminally).
-//
-// `occurredAt` is display-only and plays no part here — ordering/dedup are by `sequence` only.
+// Orders `.log` facts by router `sequence`. The invariants that aren't obvious from the code:
+// on an unfillable gap it fails closed (never drops facts past the gap, never resumes live over
+// it, never loops forever — terminal after the backoff schedule), and `occurredAt` is never
+// used for ordering/dedup.
 
 import { DeliveryFailedError } from "./errors.js";
 import { Mailbox } from "./mailbox.js";
 import type { DeliveryState, LogEvent } from "./types.js";
 
 export interface DeliveryDeps {
-  // Ordered replay of facts from `fromSequence` (inclusive). Throws if the durable store
-  // cannot be reached, so the gap stays unfilled rather than silently resuming.
   replay(fromSequence: number): AsyncIterable<LogEvent>;
   onState(state: DeliveryState): void;
-  // Fired for each fact in applied (sequence) order, independent of the consumer iterator —
-  // lets the handle keep ordered derived state (e.g. metadata) without stealing the stream.
+  // ordered tap for derived state (metadata), independent of the single consumer stream
   onApplied?: (ev: LogEvent) => void;
-  // Backoff schedule for replay retries; its length bounds the attempts before terminal fail.
-  backoffMs?: number[];
+  backoffMs?: number[]; // length bounds replay retries before terminal fail
   wait?: (ms: number) => Promise<void>;
 }
 
@@ -46,10 +37,9 @@ export class Delivery {
     return this.out;
   }
 
-  // Feed one live decoded fact.
   offer(ev: LogEvent): void {
     if (this.closed || this.state === "failed") return;
-    if (ev.sequence <= this.applied) return; // duplicate / already applied
+    if (ev.sequence <= this.applied) return; // duplicate
     this.pending.set(ev.sequence, ev);
     this.drainContiguous();
     if (this.pending.size > 0 && !this.recovering) void this.recover();
@@ -88,8 +78,8 @@ export class Delivery {
           this.pending.set(ev.sequence, ev);
           this.drainContiguous();
         }
-        if (this.pending.size === 0) break; // gap filled
-        // replay returned but the gap is still open — treat as a transient miss and retry
+        if (this.pending.size === 0) break;
+        // replay returned but the gap is still open — a transient miss, so retry
       } catch (err) {
         this.setState("degraded");
         if (attempt + 1 >= this.backoff.length) {

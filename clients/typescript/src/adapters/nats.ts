@@ -1,16 +1,7 @@
-// The nats.ws adapter — the ONLY file in the SDK that imports nats.ws. It implements the
-// Transport port so the core stays decoupled from the backbone (loose-coupling HARD RULE).
-// Auto-reconnect is DISABLED here on purpose: the SDK core owns reconnection so it can refresh
-// the scoped token via getToken() on each reconnect (a connection is authorized at CONNECT
-// time by the auth-callout). A transient drop surfaces as a non-final "disconnected" status;
-// the client then re-invokes connect() with a fresh token.
-//
-// Trust model: this is a GENERIC transport with a raw publish(subject) — that genericity is the
-// price of the loose-coupling port (the core must not know NATS). The "clients never write .log"
-// guarantee does NOT rest on this adapter: it is enforced server-side by the NATS account ACL
-// (deploy/nats/nats-server.conf denies clients publish on interaction.*.log) and by the SDK's
-// own command API (InteractionHandle), which exposes no log-write path. The raw adapter is
-// plumbing, not the app-facing surface.
+// The only file that imports nats.ws (the Transport adapter). nats.ws auto-reconnect is disabled
+// so the core can refresh the token per connection. The raw publish(subject) is generic plumbing;
+// "clients never write .log" is enforced by the server NATS ACL (deploy/nats/nats-server.conf),
+// not by this adapter.
 
 import {
   connect,
@@ -55,10 +46,8 @@ export class NatsWsTransport implements Transport {
     return { unsubscribe: () => sub.unsubscribe() };
   }
 
-  // Ordered JetStream replay. `fromSequence` is an app-level hint; this adapter replays the
-  // durable subject from the start and lets the delivery plane drop already-applied facts
-  // (the per-interaction log is small). It throws if JetStream cannot be reached, so the
-  // delivery plane fails closed over a gap rather than resuming silently.
+  // Replays the whole (small) per-interaction log; the delivery plane drops already-applied
+  // facts. `fromSequence` is unused. Throws if JetStream is unreachable (delivery fails closed).
   async *replay(subject: string, _fromSequence: number): AsyncIterable<TransportMsg> {
     const opts = consumerOpts();
     opts.orderedConsumer();

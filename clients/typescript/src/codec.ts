@@ -1,13 +1,10 @@
-// The normative camelCase(TS) <-> snake_case(wire) projection of the signaling-core envelope.
-// Mapping table is in openspec/changes/client-sdk/design.md. The projection is PRECISE:
-// LogEvent carries `causedBy` (not `commandId`); event-specific fields stay INSIDE `data`.
+// camelCase(TS) <-> snake_case(wire) projection; mapping table in design.md.
 
 import { SCHEMA_V1, type Command, type CommandResult, type LogEvent } from "./types.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-// What the SDK fills in from client context when encoding a command to the wire.
 export interface CommandContext {
   readonly tenantId: string;
   readonly actorId: string;
@@ -69,8 +66,6 @@ interface WireEvent {
   data?: unknown;
 }
 
-// Decode a `.log` fact. `commandId` is intentionally absent (command-only); `data` passes
-// through untouched so event-specific fields are never promoted to envelope level.
 export function decodeLogEvent(bytes: Uint8Array): LogEvent {
   const w = JSON.parse(dec.decode(bytes)) as WireEvent;
   return {

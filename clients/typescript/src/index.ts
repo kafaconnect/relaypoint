@@ -1,6 +1,3 @@
-// @relaypoint/client — chat subset. Public surface over the signaling-core router-authoritative
-// protocol. The core depends only on the Transport port; nats.ws is a swappable adapter.
-
 export { RelayPointClient } from "./client.js";
 export type { RelayPointClientOptions, RelayPointClientDeps } from "./client.js";
 export { InteractionHandle } from "./interaction.js";
@@ -27,8 +24,7 @@ export { SCHEMA_V1 } from "./types.js";
 import { RelayPointClient, type RelayPointClientOptions } from "./client.js";
 import { NatsWsTransport } from "./adapters/nats.js";
 
-// Convenience constructor that wires the default nats.ws adapter. Use the RelayPointClient
-// constructor directly with a custom Transport to swap the backbone.
+// Wires the default nats.ws adapter; use the constructor with a custom Transport to swap it.
 export function createRelayPointClient(options: RelayPointClientOptions): RelayPointClient {
   return new RelayPointClient(options, { transport: new NatsWsTransport(options.servers) });
 }

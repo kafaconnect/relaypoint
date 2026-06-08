@@ -1,4 +1,3 @@
-// Minimal browser-safe typed event emitter (no Node `events` dependency).
 export class Emitter<Events extends Record<string, (...args: never[]) => void>> {
   private readonly handlers = new Map<keyof Events, Set<(...args: never[]) => void>>();
 

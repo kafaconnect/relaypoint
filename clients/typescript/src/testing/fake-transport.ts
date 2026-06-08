@@ -1,6 +1,4 @@
-// In-memory Transport implementation for unit tests — no live NATS. Proves the loose-coupling
-// HARD RULE: the SDK core is fully exercisable against the port alone. Also published under the
-// `@relaypoint/client/testing` entrypoint so consumers can test their own integrations.
+// In-memory Transport for unit tests (no live NATS); also published under `/testing`.
 
 import type { RequestOptions, Subscription, Transport, TransportMsg, TransportStatus } from "../transport.js";
 
@@ -14,8 +12,7 @@ export interface RecordedPublish {
   readonly data: Uint8Array;
 }
 
-// A responder decides the reply to a `.cmd` request. Throw to simulate a timeout / no-responder
-// (the SDK then retries with the same command_id).
+// Throw to simulate a timeout / no-responder.
 export type Responder = (subject: string, data: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 
 export class FakeTransport implements Transport {
@@ -78,18 +75,14 @@ export class FakeTransport implements Transport {
     return { unsubscribe: () => this.statusCbs.delete(cb) };
   }
 
-  // --- test controls ---------------------------------------------------------
-
   setResponder(fn: Responder): void {
     this.responder = fn;
   }
 
-  // Push a message to live subscribers of `subject` (as the server would).
   deliverLive(subject: string, data: Uint8Array): void {
     for (const cb of this.subs.get(subject) ?? []) cb({ data });
   }
 
-  // Record a durable fact for replay (and optionally deliver it live too).
   appendDurable(subject: string, sequence: number, data: Uint8Array, live = false): void {
     let log = this.durable.get(subject);
     if (!log) {
@@ -101,12 +94,10 @@ export class FakeTransport implements Transport {
     if (live) this.deliverLive(subject, data);
   }
 
-  // Make the next `count` replay() calls throw (durable store unreachable).
   failReplay(count: number): void {
     this.replayFailures = count;
   }
 
-  // Make the next `count` connect() calls throw (transport/network down).
   failConnect(count: number): void {
     this.connectFailures = count;
   }
