@@ -11,10 +11,13 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
 func main() {
+	slog.SetDefault(obs.New("relaypoint-router"))
+
 	url := envOr("NATS_URL", nats.DefaultURL)
 	user := envOr("NATS_USER", "router")
 	pass := envOr("NATS_PASSWORD", "router-dev")
@@ -30,9 +33,14 @@ func main() {
 	// core depends only on the LogStore port; NATS is the adapter (loose coupling).
 	r := signaling.NewRouter(signaling.NewJetStreamStore(js))
 	_, err = nc.QueueSubscribe("tenant.*.interaction.*.cmd", "router", func(m *nats.Msg) {
+		// Seed the per-message context from the publisher's `traceparent` (subscribe side of
+		// @spec:obs.nats-traceparent-propagated): the router's logs share the publisher's
+		// trace_id. A missing/malformed header mints a fresh trace — never a drop.
+		ctx := obs.ContextFromTraceparent(context.Background(), traceparentOf(m))
+		ctx = obs.WithCorrelation(ctx, slog.Default())
 		// Phase-1 has no per-connection identity (shared `client` user) → empty Identity, so the
 		// router validates against the subject tenant. Auth-callout will mint a real one here.
-		ctx := signaling.WithIdentity(context.Background(), signaling.Identity{})
+		ctx = signaling.WithIdentity(ctx, signaling.Identity{})
 		res := r.HandleCommand(ctx, m.Subject, m.Data)
 		if m.Reply != "" {
 			b, _ := json.Marshal(res)
@@ -41,10 +49,19 @@ func main() {
 	})
 	must("subscribe", err)
 
-	slog.Info("relaypoint router up", "url", url, "stream", "INTERACTION_LOGS")
+	slog.Info("router.up", "url", url, "stream", "INTERACTION_LOGS")
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+}
+
+// traceparentOf reads the inbound W3C trace header; nats.Msg.Header is nil for a header-less
+// publish, so guard it rather than dereference.
+func traceparentOf(m *nats.Msg) string {
+	if m.Header == nil {
+		return ""
+	}
+	return m.Header.Get("traceparent")
 }
 
 func envOr(k, d string) string {

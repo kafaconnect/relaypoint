@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/kafaconnect/relaypoint/internal/obs"
 )
 
 // Router is the sole authoritative writer of every `.log` fact. Pure logic over the LogStore
@@ -157,7 +159,15 @@ func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 
 // The trusted tenant/actor come from the authenticated Identity on ctx; the subject and payload
 // are validated against it, never trusted on their own.
-func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte) CommandResult {
+func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte) (res CommandResult) {
+	// One boundary line per command, carrying ctx's correlation fields (trace_id/span_id seeded
+	// from the publisher's traceparent) so a command is followable end-to-end (ADR-0011).
+	defer func() {
+		obs.Logger(ctx).Info("router.command",
+			"subject", subject, "command_id", res.CommandID,
+			"status", res.Status, "reason", res.Reason)
+	}()
+
 	id := IdentityFrom(ctx)
 	tenant, iid, ok := parseCmdSubject(subject)
 	if !ok {
@@ -173,7 +183,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	if authTenant == "" {
 		authTenant = tenant
 	}
-	res := CommandResult{CommandID: cmd.CommandID}
+	res = CommandResult{CommandID: cmd.CommandID}
 	switch {
 	case cmd.CommandID == "":
 		res.Status, res.Reason = "rejected", "missing command_id"
