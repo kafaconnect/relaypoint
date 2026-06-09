@@ -5,6 +5,7 @@ on:
     paths:
       - "clients/typescript/**"
       - "pnpm-workspace.yaml"
+      - "deploy/nats/**"
       - ".github/workflows/sdk-typescript.yml"
 
 jobs:
@@ -27,3 +28,29 @@ jobs:
         working-directory: .
       - run: pnpm typecheck
       - run: pnpm test
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start NATS (JetStream + ws + ACLs)
+        run: |
+          docker run -d --name nats \
+            -e ROUTER_PASSWORD=router-dev -e CLIENT_PASSWORD=client-dev \
+            -v "$PWD/deploy/nats/nats-server.conf:/etc/nats/nats-server.conf:ro" \
+            -p 18088:8088 -p 18222:8222 \
+            nats:2.10-alpine -c /etc/nats/nats-server.conf
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18222/healthz && break; sleep 1; done
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:integration
+        working-directory: clients/typescript
+        env:
+          RELAYPOINT_NATS_WS: ws://127.0.0.1:18088
