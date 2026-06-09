@@ -1,5 +1,15 @@
 # Tasks: signaling-core
 
+> **S3.1 chat-subset implemented (desk board relaypoint#2):** NATS single-node config
+> (JetStream/websocket/mqtt/$SYS + router/client ACLs), the router/interaction service
+> (sole `.log` writer: validate → assign `sequence` → append; command_id idempotency +
+> conflict; payload-tenant-match; illegal-transition; durable replayable `.log`; client
+> ACL-denied from `.log`), and `deploy/docker-compose.yml` (nats + coturn + router).
+> 9 scenarios green vs live NATS (`internal/signaling/*_test.go`, `// @spec:` tagged).
+> Deferred to later stories: forged-author (needs auth-callout), signal-ephemeral
+> rate-limit, offer/call/WebRTC lifecycle, presence, notifications.
+
+
 > Verifiable via config, code, tests, or CI. Issue numbers added once synced to the board.
 > Each behavioral task is tagged with the scenario id its test must carry.
 

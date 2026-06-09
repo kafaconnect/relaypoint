@@ -32,6 +32,17 @@ Skills: built-in OpenSpec (`explore/propose/apply/archive/sync`) + custom
 has a `// @spec:<id>` test; an independent cross-review is recorded; an ADR is added if
 architecture changed. A subject/transport change must name the exact NATS subject(s)/stream(s).
 
+## Loose coupling — design for replacement (HARD RULE)
+
+Core logic MUST depend on **abstractions (ports/interfaces) it owns, not on NATS or any
+concrete client/SDK**. NATS is the chosen backbone, but it is a swappable **adapter**
+behind a port the core defines (e.g. the router depends on a `LogStore` port, not on
+`nats.JetStreamContext`). The core MUST be **unit-testable with a fake/in-memory
+adapter** — no live NATS to test behaviour — and the backbone MUST be replaceable
+without rewriting the core. A core package importing a concrete client into its logic
+is a review defect. This is a **MANDATORY cross-review criterion**; the only exception
+is a documented, justified one, confined to an adapter/edge — never the domain core.
+
 ## Project invariants
 
 - **Media never touches NATS** — only SDP/ICE transit it; A/V are WebRTC P2P (coturn for NAT).
