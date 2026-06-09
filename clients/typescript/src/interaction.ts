@@ -42,6 +42,7 @@ export class InteractionHandle {
     if (this.opened) return;
     this.opened = true;
     this.subscribeLive();
+    this.delivery.prime(); // load existing history even if no new live fact arrives
   }
 
   private subscribeLive(): void {
@@ -51,9 +52,12 @@ export class InteractionHandle {
     });
   }
 
-  // After a reconnect: re-attach the live subscription; gap-replay fills what was missed.
+  // After a reconnect: re-attach the live subscription and replay anything missed while dropped
+  // (don't wait for a live fact to expose the gap).
   resubscribe(): void {
-    if (this.opened) this.subscribeLive();
+    if (!this.opened) return;
+    this.subscribeLive();
+    this.delivery.prime();
   }
 
   private async *replayFrom(from: number): AsyncIterable<LogEvent> {

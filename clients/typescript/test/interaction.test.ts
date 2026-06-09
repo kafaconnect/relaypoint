@@ -3,7 +3,7 @@ import { RelayPointClient } from "../src/client.js";
 import { CommandRejectedError } from "../src/errors.js";
 import { cmdSubject, logSubject, signalSubject } from "../src/subjects.js";
 import { FakeTransport } from "../src/testing/fake-transport.js";
-import { immediate, readJson, wireEvent, wireResult } from "./helpers.js";
+import { immediate, readJson, take, wireEvent, wireResult } from "./helpers.js";
 
 function setup() {
   const transport = new FakeTransport();
@@ -84,6 +84,18 @@ describe("interaction handle", () => {
     await expect(handle.send({ type: "message.created", commandId: "K" })).resolves.toMatchObject({
       status: "accepted",
     });
+  });
+
+  // Regression (deep review): a handle opened on an interaction with existing facts but no NEW
+  // live event must still deliver the history (initial replay on open).
+  it("loads existing history on open even with no new live fact", async () => {
+    const { client, transport } = setup();
+    const subject = logSubject("t1", "im-1");
+    transport.appendDurable(subject, 1, wireEvent({ sequence: 1 })); // durable only, not live
+    transport.appendDurable(subject, 2, wireEvent({ sequence: 2 }));
+    const handle = client.interaction("im-1");
+    const got = await take(handle.events(), 2);
+    expect(got.map((e) => e.sequence)).toEqual([1, 2]);
   });
 
   // @spec:clientsdk.handle.signal-own-author

@@ -28,12 +28,14 @@ export class FakeTransport implements Transport {
   private readonly statusCbs = new Set<(s: TransportStatus) => void>();
   private replayFailures = 0;
   private connectFailures = 0;
+  private connectGate: Promise<void> | undefined;
 
   async connect(token: string): Promise<void> {
     if (this.connectFailures > 0) {
       this.connectFailures--;
       throw new Error("transport connect failed");
     }
+    if (this.connectGate) await this.connectGate;
     this.connectTokens.push(token);
   }
 
@@ -100,6 +102,16 @@ export class FakeTransport implements Transport {
 
   failConnect(count: number): void {
     this.connectFailures = count;
+  }
+
+  // Block subsequent connect() calls until the returned function is called.
+  gateConnect(): () => void {
+    let release!: () => void;
+    this.connectGate = new Promise((r) => (release = r));
+    return () => {
+      this.connectGate = undefined;
+      release();
+    };
   }
 
   emitStatus(status: TransportStatus): void {

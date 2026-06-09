@@ -42,7 +42,7 @@ export class RelayPointClient {
   private _state: ConnectionState = "disconnected";
   private statusSub?: Subscription;
   private closed = false;
-  private reconnecting = false;
+  private busy = false; // an establish() (connect or reconnect) is in flight — serialise them
 
   constructor(
     private readonly options: RelayPointClientOptions,
@@ -61,13 +61,17 @@ export class RelayPointClient {
   async connect(): Promise<void> {
     if (this.closed) throw new Error("client is closed");
     this.setState("connecting");
+    this.busy = true;
     try {
       await this.establish();
     } catch (err) {
       // never strand "connecting": auth exhaustion is already "failed", else "disconnected"
       if (!(err instanceof AuthFailedError)) this.setState("disconnected");
       throw err;
+    } finally {
+      this.busy = false;
     }
+    if (this.closed) return; // closed mid-connect — do not flip to "connected"
     this.setState("connected");
     this.statusSub ??= this.transport.onStatus((s) => {
       if (s.type === "disconnected" && !this.closed) {
@@ -113,19 +117,20 @@ export class RelayPointClient {
   }
 
   private async reconnect(): Promise<void> {
-    if (this.reconnecting || this.closed) return;
-    this.reconnecting = true;
+    if (this.busy || this.closed) return; // a connect/reconnect is already establishing
+    this.busy = true;
     this.setState("reconnecting");
     this.emitter.emit("reconnecting");
     try {
       await this.establish();
+      if (this.closed) return;
       this.setState("connected");
       for (const h of this.handles.values()) h.resubscribe();
       this.emitter.emit("reconnected");
     } catch (err) {
       if (!(err instanceof AuthFailedError)) this.setState("disconnected");
     } finally {
-      this.reconnecting = false;
+      this.busy = false;
     }
   }
 

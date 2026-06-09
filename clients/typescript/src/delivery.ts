@@ -45,6 +45,12 @@ export class Delivery {
     if (this.pending.size > 0 && !this.recovering) void this.recover();
   }
 
+  // Load existing/missed history once on open. Without it, a handle opened on an interaction
+  // that already has facts but receives no NEW live event would deliver nothing.
+  prime(): void {
+    if (!this.recovering && !this.closed && this.state !== "failed") void this.recover(true);
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -66,10 +72,13 @@ export class Delivery {
     this.deps.onState(s);
   }
 
-  private async recover(): Promise<void> {
+  // `initial` forces one replay pass even with no pending gap (load history on open) and keeps
+  // retrying that pass until it succeeds; a gap (pending > 0) drives the same loop thereafter.
+  private async recover(initial = false): Promise<void> {
     this.recovering = true;
     this.setState("replaying");
-    for (let attempt = 0; this.pending.size > 0 && !this.closed; attempt++) {
+    let needPass = initial;
+    for (let attempt = 0; (needPass || this.pending.size > 0) && !this.closed; attempt++) {
       const from = this.applied + 1;
       try {
         for await (const ev of this.deps.replay(from)) {
@@ -78,8 +87,9 @@ export class Delivery {
           this.pending.set(ev.sequence, ev);
           this.drainContiguous();
         }
+        needPass = false; // a successful pass clears the initial obligation
         if (this.pending.size === 0) break;
-        // replay returned but the gap is still open — a transient miss, so retry
+        // replay returned but a gap is still open — a transient miss, so retry
       } catch (err) {
         this.setState("degraded");
         if (attempt + 1 >= this.backoff.length) {

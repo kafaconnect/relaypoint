@@ -74,6 +74,29 @@ describe("connection lifecycle", () => {
     expect(client.state).toBe("disconnected");
   });
 
+  // R1 (deep review): closing during an in-flight connect must NOT flip to "connected".
+  it("does not flip to connected if closed mid-connect", async () => {
+    const { client, transport } = newClient();
+    const release = transport.gateConnect();
+    const p = client.connect();
+    await client.close();
+    release();
+    await p;
+    expect(client.state).toBe("closed");
+  });
+
+  // R3 (deep review): rapid drops must not run concurrent establish() — reconnects serialise.
+  it("serialises reconnects (no concurrent establish)", async () => {
+    const { client, transport } = newClient();
+    await client.connect();
+    const release = transport.gateConnect();
+    transport.emitStatus({ type: "disconnected", final: false }); // reconnect #1 → establishing
+    transport.emitStatus({ type: "disconnected", final: false }); // reconnect #2 → guarded by busy
+    release();
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
+    expect(transport.connectTokens).toHaveLength(2); // initial + exactly one reconnect
+  });
+
   // R4: a still-flapping network on reconnect retries with backoff rather than halting forever.
   it("retries transport.connect on reconnect until it succeeds", async () => {
     const { client, transport } = newClient({ connectBackoffMs: [0, 0, 0, 0] });

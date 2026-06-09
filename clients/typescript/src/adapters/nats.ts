@@ -69,14 +69,20 @@ export class NatsWsTransport implements Transport {
   }
 
   private watchStatus(nc: NatsConnection): void {
+    // A superseded connection (after a reconnect created a new nc) must not emit stale status —
+    // e.g. the old nc's closed() firing a final "disconnected" over a healthy new connection.
+    const current = () => this.nc === nc;
     void (async () => {
       for await (const s of nc.status()) {
+        if (!current()) return;
         if (s.type === "disconnect") this.emit({ type: "disconnected", final: false, reason: String(s.data) });
         else if (s.type === "reconnecting") this.emit({ type: "reconnecting" });
         else if (s.type === "reconnect") this.emit({ type: "connected" });
       }
     })();
-    void nc.closed().then(() => this.emit({ type: "disconnected", final: true }));
+    void nc.closed().then(() => {
+      if (current()) this.emit({ type: "disconnected", final: true });
+    });
   }
 
   private emit(s: TransportStatus): void {
