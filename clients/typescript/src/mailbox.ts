@@ -1,4 +1,3 @@
-// Single-consumer async queue bridging push delivery to an AsyncIterable.
 export class Mailbox<T> implements AsyncIterable<T> {
   private readonly queue: T[] = [];
   private readonly waiters: Array<{

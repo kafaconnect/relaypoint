@@ -1,6 +1,5 @@
-// Orders `.log` facts by router `sequence`. The invariants that aren't obvious from the code:
-// on an unfillable gap it fails closed (never drops facts past the gap, never resumes live over
-// it, never loops forever — terminal after the backoff schedule), and `occurredAt` is never
+// Orders `.log` facts by router `sequence`. On an unfillable gap it fails closed: never drops
+// facts past the gap, never resumes live over it, never loops forever. `occurredAt` is never
 // used for ordering/dedup.
 
 import { DeliveryFailedError } from "./errors.js";

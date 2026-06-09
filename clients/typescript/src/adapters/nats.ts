@@ -1,7 +1,5 @@
-// The only file that imports nats.ws (the Transport adapter). nats.ws auto-reconnect is disabled
-// so the core can refresh the token per connection. The raw publish(subject) is generic plumbing;
-// "clients never write .log" is enforced by the server NATS ACL (deploy/nats/nats-server.conf),
-// not by this adapter.
+// The only file that imports nats.ws. Auto-reconnect is disabled so the core refreshes the token
+// per connection. "Clients never write .log" is enforced by the server NATS ACL, not this adapter.
 
 import {
   connect,
@@ -60,10 +58,9 @@ export class NatsWsTransport implements Transport {
     return { unsubscribe: () => sub.unsubscribe() };
   }
 
-  // Replays the whole (small) per-interaction log; the delivery plane drops already-applied
-  // facts. `fromSequence` is unused. Throws if JetStream is unreachable (delivery fails closed).
-  // Terminates on the stream head (pending == 0), on inactivity (an empty/caught-up stream — no
-  // hang), or on close (the consumer is unsubscribed, never leaked).
+  // `fromSequence` is unused (the whole small log is replayed; delivery drops applied facts).
+  // Throws if JetStream is unreachable (fail closed). Ends on the stream head, inactivity (empty
+  // stream — no hang), or close (unsubscribes — no leaked consumer).
   async *replay(subject: string, _fromSequence: number): AsyncIterable<TransportMsg> {
     const opts = consumerOpts();
     opts.bindStream(this.streamName); // bound → no stream-discovery (works under the client ACL)
