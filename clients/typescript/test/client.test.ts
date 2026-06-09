@@ -85,6 +85,27 @@ describe("connection lifecycle", () => {
     expect(client.state).toBe("closed");
   });
 
+  // Debate (X3/A4): close mid-connect must also CLOSE the late connection, not just guard state.
+  it("closes the late connection when closed mid-connect", async () => {
+    const { client, transport } = newClient();
+    const release = transport.gateConnect();
+    const p = client.connect();
+    await client.close(); // transport.close() #1 (the nc isn't established yet — a no-op on real nats)
+    release();
+    await p; // establish() resolves; connect() sees closed → transport.close() #2 (the late conn)
+    expect(transport.closeCount).toBe(2);
+  });
+
+  // Debate (A5): a closed interaction handle is dropped and re-created, not reused dead.
+  it("recreates a handle after it is closed", () => {
+    const { client } = newClient();
+    const h1 = client.interaction("im-1");
+    h1.close();
+    const h2 = client.interaction("im-1");
+    expect(h2).not.toBe(h1);
+    expect(h2.isClosed).toBe(false);
+  });
+
   // R3 (deep review): rapid drops must not run concurrent establish() — reconnects serialise.
   it("serialises reconnects (no concurrent establish)", async () => {
     const { client, transport } = newClient();
