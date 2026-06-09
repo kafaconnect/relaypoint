@@ -2,8 +2,11 @@
 
 All subjects are prefixed `tenant.<tenantId>.` (omitted below for brevity). Subjects are
 dot-separated, lowercase; ids are ULID/UUID (no dots/slashes). Event envelope:
-`{ schema, event_type, event_id, sequence, occurred_at, tenant_id, actor_id, medium, media_profile?, command_id?, caused_by?, ref_id?, data }`
+`{ schema, event_type, event_id, sequence, occurred_at, tenant_id, actor_id, medium, media_profile?, command_id?, payload_hash?, caused_by?, ref_id?, data }`
 (`command_id` rides on COMMANDS; the resulting `.log` fact carries `caused_by = command_id`).
+`payload_hash` is **router-internal idempotency metadata** persisted on the fact (the durable log
+is the only store, so it must ride the wire) for cross-restart conflict detection — clients MUST
+ignore it and MUST NOT project it onto their public surface.
 Event-specific fields (e.g. `negotiation_id`, `object_ref`, `failure_reason`) ride INSIDE `data`,
 never as top-level envelope fields.
 Wire fields are **snake_case** — this envelope is the authoritative wire contract; SDKs MAY

@@ -60,6 +60,7 @@ export class RelayPointClient {
 
   async connect(): Promise<void> {
     if (this.closed) throw new Error("client is closed");
+    if (this.busy || this._state === "connected") return; // already establishing or connected
     this.setState("connecting");
     this.busy = true;
     try {

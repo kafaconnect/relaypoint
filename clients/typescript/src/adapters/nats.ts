@@ -17,13 +17,11 @@ export class NatsWsTransport implements Transport {
   private resolveClosed!: () => void;
   private readonly closedSignal: Promise<void>;
 
-  // streamName is bound on replay so JetStream needs no stream-discovery API call (which the
-  // client ACL forbids — it only grants $JS.API.CONSUMER.>). replayIdleMs ends a replay that has
-  // gone quiet (an empty/caught-up stream) so it never hangs.
+  // streamName is bound on replay so JetStream needs no stream-discovery API call (the client ACL
+  // grants only $JS.API.CONSUMER.>).
   constructor(
     private readonly servers: string[],
     private readonly streamName = "INTERACTION_LOGS",
-    private readonly replayIdleMs = 1000,
   ) {
     this.closedSignal = new Promise((r) => (this.resolveClosed = r));
   }
@@ -59,8 +57,10 @@ export class NatsWsTransport implements Transport {
   }
 
   // `fromSequence` is unused (the whole small log is replayed; delivery drops applied facts).
-  // Throws if JetStream is unreachable (fail closed). Ends on the stream head, inactivity (empty
-  // stream — no hang), or close (unsubscribes — no leaked consumer).
+  // Terminates by the consumer's pending count, NOT a timer: an empty stream returns at once
+  // (num_pending 0) and a non-empty one waits for the facts that ARE coming (no premature idle
+  // dropping facts on a slow network). Throws if JetStream is unreachable (fail closed); close
+  // aborts the wait so the consumer is never leaked.
   async *replay(subject: string, _fromSequence: number): AsyncIterable<TransportMsg> {
     const opts = consumerOpts();
     opts.bindStream(this.streamName); // bound → no stream-discovery (works under the client ACL)
@@ -69,15 +69,15 @@ export class NatsWsTransport implements Transport {
     const sub = await this.jsClient().subscribe(subject, opts);
     const it = sub[Symbol.asyncIterator]();
     try {
+      const info = await sub.consumerInfo();
+      if (info.num_pending === 0) return; // empty / already-drained stream
       for (;;) {
         if (this.closed) return;
         const step = await Promise.race([
           it.next().then((r) => ({ kind: "msg" as const, r })),
-          this.delay(this.replayIdleMs).then(() => ({ kind: "idle" as const })),
           this.closedSignal.then(() => ({ kind: "closed" as const })),
         ]);
-        if (step.kind !== "msg") return; // idle (caught up / empty) or closed → stop
-        if (step.r.done) return;
+        if (step.kind === "closed" || step.r.done) return;
         const m = step.r.value;
         yield toMsg(m.data, m.headers ?? undefined);
         if (m.info.pending === 0) return; // caught up to the stream head
@@ -85,10 +85,6 @@ export class NatsWsTransport implements Transport {
     } finally {
       sub.unsubscribe();
     }
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((r) => setTimeout(r, ms));
   }
 
   onStatus(cb: (s: TransportStatus) => void): Subscription {

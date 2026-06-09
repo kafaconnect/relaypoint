@@ -26,6 +26,7 @@ check() { # <label> <url> <substring-that-must-be-present>
 }
 
 echo "Verifying RelayPoint plane at $MON_URL"
+# @spec:deploy.verify.smoke-check
 rc=0
 check "NATS healthy"        "$MON_URL/healthz"           '"status":"ok"'   || rc=1
 check "JetStream enabled"   "$MON_URL/jsz"               '"memory"'        || rc=1

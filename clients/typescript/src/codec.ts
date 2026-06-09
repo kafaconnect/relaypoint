@@ -61,6 +61,8 @@ interface WireEvent {
   actor_id: string;
   medium: string;
   media_profile?: string;
+  command_id?: string; // router-internal; not projected onto LogEvent (caused_by is the public link)
+  payload_hash?: string; // router-internal idempotency metadata; clients ignore it
   caused_by?: string;
   ref_id?: string;
   data?: unknown;

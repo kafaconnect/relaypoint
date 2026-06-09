@@ -45,14 +45,16 @@ type Option func(*Router)
 func WithClock(now func() time.Time) Option { return func(r *Router) { r.now = now } }
 func WithIDGen(gen func() string) Option    { return func(r *Router) { r.id = gen } }
 
-// Random, not sequential: a process-local counter would reset on restart and collide with
+// Random UUIDv4, not sequential: a process-local counter would reset on restart and collide with
 // event_ids already in the durable log. Tests inject deterministic ids via WithIDGen.
 func defaultID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		panic("relaypoint: crypto/rand failed: " + err.Error())
 	}
-	return "ev_" + hex.EncodeToString(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func NewRouter(store LogStore, opts ...Option) *Router {
@@ -259,6 +261,9 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	}
 	res.Status, res.CausedBy = "accepted", cmd.CommandID
 	if dup {
+		// The store already had this command_id (a retry, or a concurrent writer). Reconcile from
+		// the log and compare the COMMITTED fact's payload hash: a divergent reuse is a conflict;
+		// a matching one replays the committed result. Never clobber the committed entry.
 		fresh, ferr := r.rebuild(tenant, iid)
 		if ferr != nil {
 			st.poisoned = true // seq may be stale; force a rebuild rather than append behind it
@@ -269,14 +274,21 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		}
 		st.seq, st.status = fresh.seq, fresh.status
 		for k, v := range fresh.results {
-			if _, ok := st.results[k]; !ok { // don't clobber this router's payload-hashed entries
+			if _, ok := st.results[k]; !ok {
 				st.results[k] = v
 			}
 		}
-	} else {
-		st.seq = seq
-		applyTransition(st, cmd.Type)
+		if committed, ok := st.results[cmd.CommandID]; ok {
+			if committed.payloadHash != "" && committed.payloadHash != ph {
+				return CommandResult{CommandID: cmd.CommandID, Status: "rejected", Reason: "conflict: command_id reused with a different payload"}
+			}
+			return committed.result
+		}
+		st.results[cmd.CommandID] = storedResult{payloadHash: ph, result: res}
+		return res
 	}
+	st.seq = seq
+	applyTransition(st, cmd.Type)
 	st.results[cmd.CommandID] = storedResult{payloadHash: ph, result: res}
 
 	if st.status == "ended" { // the durable log rebuilds state if a late command arrives
