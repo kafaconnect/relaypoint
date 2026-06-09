@@ -35,6 +35,12 @@ The SDK is a **client** of the router-authoritative protocol: it is ALWAYS a non
   apply and replays from JetStream, then resumes. If the replay CANNOT fill the gap (JetStream
   unavailable), the SDK surfaces a typed degraded/fatal **delivery state** and retries with
   backoff — it never silently drops facts past the gap nor loops forever.
+  - **Implementation note (chat subset).** signaling-core sets the JetStream `Nats-Msg-Id` to
+    the *command*-derived publish-dedup id (`tenant.iid.command_id`, for exactly-once append),
+    NOT to `event_id`. So the SDK dedups and orders by the authoritative router `sequence`
+    (strictly monotonic per interaction) and treats `event_id` as the fact's stable identity. A
+    re-delivered fact (same `sequence`) is dropped — the behaviour the `event_id` dedup scenario
+    asserts — without depending on the transport header. Do not reintroduce header-based dedup.
 - **Command idempotency (C4).** `send(command)` is a request on `interaction.<id>.cmd` via a
   reply `_INBOX`; it attaches a client-generated `command_id` and on retry reuses the same
   `command_id` so the router dedups (no double-append). It returns `Promise<CommandResult>`:

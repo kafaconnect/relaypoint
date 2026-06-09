@@ -1,18 +1,21 @@
 # Tasks: client-sdk
 
-> **Implementation deferred until the `signaling-core` server is buildable.** This is a
-> design-first change: the work below is authored now but NOT executed until a server exists
-> to test against. No SDK code, package, or build files are produced by this change.
+> **Chat subset implemented; the rest stays design-deferred.** The `signaling-core` chat router
+> is now buildable, so the chat-buildable slice of this design is implemented in
+> `clients/typescript/` (`@relaypoint/client`) with loose-coupling (a `Transport` port + nats.ws
+> adapter + fake-transport unit tests) and `// @spec:`-tagged vitest tests — see ADR-0001. The
+> offer-ring, call/media, recording, transfer, and credential-ticket tasks remain authored-only
+> until their matching server features land (no server to test against yet).
 >
 > Verifiable via code, tests, docs, or CI. Issue numbers added once synced to the board. Each
-> behavioral task is tagged with the scenario id its future test must carry.
+> behavioral task is tagged with the scenario id its test carries; `[x]` = implemented + tested.
 
 ## Connection lifecycle (TS)
-- [ ] `RelayPointClient.connect()` via `nats.ws` using `getToken()` — `// @spec:clientsdk.connection.connect-with-token`
-- [ ] Max-lifetime / token-expiry → refresh via `getToken()` + transparent reconnect — `// @spec:clientsdk.connection.token-refresh-reconnect`
+- [x] `RelayPointClient.connect()` via `nats.ws` using `getToken()` — `// @spec:clientsdk.connection.connect-with-token`
+- [x] Max-lifetime / token-expiry → refresh via `getToken()` + transparent reconnect — `// @spec:clientsdk.connection.token-refresh-reconnect`
 - [ ] Reconnect with the interaction-scoped token after accept (auth-callout authorizes at CONNECT) — `// @spec:clientsdk.connection.reconnect-interaction-scoped`
-- [ ] Observable `ConnectionState` via `state` + `on("state")` — `// @spec:clientsdk.connection.state-observable`
-- [ ] `getToken()` failure → backoff retries → fatal `auth_failed` + `failed`, stays disconnected — `// @spec:clientsdk.connection.gettoken-failure`
+- [x] Observable `ConnectionState` via `state` + `on("state")` — `// @spec:clientsdk.connection.state-observable`
+- [x] `getToken()` failure → backoff retries → fatal `auth_failed` + `failed`, stays disconnected — `// @spec:clientsdk.connection.gettoken-failure`
 
 ## Offer / ring controller (TS)
 - [ ] Subscribe `routing.offer.user.<self>`; surface `ring`; `accept()` replies on `_INBOX`+nonce — `// @spec:clientsdk.offer.ring-accept`
@@ -23,25 +26,25 @@
 - [ ] Optimistic-then-confirmed join: roll back when no confirming ACL grant arrives — `// @spec:clientsdk.offer.optimistic-confirmed`
 
 ## Command plane / delivery (TS)
-- [ ] `send(command)` → `interaction.<id>.cmd`; never writes `.log` — `// @spec:clientsdk.cmd.send-to-cmd`
-- [ ] No public log-write path; `sequence` is router-assigned — `// @spec:clientsdk.cmd.no-log-write`
-- [ ] `send` attaches `command_id`; retry reuses same `command_id` (router dedups); correlate via the resolved `CommandResult` + `causedBy` fact / typed error on rejection — `// @spec:clientsdk.cmd.idempotent-retry`
-- [ ] `send(command)` is a req/reply on `interaction.<id>.cmd` via `_INBOX` returning `Promise<CommandResult>`: resolves on `accepted` (correlates the fact via `causedBy = commandId`), rejects with a typed error carrying `reason` on `rejected` — `// @spec:clientsdk.cmd.result-correlation`
-- [ ] Surface router's concurrent interaction-command rejection (second transfer while transferring / duplicate recording-start) as a typed error rejected from `send`'s `CommandResult`, never assume success — `// @spec:clientsdk.handle.concurrent-command-guard`
-- [ ] `LogEvent`/`Command`/`CommandResult` are a PRECISE camelCase projection (LogEvent carries `causedBy` not `commandId`; `negotiationId`/`objectRef`/`failureReason` live inside `data`); 1:1 normative field mapping — `// @spec:clientsdk.cmd.wire-field-mapping`
-- [ ] Deliver `.log` facts ordered by router `sequence` — `// @spec:clientsdk.delivery.ordered-by-sequence`
-- [ ] Dedup on `Nats-Msg-Id = event_id` — `// @spec:clientsdk.delivery.dedup-event-id`
-- [ ] Sequence-gap → pause live apply + JetStream replay + resume — `// @spec:clientsdk.delivery.gap-replay`
-- [ ] Replay-failure (JetStream unavailable) → typed degraded/fatal delivery state + backoff; never silently drop facts or loop forever — `// @spec:clientsdk.delivery.replay-failure`
+- [x] `send(command)` → `interaction.<id>.cmd`; never writes `.log` — `// @spec:clientsdk.cmd.send-to-cmd`
+- [x] No public log-write path; `sequence` is router-assigned — `// @spec:clientsdk.cmd.no-log-write`
+- [x] `send` attaches `command_id`; retry reuses same `command_id` (router dedups); correlate via the resolved `CommandResult` + `causedBy` fact / typed error on rejection — `// @spec:clientsdk.cmd.idempotent-retry`
+- [x] `send(command)` is a req/reply on `interaction.<id>.cmd` via `_INBOX` returning `Promise<CommandResult>`: resolves on `accepted` (correlates the fact via `causedBy = commandId`), rejects with a typed error carrying `reason` on `rejected` — `// @spec:clientsdk.cmd.result-correlation`
+- [x] Surface router's concurrent interaction-command rejection (second transfer while transferring / duplicate recording-start) as a typed error rejected from `send`'s `CommandResult`, never assume success — `// @spec:clientsdk.handle.concurrent-command-guard`
+- [x] `LogEvent`/`Command`/`CommandResult` are a PRECISE camelCase projection (LogEvent carries `causedBy` not `commandId`; `negotiationId`/`objectRef`/`failureReason` live inside `data`); 1:1 normative field mapping — `// @spec:clientsdk.cmd.wire-field-mapping`
+- [x] Deliver `.log` facts ordered by router `sequence` — `// @spec:clientsdk.delivery.ordered-by-sequence`
+- [x] Dedup on `Nats-Msg-Id = event_id` — `// @spec:clientsdk.delivery.dedup-event-id`
+- [x] Sequence-gap → pause live apply + JetStream replay + resume — `// @spec:clientsdk.delivery.gap-replay`
+- [x] Replay-failure (JetStream unavailable) → typed degraded/fatal delivery state + backoff; never silently drop facts or loop forever — `// @spec:clientsdk.delivery.replay-failure`
 
 ## Time authority (TS)
-- [ ] Order `.log` strictly by router `sequence`; treat `occurredAt` as display-only, never for staleness/ordering/dedup/security — `// @spec:clientsdk.time.occurred-at-display-only`
+- [x] Order `.log` strictly by router `sequence`; treat `occurredAt` as display-only, never for staleness/ordering/dedup/security — `// @spec:clientsdk.time.occurred-at-display-only`
 - [ ] Credential/ticket refresh driven by server-issued relative TTL / derived server-clock offset, not local wall-clock (ties to refresh-before-expiry / ticket-expired-invalid) — `// @spec:clientsdk.time.relative-ttl-refresh`
 
 ## Interaction handle (TS)
-- [ ] `client.interaction(id)` exposes `events()` stream + `send(command)` — `// @spec:clientsdk.handle.stream-and-send`
-- [ ] Publish own ICE/typing only on `interaction.<id>.signal.<self>` — `// @spec:clientsdk.handle.signal-own-author`
-- [ ] `InteractionHandle.metadata` + `on("metadata")` fed by `interaction.context.updated` facts (opaque, never parsed) — `// @spec:clientsdk.handle.metadata-observable`
+- [x] `client.interaction(id)` exposes `events()` stream + `send(command)` — `// @spec:clientsdk.handle.stream-and-send`
+- [x] Publish own ICE/typing only on `interaction.<id>.signal.<self>` — `// @spec:clientsdk.handle.signal-own-author`
+- [x] `InteractionHandle.metadata` + `on("metadata")` fed by `interaction.context.updated` facts (opaque, never parsed) — `// @spec:clientsdk.handle.metadata-observable`
 
 ## Call controller + MediaAdapter (TS)
 - [ ] `CallController` start/hold/resume/stop drive facts via commands; controller writes no `.log` — `// @spec:clientsdk.call.facts-via-commands`
