@@ -110,7 +110,7 @@ docker compose ps</code></pre>
         <section aria-labelledby="security-boundary">
           <h2 id="security-boundary">Security boundary</h2>
           <p>The NATS account ACLs are the edge backstop for the router-authoritative model: the <code>client</code> user is <strong>denied publish</strong> on <code>tenant.*.interaction.*.log</code> and may only publish <code>.cmd</code> / <code>.signal.*</code>; the <code>router</code> user is the sole writer of <code>.log</code>. So a client cannot forge a fact even if the router has a bug. <code>$SYS</code> is the system account.</p>
-          <div class="callout">Phase-1 caveat: a shared <code>client</code> user can subscribe another issuer's <code>_INBOX.&gt;</code>. True per-connection inbox isolation needs auth-callout-minted, user-scoped inbox prefixes — deferred with NKEY/JWT.</div>
+          <div class="callout warn">Phase-1 caveat — not production authorship security. Because Phase-1 runs a shared <code>client</code> NATS user (no per-connection identity yet), a client can forge another user's <code>actor_id</code> on <code>.cmd</code>, publish another user's <code>.signal.*</code>, and subscribe another issuer's <code>_INBOX.&gt;</code>. The ACL still prevents direct <code>.log</code> writes. Verified authorship + own-author-only signals + inbox isolation require the deferred <strong>auth-callout (NKEY/JWT)</strong> that mints a per-connection identity — a blocking precondition for production.</div>
         </section>
 
         <section aria-labelledby="teardown">
