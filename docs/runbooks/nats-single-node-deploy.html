@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runbook — NATS single-node deploy — RelayPoint</title>
+  <meta name="description" content="Bring up and verify the RelayPoint Phase-1 single-node signaling plane (NATS + router + coturn) via docker-compose.">
+  <meta name="author" content="Kafa Connect">
+  <script type="application/json" id="doc-meta">
+  {
+    "title": "Runbook — NATS single-node deploy",
+    "summary": "Bring up and verify the RelayPoint Phase-1 single-node signaling plane (NATS JetStream + router + coturn) with docker-compose.",
+    "version": "1.0.0",
+    "updated": "2026-06-09",
+    "status": "stable",
+    "tags": ["runbook", "deploy", "nats", "jetstream", "docker-compose", "coturn"],
+    "audience": ["operators", "developers"]
+  }
+  </script>
+  <style>
+    :root { --bg:#fff; --fg:#1b1f24; --muted:#57606a; --line:#d0d7de; --code:#f3f4f6; --accent:#0969da; }
+    * { box-sizing: border-box; }
+    body { margin:0; color:var(--fg); background:var(--bg); font:16px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+    header.site, footer.site { padding:1rem 1.5rem; border-bottom:1px solid var(--line); }
+    footer.site { border-top:1px solid var(--line); border-bottom:0; color:var(--muted); font-size:.875rem; }
+    .wrap { display:grid; grid-template-columns:16rem 1fr; gap:2rem; max-width:64rem; margin:0 auto; padding:1.5rem; }
+    nav.toc { position:sticky; top:1rem; align-self:start; font-size:.9rem; }
+    nav.toc a { display:block; color:var(--muted); text-decoration:none; padding:.15rem 0; }
+    nav.toc a.lvl-3 { padding-left:1rem; }
+    nav.toc a:hover { color:var(--accent); }
+    main { min-width:0; }
+    h1 { font-size:1.6rem; margin:.2rem 0 .4rem; }
+    h2 { font-size:1.2rem; margin:2rem 0 .5rem; padding-top:.4rem; border-top:1px solid var(--line); }
+    h3 { font-size:1rem; margin:1.2rem 0 .4rem; }
+    p.summary { color:var(--muted); margin:.2rem 0 1rem; }
+    code { background:var(--code); padding:.1rem .35rem; border-radius:4px; font-size:.875em; }
+    pre { background:var(--code); padding:1rem; border-radius:8px; overflow:auto; }
+    pre code { background:none; padding:0; }
+    table { border-collapse:collapse; width:100%; margin:.5rem 0; font-size:.9rem; }
+    th, td { border:1px solid var(--line); padding:.4rem .6rem; text-align:left; vertical-align:top; }
+    .callout { border-left:4px solid var(--accent); background:var(--code); padding:.6rem .9rem; border-radius:0 6px 6px 0; margin:.8rem 0; }
+    .callout.warn { border-color:#bf8700; }
+  </style>
+</head>
+<body>
+  <header class="site"><strong>RelayPoint</strong> · Runbooks</header>
+  <div class="wrap">
+    <nav class="toc" aria-label="Table of contents">
+      <a href="#overview">Overview</a>
+      <a href="#prerequisites">Prerequisites</a>
+      <a href="#bring-up">Bring up</a>
+      <a href="#verify">Verify</a>
+      <a href="#ports-credentials">Ports &amp; credentials</a>
+      <a href="#persistence">Persistence</a>
+      <a href="#security-boundary">Security boundary</a>
+      <a href="#teardown">Teardown</a>
+      <a href="#deferred">Deferred (later phases)</a>
+    </nav>
+    <main>
+      <article>
+        <h1>Runbook — NATS single-node deploy</h1>
+        <p class="summary">Bring up and verify the RelayPoint Phase-1 single-node signaling plane — NATS (JetStream durable + <code>nats.ws</code> + <code>$SYS</code>) + the router service + coturn — with one command.</p>
+
+        <section aria-labelledby="overview">
+          <h2 id="overview">Overview</h2>
+          <p>The deployment lives entirely under <code>deploy/</code>: <code>docker-compose.yml</code> (the plane), <code>nats/nats-server.conf</code> (NATS + account ACLs), <code>router.Dockerfile</code> (the router image), <code>.env.example</code> (credentials), and <code>verify.sh</code> (the smoke check). It is a single NATS node and a single router instance — no HA. Media never transits NATS; coturn handles WebRTC NAT traversal.</p>
+        </section>
+
+        <section aria-labelledby="prerequisites">
+          <h2 id="prerequisites">Prerequisites</h2>
+          <p>Docker with Compose v2 (<code>docker compose</code>). For <code>verify.sh</code>: <code>curl</code> or <code>wget</code> (one is enough). coturn uses host networking, so it needs the host's UDP range <code>49160–49200</code> free.</p>
+        </section>
+
+        <section aria-labelledby="bring-up">
+          <h2 id="bring-up">Bring up</h2>
+          <pre><code>cd deploy
+cp .env.example .env        # optional for dev — the compose has matching :- defaults
+docker compose up -d --build
+docker compose ps</code></pre>
+          <p>The router is gated on a NATS health check (<code>depends_on: condition: service_healthy</code>), so it connects only once NATS reports healthy on <code>/healthz</code> — a cold <code>up</code> does not race NATS startup.</p>
+        </section>
+
+        <section aria-labelledby="verify">
+          <h2 id="verify">Verify</h2>
+          <pre><code>./verify.sh                 # or: MON_URL=http://host:8222 ./verify.sh</code></pre>
+          <p>It checks, via the NATS monitoring port, that NATS is healthy (<code>/healthz</code>), JetStream is enabled (<code>/jsz</code>), the <code>INTERACTION_LOGS</code> stream exists, and the router is connected (<code>/connz</code>). It exits non-zero on the first failure, so it works as a CI / post-deploy gate.</p>
+        </section>
+
+        <section aria-labelledby="ports-credentials">
+          <h2 id="ports-credentials">Ports &amp; credentials</h2>
+          <table>
+            <thead><tr><th>Port</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td>4222</td><td>NATS client (router, server SDKs)</td></tr>
+              <tr><td>8222</td><td>Monitoring (<code>/healthz</code>, <code>/jsz</code>, <code>/connz</code>) — used by <code>verify.sh</code></td></tr>
+              <tr><td>8088</td><td>WebSocket (<code>nats.ws</code> browser clients); TLS terminated upstream in dev</td></tr>
+              <tr><td>1883</td><td>MQTT — configured for the mobile phase, currently unused</td></tr>
+              <tr><td>3478 / 49160–49200</td><td>coturn TURN listener / UDP relay range (host network)</td></tr>
+            </tbody>
+          </table>
+          <p>Credentials come from <code>.env</code> (see <code>.env.example</code>); the compose <code>${VAR:-default}</code> fallbacks keep a bare <code>up</code> working. The same <code>ROUTER_PASSWORD</code> authenticates the <code>router</code> NATS user (in <code>nats-server.conf</code>, env-expanded) and the router service — change it in one place.</p>
+          <div class="callout warn"><strong>Do not commit <code>.env</code>.</strong> It is gitignored. The values in <code>.env.example</code> are dev-only defaults; rotate them for anything beyond a local box.</div>
+        </section>
+
+        <section aria-labelledby="persistence">
+          <h2 id="persistence">Persistence</h2>
+          <p>JetStream stores the durable <code>interaction.&lt;id&gt;.log</code> facts in the named volume <code>nats-data</code> (mounted at <code>/data/jetstream</code>). The log survives a container restart; <code>docker compose down -v</code> deletes it.</p>
+        </section>
+
+        <section aria-labelledby="security-boundary">
+          <h2 id="security-boundary">Security boundary</h2>
+          <p>The NATS account ACLs are the edge backstop for the router-authoritative model: the <code>client</code> user is <strong>denied publish</strong> on <code>tenant.*.interaction.*.log</code> and may only publish <code>.cmd</code> / <code>.signal.*</code>; the <code>router</code> user is the sole writer of <code>.log</code>. So a client cannot forge a fact even if the router has a bug. <code>$SYS</code> is the system account.</p>
+          <div class="callout warn">Phase-1 caveat — not production authorship security. Because Phase-1 runs a shared <code>client</code> NATS user (no per-connection identity yet), a client can forge another user's <code>actor_id</code> on <code>.cmd</code>, publish another user's <code>.signal.*</code>, and subscribe another issuer's <code>_INBOX.&gt;</code>. The ACL still prevents direct <code>.log</code> writes. Verified authorship + own-author-only signals + inbox isolation require the deferred <strong>auth-callout (NKEY/JWT)</strong> that mints a per-connection identity — a blocking precondition for production.</div>
+        </section>
+
+        <section aria-labelledby="teardown">
+          <h2 id="teardown">Teardown</h2>
+          <pre><code>docker compose down          # stop, keep the JetStream volume
+docker compose down -v       # stop and DELETE the durable log</code></pre>
+        </section>
+
+        <section aria-labelledby="deferred">
+          <h2 id="deferred">Deferred (later phases)</h2>
+          <p>The 3-node JetStream RAFT HA cluster + router HA, NKEY/JWT auth + auth-callout, TLS at the NATS edge, and Kubernetes/k3s manifests are out of scope for this single-node Phase-1 deploy.</p>
+        </section>
+      </article>
+    </main>
+  </div>
+  <footer class="site">RelayPoint runbook · updated 2026-06-09 · single-node Phase-1.</footer>
+</body>
+</html>

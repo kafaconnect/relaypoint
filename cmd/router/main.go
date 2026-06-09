@@ -44,7 +44,7 @@ func main() {
 	})
 	must("subscribe", err)
 
-	slog.Info("relaypoint router up", "url", url, "stream", "INTERACTION_LOG")
+	slog.Info("relaypoint router up", "url", url, "stream", "INTERACTION_LOGS")
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
