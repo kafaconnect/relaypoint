@@ -2,11 +2,12 @@
 # + coturn (WebRTC NAT traversal) + the router service. Media never touches NATS.
 # Credentials come from .env (see .env.example); the `:-` defaults keep a bare
 # `docker compose up` working out of the box for dev.
+# @spec:deploy.bringup.one-command  @spec:deploy.creds.env-externalised
 services:
   nats:
     image: nats:2.10-alpine            # alpine has a shell + wget for the healthcheck
     command: ["-c", "/etc/nats/nats-server.conf"]
-    environment:
+    environment:                       # @spec:deploy.creds.env-externalised
       ROUTER_PASSWORD: ${ROUTER_PASSWORD:-router-dev}
       CLIENT_PASSWORD: ${CLIENT_PASSWORD:-client-dev}
     volumes:
@@ -31,7 +32,7 @@ services:
       NATS_URL: "nats://nats:4222"
       NATS_USER: "router"
       NATS_PASSWORD: ${ROUTER_PASSWORD:-router-dev}
-    depends_on:
+    depends_on:                        # @spec:deploy.health.router-waits-for-nats
       nats:
         condition: service_healthy     # don't race NATS startup
     restart: unless-stopped

@@ -60,6 +60,7 @@ export class RelayPointClient {
 
   async connect(): Promise<void> {
     if (this.closed) throw new Error("client is closed");
+    if (this.busy || this._state === "connected") return; // already establishing or connected
     this.setState("connecting");
     this.busy = true;
     try {
@@ -71,7 +72,12 @@ export class RelayPointClient {
     } finally {
       this.busy = false;
     }
-    if (this.closed) return; // closed mid-connect — do not flip to "connected"
+    if (this.closed) {
+      // closed mid-connect: establish() opened a connection AFTER close() ran its transport.close()
+      // (which was a no-op then) — close the late connection so it does not leak.
+      void this.transport.close();
+      return;
+    }
     this.setState("connected");
     this.statusSub ??= this.transport.onStatus((s) => {
       if (s.type === "disconnected" && !this.closed) {
@@ -82,19 +88,21 @@ export class RelayPointClient {
   }
 
   interaction(id: string): InteractionHandle {
-    let handle = this.handles.get(id);
-    if (!handle) {
-      handle = new InteractionHandle(
-        () => this.transport,
-        { tenantId: this.options.tenantId, selfUserId: this.options.selfUserId, interactionId: id },
-        {
-          requestTimeoutMs: this.options.requestTimeoutMs ?? 5000,
-          sendRetries: this.options.sendRetries ?? 2,
-          medium: this.options.medium ?? "chat",
-        },
-      );
-      this.handles.set(id, handle);
-    }
+    const existing = this.handles.get(id);
+    if (existing && !existing.isClosed) return existing;
+    const handle = new InteractionHandle(
+      () => this.transport,
+      { tenantId: this.options.tenantId, selfUserId: this.options.selfUserId, interactionId: id },
+      {
+        requestTimeoutMs: this.options.requestTimeoutMs ?? 5000,
+        sendRetries: this.options.sendRetries ?? 2,
+        medium: this.options.medium ?? "chat",
+      },
+      (closedId) => {
+        if (this.handles.get(closedId) === handle) this.handles.delete(closedId);
+      },
+    );
+    this.handles.set(id, handle);
     return handle;
   }
 
@@ -123,7 +131,10 @@ export class RelayPointClient {
     this.emitter.emit("reconnecting");
     try {
       await this.establish();
-      if (this.closed) return;
+      if (this.closed) {
+        void this.transport.close(); // closed mid-reconnect — close the late connection
+        return;
+      }
       this.setState("connected");
       for (const h of this.handles.values()) h.resubscribe();
       this.emitter.emit("reconnected");

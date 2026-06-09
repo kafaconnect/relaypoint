@@ -2,6 +2,7 @@ package signaling
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,31 +14,29 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// Router is the authoritative writer of every `interaction.<id>.log` fact (chat
-// subset). It is pure logic over a LogStore port — it has NO knowledge of NATS.
-// Clients publish intents on `.cmd`; the router validates, assigns a monotonic
-// `sequence`, appends the fact, and returns a CommandResult for the issuer. State is
-// in-memory per interaction and rebuilt lazily from the durable log (the source of
-// truth) on first access / after a restart.
+// Router is the sole authoritative writer of every `.log` fact. Pure logic over the LogStore
+// port (no NATS); per-interaction state is rebuilt lazily from the durable log on first access
+// or after a restart.
 type Router struct {
 	store LogStore
 	now   func() time.Time
 	id    func() string
 
-	mu    sync.Mutex // guards the inter map only (brief)
+	mu    sync.Mutex
 	inter map[string]*interactionState
-	load  singleflight.Group // one rebuild per key (no concurrent stale inserts)
+	load  singleflight.Group // one rebuild per key: concurrent callers share it, no stale re-insert
 }
 
 type interactionState struct {
-	mu      sync.Mutex // guards this one interaction (incl. its log append)
-	seq     int64
-	status  string                  // "" | started | ended
-	results map[string]storedResult // command_id → result (idempotency)
+	mu       sync.Mutex
+	seq      int64
+	status   string // "" | started | ended
+	results  map[string]storedResult
+	poisoned bool // seq untrustworthy → callers must rebuild, not reuse it
 }
 
 type storedResult struct {
-	payloadHash string // "" when rebuilt from the log (payload not recorded in facts)
+	payloadHash string // "" only for legacy facts written before payload_hash existed
 	result      CommandResult
 }
 
@@ -46,17 +45,16 @@ type Option func(*Router)
 func WithClock(now func() time.Time) Option { return func(r *Router) { r.now = now } }
 func WithIDGen(gen func() string) Option    { return func(r *Router) { r.id = gen } }
 
-var idCounter struct {
-	mu sync.Mutex
-	n  uint64
-}
-
+// Random UUIDv4, not sequential: a process-local counter would reset on restart and collide with
+// event_ids already in the durable log. Tests inject deterministic ids via WithIDGen.
 func defaultID() string {
-	idCounter.mu.Lock()
-	idCounter.n++
-	n := idCounter.n
-	idCounter.mu.Unlock()
-	return fmt.Sprintf("ev-%d", n)
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("relaypoint: crypto/rand failed: " + err.Error())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func NewRouter(store LogStore, opts ...Option) *Router {
@@ -81,7 +79,6 @@ func legalTransition(status, cmdType string) bool {
 	}
 }
 
-// requiresRefID: an edit/delete must name the message it edits.
 func requiresRefID(cmdType string) bool {
 	return cmdType == "message.updated" || cmdType == "message.deleted"
 }
@@ -106,10 +103,8 @@ func logSubjectFor(tenant, iid string) string {
 	return fmt.Sprintf("tenant.%s.interaction.%s.log", tenant, iid)
 }
 
-// getState returns the (lazily rebuilt) state for an interaction. The rebuild runs
-// under singleflight so concurrent callers share ONE state object (preventing a
-// stale state being re-inserted after a concurrent eviction). A replay failure is
-// propagated so the caller fails closed rather than acting on partial state.
+// Rebuild runs under singleflight so concurrent callers share one state object (no stale
+// re-insert after a concurrent eviction); a replay failure propagates so callers fail closed.
 func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 	key := tenant + "/" + iid
 	r.mu.Lock()
@@ -152,7 +147,7 @@ func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 		}
 		applyTransition(st, e.EventType)
 		if e.CommandID != "" {
-			st.results[e.CommandID] = storedResult{result: CommandResult{
+			st.results[e.CommandID] = storedResult{payloadHash: e.PayloadHash, result: CommandResult{
 				CommandID: e.CommandID, Status: "accepted", CausedBy: e.CommandID,
 			}}
 		}
@@ -160,9 +155,8 @@ func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 	return st, nil
 }
 
-// HandleCommand processes one `.cmd` request and returns the CommandResult to reply.
-// The trusted tenant/actor come from the authenticated Identity on ctx — the subject
-// and the payload are validated AGAINST it (never trusted on their own).
+// The trusted tenant/actor come from the authenticated Identity on ctx; the subject and payload
+// are validated against it, never trusted on their own.
 func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte) CommandResult {
 	id := IdentityFrom(ctx)
 	tenant, iid, ok := parseCmdSubject(subject)
@@ -173,9 +167,8 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	if err := json.Unmarshal(data, &cmd); err != nil {
 		return CommandResult{Status: "rejected", Reason: "bad payload"}
 	}
-	// the authenticated tenant is the trust anchor; the subject fallback applies only
-	// when the transport could not authenticate one (Phase-1 dev, before auth-callout —
-	// NOT production-safe for authorship; auth-callout MUST populate Identity in prod).
+	// Subject-tenant fallback applies only when the transport authenticated no Identity (Phase-1,
+	// pre-auth-callout — NOT production-safe for authorship; prod MUST populate Identity).
 	authTenant := id.TenantID
 	if authTenant == "" {
 		authTenant = tenant
@@ -210,18 +203,25 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	// idempotency / conflict: a command_id is bound to its first payload.
+	// A concurrent goroutine poisoned this state (an append/reconcile failure left its seq
+	// untrustworthy) — fail closed so the caller retries against a fresh rebuild.
+	if st.poisoned {
+		res.Status, res.Reason = "rejected", "state unavailable — retry"
+		return res
+	}
+
+	// A command_id is bound to its first payload.
 	if prev, seen := st.results[cmd.CommandID]; seen {
 		switch {
-		case prev.payloadHash == "": // rebuilt accepted fact — payload unknown → replay
+		case prev.payloadHash == "": // legacy fact, hash unknown
 			return prev.result
-		case prev.payloadHash != hashPayload(cmd): // different payload → conflict
+		case prev.payloadHash != hashPayload(cmd):
 			res.Status, res.Reason = "rejected", "conflict: command_id reused with a different payload"
 			return res
-		case prev.result.Status == "accepted": // same payload, accepted → replay
+		case prev.result.Status == "accepted":
 			return prev.result
-			// same payload, previously rejected → fall through to re-evaluate (a
-			// transient rejection like an illegal transition may now be legal)
+			// a previously-rejected same payload falls through: a transient rejection
+			// (e.g. an illegal transition) may now be legal
 		}
 	}
 
@@ -232,27 +232,41 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	}
 
 	seq := st.seq + 1
+	ph := hashPayload(cmd)
 	ev := Event{
 		Schema: SchemaV1, EventType: cmd.Type, EventID: r.id(), Sequence: seq,
 		OccurredAt: r.now().UTC(), TenantID: tenant, ActorID: cmd.ActorID,
 		Medium: orDefault(cmd.Medium, "chat"), CommandID: cmd.CommandID,
-		CausedBy: cmd.CommandID, RefID: cmd.RefID, Data: cmd.Data,
+		PayloadHash: ph, CausedBy: cmd.CommandID, RefID: cmd.RefID, Data: cmd.Data,
 	}
 	payload, _ := json.Marshal(ev)
-	// Deterministic dedupID per (tenant,interaction,command): the store dedups a retry
-	// even if a prior append's ack was lost — exactly-once append across crashes.
+	// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even
+	// if a prior append's ack was lost.
 	dup, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandID)
 	if aerr != nil {
-		res.Status, res.Reason = "rejected", "log append failed"
+		// The append may have committed before the ack was lost — reconcile from the log and
+		// accept if the fact is now present.
+		if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
+			if prev, committed := fresh.results[cmd.CommandID]; committed {
+				st.seq, st.status = fresh.seq, fresh.status
+				return prev.result
+			}
+		}
+		st.poisoned = true // seq may be stale; force a rebuild rather than append behind it
+		r.mu.Lock()
+		delete(r.inter, tenant+"/"+iid)
+		r.mu.Unlock()
+		res.Status, res.Reason = "rejected", "log append failed — retry"
 		return res
 	}
 	res.Status, res.CausedBy = "accepted", cmd.CommandID
 	if dup {
-		// a prior ack was lost / a concurrent writer wrote it — resync from the durable log.
+		// The store already had this command_id (a retry, or a concurrent writer). Reconcile from
+		// the log and compare the COMMITTED fact's payload hash: a divergent reuse is a conflict;
+		// a matching one replays the committed result. Never clobber the committed entry.
 		fresh, ferr := r.rebuild(tenant, iid)
 		if ferr != nil {
-			// can't reconcile: our in-memory seq is now untrustworthy. Evict so the NEXT
-			// command rebuilds from the log rather than appending behind a stale seq.
+			st.poisoned = true // seq may be stale; force a rebuild rather than append behind it
 			r.mu.Lock()
 			delete(r.inter, tenant+"/"+iid)
 			r.mu.Unlock()
@@ -260,17 +274,24 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		}
 		st.seq, st.status = fresh.seq, fresh.status
 		for k, v := range fresh.results {
-			if _, ok := st.results[k]; !ok { // adopt only facts this router had not yet seen
+			if _, ok := st.results[k]; !ok {
 				st.results[k] = v
 			}
 		}
-	} else {
-		st.seq = seq
-		applyTransition(st, cmd.Type)
+		if committed, ok := st.results[cmd.CommandID]; ok {
+			if committed.payloadHash != "" && committed.payloadHash != ph {
+				return CommandResult{CommandID: cmd.CommandID, Status: "rejected", Reason: "conflict: command_id reused with a different payload"}
+			}
+			return committed.result
+		}
+		st.results[cmd.CommandID] = storedResult{payloadHash: ph, result: res}
+		return res
 	}
-	st.results[cmd.CommandID] = storedResult{payloadHash: hashPayload(cmd), result: res}
+	st.seq = seq
+	applyTransition(st, cmd.Type)
+	st.results[cmd.CommandID] = storedResult{payloadHash: ph, result: res}
 
-	if st.status == "ended" { // evict; the durable log rebuilds state if a late command arrives
+	if st.status == "ended" { // the durable log rebuilds state if a late command arrives
 		r.mu.Lock()
 		delete(r.inter, tenant+"/"+iid)
 		r.mu.Unlock()

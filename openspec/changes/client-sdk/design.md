@@ -30,9 +30,9 @@ The SDK is a **client** of the router-authoritative protocol: it is ALWAYS a non
   ACL grant (the reconnect succeeds on the interaction-scoped token), never on the optimistic
   `accept()` click. A lost CAS (`accepted_elsewhere`/withdraw) rolls the optimistic UI back.
 - **Command plane is write-only; `.log` is read-only.** The SDK publishes intents on
-  `interaction.<id>.cmd` and NEVER writes `.log`. It consumes typed `.log` facts ordered by
-  router `sequence`, dedups on `Nats-Msg-Id = event_id`, and on a sequence gap pauses live
-  apply and replays from JetStream, then resumes. If the replay CANNOT fill the gap (JetStream
+  `interaction.<id>.cmd` and NEVER writes `.log`. It consumes typed `.log` facts ordered by and
+  deduped on the router `sequence` (see the implementation note below), and on a sequence gap
+  pauses live apply and replays from JetStream, then resumes. If the replay CANNOT fill the gap (JetStream
   unavailable), the SDK surfaces a typed degraded/fatal **delivery state** and retries with
   backoff — it never silently drops facts past the gap nor loops forever.
   - **Implementation note (chat subset).** signaling-core sets the JetStream `Nats-Msg-Id` to
@@ -264,7 +264,7 @@ export interface SignalEvent {
 
 export interface InteractionHandle {
   readonly id: string;
-  // ordered by router sequence; deduped on Nats-Msg-Id=event_id; gap -> pause + JetStream replay
+  // ordered and deduped by router sequence; gap -> pause + JetStream replay
   events(): AsyncIterable<LogEvent>;
   // request on interaction.<id>.cmd via reply _INBOX; resolves with the router's CommandResult on
   // "accepted", rejects with a typed error (carrying reason) on "rejected". NEVER writes .log.

@@ -122,6 +122,58 @@ func TestCore_ForgedAuthor(t *testing.T) {
 	}
 }
 
+// concurrentWriterStore models a fact appended by another writer between our getState and our
+// Append: Replay omits it the first time (getState) then reveals it (the dup-path reconcile), and
+// Append always reports a duplicate.
+type concurrentWriterStore struct {
+	base    []Event
+	hidden  Event
+	replays int
+}
+
+func (s *concurrentWriterStore) Append(string, []byte, string) (bool, error) { return true, nil }
+func (s *concurrentWriterStore) Replay(string) ([]Event, error) {
+	s.replays++
+	if s.replays == 1 {
+		return append([]Event(nil), s.base...), nil
+	}
+	return append(append([]Event(nil), s.base...), s.hidden), nil
+}
+
+// The dup-append path must compare the COMMITTED fact's payload_hash: a divergent reuse is a
+// conflict, a matching one replays — never a blind accepted.
+func TestCore_DupPathChecksPayloadHash(t *testing.T) {
+	started := Event{Schema: SchemaV1, EventType: "interaction.started", EventID: "e1", Sequence: 1, TenantID: "t1", ActorID: "u1", Medium: "chat", CommandID: "c1", CausedBy: "c1"}
+	origCmd := Command{CommandID: "m1", TenantID: "t1", ActorID: "u1", Type: "message.created", Medium: "chat", Data: map[string]any{"t": "A"}}
+	m1 := Event{Schema: SchemaV1, EventType: "message.created", EventID: "e2", Sequence: 2, TenantID: "t1", ActorID: "u1", Medium: "chat", CommandID: "m1", PayloadHash: hashPayload(origCmd), CausedBy: "m1"}
+
+	r1 := NewRouter(&concurrentWriterStore{base: []Event{started}, hidden: m1})
+	if got := r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "B"})); got.Status != "rejected" || got.Reason == "" {
+		t.Fatalf("dup-path divergent reuse must conflict, got %+v", got)
+	}
+	r2 := NewRouter(&concurrentWriterStore{base: []Event{started}, hidden: m1})
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "accepted" {
+		t.Fatalf("dup-path matching reuse must replay accepted, got %+v", got)
+	}
+}
+
+// After a restart, conflict detection still works because the fact carries payload_hash:
+// a reused command_id with a DIFFERENT payload conflicts; the SAME payload replays accepted.
+func TestCore_ConflictAcrossRestart(t *testing.T) {
+	st := newFakeStore()
+	r1 := NewRouter(st)
+	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil))
+	r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"}))
+
+	r2 := NewRouter(st) // restart: in-memory state gone, rebuilt from the log
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "DIFF"})); got.Status != "rejected" {
+		t.Fatalf("cross-restart divergent command_id reuse must conflict, got %+v", got)
+	}
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "accepted" {
+		t.Fatalf("cross-restart same-payload retry must replay accepted, got %+v", got)
+	}
+}
+
 // edit/delete must name the message they target (ref_id).
 func TestCore_RefIDRequired(t *testing.T) {
 	r := NewRouter(newFakeStore())

@@ -2,8 +2,11 @@
 
 All subjects are prefixed `tenant.<tenantId>.` (omitted below for brevity). Subjects are
 dot-separated, lowercase; ids are ULID/UUID (no dots/slashes). Event envelope:
-`{ schema, event_type, event_id, sequence, occurred_at, tenant_id, actor_id, medium, media_profile?, command_id?, caused_by?, ref_id?, data }`
+`{ schema, event_type, event_id, sequence, occurred_at, tenant_id, actor_id, medium, media_profile?, command_id?, payload_hash?, caused_by?, ref_id?, data }`
 (`command_id` rides on COMMANDS; the resulting `.log` fact carries `caused_by = command_id`).
+`payload_hash` is **router-internal idempotency metadata** persisted on the fact (the durable log
+is the only store, so it must ride the wire) for cross-restart conflict detection — clients MUST
+ignore it and MUST NOT project it onto their public surface.
 Event-specific fields (e.g. `negotiation_id`, `object_ref`, `failure_reason`) ride INSIDE `data`,
 never as top-level envelope fields.
 Wire fields are **snake_case** — this envelope is the authoritative wire contract; SDKs MAY
@@ -113,6 +116,7 @@ target the same interaction state.
 - **THEN** for an accepted command the router replies on that `_INBOX` with `CommandResult { command_id, status: "accepted", caused_by }` where `caused_by` references the produced `.log` fact (= `command_id`), and the authoritative effect is the `.log` fact (the result is a correlation/ack, not the source of truth)
 - **AND** for a rejected/illegal/forged/conflict command the router replies on the issuer's `_INBOX` with `CommandResult { command_id, status: "rejected", reason }` and writes no `.log` fact
 - **AND** the `CommandResult` is ephemeral on core NATS (never JetStream) and is delivered only to the issuer's own reply `_INBOX` — it does NOT leak to any other user
+- **Phase-1:** inbox isolation is NOT yet enforced at the edge — the shared `client` user can subscribe `_INBOX.>`. Per-issuer inbox isolation requires the auth-callout's user-scoped inbox prefixes (see the "Phase-1 security posture" note); until then this is a trust assumption, not an enforced guarantee.
 
 #### Scenario: Reused command_id with a divergent payload is a conflict
 - **id:** `signaling.cmd.command-id-conflict`
@@ -591,6 +595,9 @@ that adds ONLY `tenant.<tid>.interaction.<id>.>`. Privileged controls
 - **id:** `signaling.tenant-isolation`
 - **WHEN** a user authenticated for tenant A subscribes to `tenant.<B>.interaction.*.>`
 - **THEN** NATS denies the subscription
+- **Phase-1:** NOT yet enforced — the shared `client` user holds tenant-wildcard subscribe ACLs;
+  this denial requires the auth-callout to mint a per-connection, tenant-scoped subscription ACL
+  (see the "Phase-1 security posture" note above). The Phase-1 deploy does not satisfy this scenario.
 
 #### Scenario: Payload tenant mismatch rejected even when subject ACL passes
 - **id:** `signaling.security.payload-tenant-match`

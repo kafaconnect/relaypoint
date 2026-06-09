@@ -33,7 +33,7 @@
 - [x] Surface router's concurrent interaction-command rejection (second transfer while transferring / duplicate recording-start) as a typed error rejected from `send`'s `CommandResult`, never assume success — `// @spec:clientsdk.handle.concurrent-command-guard`
 - [x] `LogEvent`/`Command`/`CommandResult` are a PRECISE camelCase projection (LogEvent carries `causedBy` not `commandId`; `negotiationId`/`objectRef`/`failureReason` live inside `data`); 1:1 normative field mapping — `// @spec:clientsdk.cmd.wire-field-mapping`
 - [x] Deliver `.log` facts ordered by router `sequence` — `// @spec:clientsdk.delivery.ordered-by-sequence`
-- [x] Dedup on `Nats-Msg-Id = event_id` — `// @spec:clientsdk.delivery.dedup-event-id`
+- [x] Dedup by router `sequence` (event_id is the fact identity, not the broker dedup key) — `// @spec:clientsdk.delivery.dedup-event-id`
 - [x] Sequence-gap → pause live apply + JetStream replay + resume — `// @spec:clientsdk.delivery.gap-replay`
 - [x] Replay-failure (JetStream unavailable) → typed degraded/fatal delivery state + backoff; never silently drop facts or loop forever — `// @spec:clientsdk.delivery.replay-failure`
 

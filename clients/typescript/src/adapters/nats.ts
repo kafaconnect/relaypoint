@@ -1,12 +1,12 @@
-// The only file that imports nats.ws (the Transport adapter). nats.ws auto-reconnect is disabled
-// so the core can refresh the token per connection. The raw publish(subject) is generic plumbing;
-// "clients never write .log" is enforced by the server NATS ACL (deploy/nats/nats-server.conf),
-// not by this adapter.
+// The only file that imports nats.ws. Auto-reconnect is disabled so the core refreshes the token
+// per connection. "Clients never write .log" is enforced by the server NATS ACL, not this adapter.
 
 import {
   connect,
   consumerOpts,
+  type ConnectionOptions,
   type JetStreamClient,
+  type JsMsg,
   type NatsConnection,
 } from "nats.ws";
 import type { RequestOptions, Subscription, Transport, TransportMsg, TransportStatus } from "../transport.js";
@@ -15,18 +15,42 @@ export class NatsWsTransport implements Transport {
   private nc?: NatsConnection;
   private js?: JetStreamClient;
   private readonly statusCbs = new Set<(s: TransportStatus) => void>();
+  private closed = false;
+  private resolveClosed!: () => void;
+  private readonly closedSignal: Promise<void>;
 
-  constructor(private readonly servers: string[]) {}
+  // streamName is bound on replay so JetStream needs no stream-discovery API call (the client ACL
+  // grants only $JS.API.CONSUMER.>). connectOptions carries Phase-1 user/pass auth (the
+  // auth-callout token model isn't live yet); token-based auth still works.
+  constructor(
+    private readonly servers: string[],
+    private readonly streamName = "INTERACTION_LOGS",
+    private readonly connectOptions: Partial<ConnectionOptions> = {},
+    private readonly emptyProbeMs = 300,
+  ) {
+    this.closedSignal = new Promise((r) => (this.resolveClosed = r));
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+  }
 
   async connect(token: string): Promise<void> {
     if (this.nc && !this.nc.isClosed()) await this.nc.close();
-    const nc = await connect({ servers: this.servers, token, reconnect: false });
+    const nc = await connect({
+      servers: this.servers,
+      reconnect: false,
+      ...this.connectOptions,
+      ...(token ? { token } : {}),
+    });
     this.nc = nc;
     this.js = nc.jetstream();
     this.watchStatus(nc);
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    this.resolveClosed(); // wake any suspended replay so it unsubscribes (no leaked consumer)
     await this.nc?.close();
   }
 
@@ -46,17 +70,46 @@ export class NatsWsTransport implements Transport {
     return { unsubscribe: () => sub.unsubscribe() };
   }
 
-  // Replays the whole (small) per-interaction log; the delivery plane drops already-applied
-  // facts. `fromSequence` is unused. Throws if JetStream is unreachable (delivery fails closed).
+  // `fromSequence` is unused (the whole small log is replayed; delivery drops applied facts).
+  // An ordered push consumer (ackNone — the client ACL grants no ack subject) delivers every fact
+  // immediately; the last carries pending==0 which ends the replay. The only ambiguous case is an
+  // EMPTY interaction (no fact ever arrives): a one-shot consumerInfo probe distinguishes truly
+  // empty (num_pending 0 AND nothing delivered) from facts-still-coming, so a slow network is
+  // waited out rather than mistaken for empty. Throws if JetStream is unreachable (fail closed);
+  // close aborts the wait so the consumer is never leaked.
   async *replay(subject: string, _fromSequence: number): AsyncIterable<TransportMsg> {
+    if (this.closed) return;
     const opts = consumerOpts();
+    opts.bindStream(this.streamName); // bound → no stream-discovery (works under the client ACL)
     opts.orderedConsumer();
     opts.deliverAll();
     const sub = await this.jsClient().subscribe(subject, opts);
+    const it = sub[Symbol.asyncIterator]();
+    let nextMsg = it.next();
+    let probed = false;
+    type Step = { kind: "msg"; r: IteratorResult<JsMsg> } | { kind: "closed" } | { kind: "probe" };
     try {
-      for await (const m of sub) {
+      for (;;) {
+        if (this.closed) return;
+        const racers: Array<Promise<Step>> = [
+          nextMsg.then((r): Step => ({ kind: "msg", r })),
+          this.closedSignal.then((): Step => ({ kind: "closed" })),
+        ];
+        if (!probed) racers.push(this.delay(this.emptyProbeMs).then((): Step => ({ kind: "probe" })));
+        const step = await Promise.race(racers);
+        if (step.kind === "closed") return;
+        if (step.kind === "probe") {
+          probed = true; // probe once; afterwards just wait — the facts are coming
+          const ci = await sub.consumerInfo();
+          if (ci.num_pending === 0 && ci.delivered.consumer_seq === 0) return; // truly empty
+          continue; // facts pending → keep awaiting nextMsg with no timeout
+        }
+        probed = true;
+        if (step.r.done) return;
+        const m = step.r.value;
         yield toMsg(m.data, m.headers ?? undefined);
-        if (m.info.pending === 0) break; // caught up to the stream head
+        if (m.info.pending === 0) return; // caught up to the stream head
+        nextMsg = it.next();
       }
     } finally {
       sub.unsubscribe();
