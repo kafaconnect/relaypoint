@@ -1,25 +1,39 @@
 # RelayPoint Phase-1 single-node signaling plane: NATS (JetStream + nats.ws + mqtt)
 # + coturn (WebRTC NAT traversal) + the router service. Media never touches NATS.
+# Credentials come from .env (see .env.example); the `:-` defaults keep a bare
+# `docker compose up` working out of the box for dev.
 services:
   nats:
-    image: nats:2.10
+    image: nats:2.10-alpine            # alpine has a shell + wget for the healthcheck
     command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      ROUTER_PASSWORD: ${ROUTER_PASSWORD:-router-dev}
+      CLIENT_PASSWORD: ${CLIENT_PASSWORD:-client-dev}
     volumes:
       - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats-data:/data/jetstream
     ports:
       - "4222:4222"   # client
-      - "8222:8222"   # monitoring
+      - "8222:8222"   # monitoring (/healthz, /jsz, /connz)
       - "8088:8088"   # websocket (nats.ws)
       - "1883:1883"   # mqtt (mobile-ready, unused)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    restart: unless-stopped
 
   router:
     build: { context: .., dockerfile: deploy/router.Dockerfile }
     environment:
       NATS_URL: "nats://nats:4222"
       NATS_USER: "router"
-      NATS_PASSWORD: "router-dev"
-    depends_on: [nats]
+      NATS_PASSWORD: ${ROUTER_PASSWORD:-router-dev}
+    depends_on:
+      nats:
+        condition: service_healthy     # don't race NATS startup
     restart: unless-stopped
 
   coturn:
@@ -32,9 +46,10 @@ services:
       - --min-port=49160
       - --max-port=49200
       - --lt-cred-mech
-      - --user=relaypoint:relaypoint-dev
+      - --user=${COTURN_USER:-relaypoint}:${COTURN_PASSWORD:-relaypoint-dev}
       - --no-tls
       - --no-dtls
+    restart: unless-stopped
 
 volumes:
   nats-data:
