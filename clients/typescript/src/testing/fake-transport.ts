@@ -19,6 +19,7 @@ export class FakeTransport implements Transport {
   readonly requests: RecordedRequest[] = [];
   readonly publishes: RecordedPublish[] = [];
   connectTokens: string[] = [];
+  closeCount = 0;
 
   private responder: Responder = () => {
     throw new Error("no responder configured");
@@ -39,7 +40,9 @@ export class FakeTransport implements Transport {
     this.connectTokens.push(token);
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    this.closeCount++;
+  }
 
   publish(subject: string, data: Uint8Array): void {
     this.publishes.push({ subject, data });

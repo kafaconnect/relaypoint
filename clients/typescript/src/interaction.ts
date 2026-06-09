@@ -21,14 +21,16 @@ export class InteractionHandle {
   readonly id: string;
   private readonly emitter = new Emitter<HandleEvents>();
   private readonly delivery: Delivery;
-  private liveSub?: Subscription;
+  private liveSub: Subscription | undefined;
   private _metadata: unknown = null;
   private opened = false;
+  private _closed = false;
 
   constructor(
     private readonly transport: () => Transport,
     private readonly ctx: { tenantId: string; selfUserId: string; interactionId: string },
     private readonly cfg: InteractionConfig,
+    private readonly onClose?: (id: string) => void,
   ) {
     this.id = ctx.interactionId;
     this.delivery = new Delivery({
@@ -39,7 +41,7 @@ export class InteractionHandle {
   }
 
   open(): void {
-    if (this.opened) return;
+    if (this.opened || this._closed) return;
     this.opened = true;
     this.subscribeLive();
     this.delivery.prime(); // load existing history even if no new live fact arrives
@@ -55,7 +57,7 @@ export class InteractionHandle {
   // After a reconnect: re-attach the live subscription and replay anything missed while dropped
   // (don't wait for a live fact to expose the gap).
   resubscribe(): void {
-    if (!this.opened) return;
+    if (!this.opened || this._closed) return;
     this.subscribeLive();
     this.delivery.prime();
   }
@@ -117,8 +119,16 @@ export class InteractionHandle {
     return this.emitter.on(event, cb);
   }
 
+  get isClosed(): boolean {
+    return this._closed;
+  }
+
   close(): void {
+    if (this._closed) return;
+    this._closed = true;
     this.liveSub?.unsubscribe();
+    this.liveSub = undefined;
     this.delivery.close();
+    this.onClose?.(this.id); // drop from the client's cache so it isn't resubscribed / reused
   }
 }
