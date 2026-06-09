@@ -1,0 +1,19 @@
+{
+  "_comment": "Shared cross-module golden vector (ADR-0011 §5). The SAME file is committed in desk and relaypoint; both obs packages emit `canonical_log` byte-for-byte (modulo ts) and round-trip `traceparent`, so the two conforming implementations cannot drift. traceparent is the W3C trace-context spec example.",
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7",
+  "sampled": true,
+  "canonical_log_keys": ["ts", "level", "msg", "service", "env", "trace_id", "span_id", "request_id", "tenant_id", "user"],
+  "canonical_log": {
+    "level": "info",
+    "msg": "golden",
+    "service": "api",
+    "env": "test",
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "00f067aa0ba902b7",
+    "request_id": "req-golden",
+    "tenant_id": "tnt-golden",
+    "user": "user-golden"
+  }
+}
