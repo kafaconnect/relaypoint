@@ -2,6 +2,7 @@ package signaling
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -30,14 +31,15 @@ type Router struct {
 }
 
 type interactionState struct {
-	mu      sync.Mutex // guards this one interaction (incl. its log append)
-	seq     int64
-	status  string                  // "" | started | ended
-	results map[string]storedResult // command_id → result (idempotency)
+	mu       sync.Mutex // guards this one interaction (incl. its log append)
+	seq      int64
+	status   string                  // "" | started | ended
+	results  map[string]storedResult // command_id → result (idempotency)
+	poisoned bool                    // seq no longer trustworthy → callers must rebuild, not reuse it
 }
 
 type storedResult struct {
-	payloadHash string // "" when rebuilt from the log (payload not recorded in facts)
+	payloadHash string // from the fact's payload_hash on rebuild ("" only for legacy pre-hash facts)
 	result      CommandResult
 }
 
@@ -46,17 +48,15 @@ type Option func(*Router)
 func WithClock(now func() time.Time) Option { return func(r *Router) { r.now = now } }
 func WithIDGen(gen func() string) Option    { return func(r *Router) { r.id = gen } }
 
-var idCounter struct {
-	mu sync.Mutex
-	n  uint64
-}
-
+// defaultID is a random (not sequential) event id — a process-local counter would reset on
+// restart and collide with event_ids already in the durable log (the id contract is ULID/UUID-
+// like, globally unique). Deterministic ids are injected via WithIDGen in tests.
 func defaultID() string {
-	idCounter.mu.Lock()
-	idCounter.n++
-	n := idCounter.n
-	idCounter.mu.Unlock()
-	return fmt.Sprintf("ev-%d", n)
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("relaypoint: crypto/rand failed: " + err.Error())
+	}
+	return "ev_" + hex.EncodeToString(b[:])
 }
 
 func NewRouter(store LogStore, opts ...Option) *Router {
@@ -152,7 +152,7 @@ func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 		}
 		applyTransition(st, e.EventType)
 		if e.CommandID != "" {
-			st.results[e.CommandID] = storedResult{result: CommandResult{
+			st.results[e.CommandID] = storedResult{payloadHash: e.PayloadHash, result: CommandResult{
 				CommandID: e.CommandID, Status: "accepted", CausedBy: e.CommandID,
 			}}
 		}
@@ -210,10 +210,18 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	// A concurrent goroutine may have poisoned this state (an append/reconcile failure left its
+	// seq untrustworthy). Don't append behind a stale seq — fail closed and make the caller retry
+	// against a freshly rebuilt state.
+	if st.poisoned {
+		res.Status, res.Reason = "rejected", "state unavailable — retry"
+		return res
+	}
+
 	// idempotency / conflict: a command_id is bound to its first payload.
 	if prev, seen := st.results[cmd.CommandID]; seen {
 		switch {
-		case prev.payloadHash == "": // rebuilt accepted fact — payload unknown → replay
+		case prev.payloadHash == "": // legacy fact without a stored hash — payload unknown → replay
 			return prev.result
 		case prev.payloadHash != hashPayload(cmd): // different payload → conflict
 			res.Status, res.Reason = "rejected", "conflict: command_id reused with a different payload"
@@ -232,18 +240,32 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	}
 
 	seq := st.seq + 1
+	ph := hashPayload(cmd)
 	ev := Event{
 		Schema: SchemaV1, EventType: cmd.Type, EventID: r.id(), Sequence: seq,
 		OccurredAt: r.now().UTC(), TenantID: tenant, ActorID: cmd.ActorID,
 		Medium: orDefault(cmd.Medium, "chat"), CommandID: cmd.CommandID,
-		CausedBy: cmd.CommandID, RefID: cmd.RefID, Data: cmd.Data,
+		PayloadHash: ph, CausedBy: cmd.CommandID, RefID: cmd.RefID, Data: cmd.Data,
 	}
 	payload, _ := json.Marshal(ev)
 	// Deterministic dedupID per (tenant,interaction,command): the store dedups a retry
 	// even if a prior append's ack was lost — exactly-once append across crashes.
 	dup, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandID)
 	if aerr != nil {
-		res.Status, res.Reason = "rejected", "log append failed"
+		// The append may have COMMITTED before the ack was lost (a fact then exists). Reconcile
+		// from the durable log: if our command_id is now present, the effect happened → accept.
+		if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
+			if prev, committed := fresh.results[cmd.CommandID]; committed {
+				st.seq, st.status = fresh.seq, fresh.status
+				return prev.result
+			}
+		}
+		// not committed (or we can't tell): poison + evict so no stale seq is reused, then reject.
+		st.poisoned = true
+		r.mu.Lock()
+		delete(r.inter, tenant+"/"+iid)
+		r.mu.Unlock()
+		res.Status, res.Reason = "rejected", "log append failed — retry"
 		return res
 	}
 	res.Status, res.CausedBy = "accepted", cmd.CommandID
@@ -251,8 +273,10 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		// a prior ack was lost / a concurrent writer wrote it — resync from the durable log.
 		fresh, ferr := r.rebuild(tenant, iid)
 		if ferr != nil {
-			// can't reconcile: our in-memory seq is now untrustworthy. Evict so the NEXT
-			// command rebuilds from the log rather than appending behind a stale seq.
+			// can't reconcile: our in-memory seq is now untrustworthy. Poison + evict so the
+			// NEXT command (and any goroutine already holding this state) rebuilds rather than
+			// appending behind a stale seq.
+			st.poisoned = true
 			r.mu.Lock()
 			delete(r.inter, tenant+"/"+iid)
 			r.mu.Unlock()
@@ -268,7 +292,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		st.seq = seq
 		applyTransition(st, cmd.Type)
 	}
-	st.results[cmd.CommandID] = storedResult{payloadHash: hashPayload(cmd), result: res}
+	st.results[cmd.CommandID] = storedResult{payloadHash: ph, result: res}
 
 	if st.status == "ended" { // evict; the durable log rebuilds state if a late command arrives
 		r.mu.Lock()

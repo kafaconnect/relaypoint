@@ -13,7 +13,7 @@
     "title": "Core Flows",
     "summary": "Dynamic views of RelayPoint: offer/accept/RONA, cancel/withdraw, double-accept, chat, call, transfer, reconnect-during-ring, and abandon/orphan, plus the single-node deployment view.",
     "version": "2.0.0",
-    "updated": "2026-06-08",
+    "updated": "2026-06-09",
     "status": "stable",
     "tags": ["architecture", "flows", "sequence", "webrtc", "deployment"],
     "audience": ["developers", "architects"]
@@ -304,7 +304,7 @@
           <ol>
             <li>The sender publishes a <code>send_message</code> command with <code>medium: chat</code> on <code>interaction.&lt;id&gt;.cmd</code>. The sender does NOT set <code>sequence</code> and cannot write <code>.log</code>.</li>
             <li>The router validates (tenant, role, state, <code>author == connection identity</code>), assigns the next <code>sequence</code>, and appends one <code>message.created</code> fact on <code>interaction.&lt;id&gt;.log</code>.</li>
-            <li>JetStream stores the event in <code>INTERACTION_LOGS</code> (with <code>Nats-Msg-Id = event_id</code> for dedup), preserving per-interaction order via <code>sequence</code>.</li>
+            <li>JetStream stores the event in <code>INTERACTION_LOGS</code> (publish-dedup by <code>Nats-Msg-Id = &lt;tenant&gt;.&lt;id&gt;.&lt;command_id&gt;</code>, so a retried command never double-appends), preserving per-interaction order via <code>sequence</code>; clients order/dedup by <code>sequence</code>.</li>
             <li>Online participants subscribed to <code>interaction.&lt;id&gt;.log</code> receive it and filter by <code>event_type</code> locally.</li>
             <li>An offline participant, on reconnect, consumes the stream and receives the message in order (durable, not lost).</li>
             <li>In Desk, the <code>message.created</code> fact lands on the session's CustomerTimeline.</li>

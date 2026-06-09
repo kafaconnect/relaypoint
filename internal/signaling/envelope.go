@@ -15,8 +15,9 @@ type Event struct {
 	Medium       string         `json:"medium"`                  // 'chat' | 'call' (chat subset: 'chat')
 	MediaProfile string         `json:"media_profile,omitempty"` // call facts (e.g. 'webrtc-p2p')
 	CommandID    string         `json:"command_id,omitempty"`
-	CausedBy     string         `json:"caused_by,omitempty"` // the command_id that produced this fact
-	RefID        string         `json:"ref_id,omitempty"`    // client-stable id (message edits/deletes)
+	PayloadHash  string         `json:"payload_hash,omitempty"` // hash of the originating command — cross-restart conflict detection
+	CausedBy     string         `json:"caused_by,omitempty"`    // the command_id that produced this fact
+	RefID        string         `json:"ref_id,omitempty"`       // client-stable id (message edits/deletes)
 	Data         map[string]any `json:"data,omitempty"`
 }
 
