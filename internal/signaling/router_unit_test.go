@@ -122,6 +122,23 @@ func TestCore_ForgedAuthor(t *testing.T) {
 	}
 }
 
+// After a restart, conflict detection still works because the fact carries payload_hash:
+// a reused command_id with a DIFFERENT payload conflicts; the SAME payload replays accepted.
+func TestCore_ConflictAcrossRestart(t *testing.T) {
+	st := newFakeStore()
+	r1 := NewRouter(st)
+	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil))
+	r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"}))
+
+	r2 := NewRouter(st) // restart: in-memory state gone, rebuilt from the log
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "DIFF"})); got.Status != "rejected" {
+		t.Fatalf("cross-restart divergent command_id reuse must conflict, got %+v", got)
+	}
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "accepted" {
+		t.Fatalf("cross-restart same-payload retry must replay accepted, got %+v", got)
+	}
+}
+
 // edit/delete must name the message they target (ref_id).
 func TestCore_RefIDRequired(t *testing.T) {
 	r := NewRouter(newFakeStore())

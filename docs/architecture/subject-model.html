@@ -13,7 +13,7 @@
     "title": "Subject Model",
     "summary": "The router-authoritative, unified-Interaction NATS subject model for RelayPoint: command plane vs log, the full subject table, envelope, QoS split, streams, offer/RONA, KV, auth-callout ACLs, and the Desk mapping.",
     "version": "2.0.0",
-    "updated": "2026-06-08",
+    "updated": "2026-06-09",
     "status": "stable",
     "tags": ["architecture", "subjects", "nats", "jetstream", "webrtc", "multi-tenant", "router", "auth-callout"],
     "audience": ["developers", "architects"]
@@ -322,8 +322,8 @@ KV bucket: offer.active.&lt;userId&gt;     (JetStream KV, TTL; router-only write
           <pre><code>{
   "schema":      "...",          // schema id / version of `data`
   "event_type":  "message.created",
-  "event_id":    "&lt;ULID&gt;",       // Nats-Msg-Id for JetStream dedup
-  "sequence":    42,             // ROUTER-assigned, per-interaction ordering
+  "event_id":    "&lt;ULID&gt;",       // stable fact identity (NOT the broker dedup key)
+  "sequence":    42,             // ROUTER-assigned, per-interaction ordering + client dedup
   "occurred_at": "2026-06-08T12:00:00Z",
   "tenant_id":   "&lt;tenantId&gt;",   // MUST match the subject's tenant
   "actor_id":    "&lt;userId&gt;",     // MUST equal the connection's identity
@@ -339,7 +339,7 @@ KV bucket: offer.active.&lt;userId&gt;     (JetStream KV, TTL; router-only write
               <tbody>
                 <tr><td><code>schema</code></td><td>Schema id/version of the <code>data</code> payload.</td></tr>
                 <tr><td><code>event_type</code></td><td>The business event; clients filter on this locally.</td></tr>
-                <tr><td><code>event_id</code></td><td>Unique id for the event. Published as <code>Nats-Msg-Id</code> so JetStream dedups within its window; clients dedup beyond it.</td></tr>
+                <tr><td><code>event_id</code></td><td>Stable, globally-unique fact identity. NOT the broker dedup key — JetStream publish-dedup uses <code>Nats-Msg-Id = &lt;tenant&gt;.&lt;id&gt;.&lt;command_id&gt;</code> (a retried command never double-appends); clients order/dedup applied delivery by <code>sequence</code>.</td></tr>
                 <tr><td><code>sequence</code></td><td>Per-interaction ordering counter — <strong>router-assigned</strong> on <code>.log</code>; clients never set it. Consumers track the last applied <code>sequence</code> and replay from JetStream on a detected gap.</td></tr>
                 <tr><td><code>occurred_at</code></td><td>Event timestamp.</td></tr>
                 <tr><td><code>tenant_id</code></td><td>The tenant. The router rejects a command whose <code>tenant_id</code> does not match the subject's tenant even if the subject ACL passes.</td></tr>
@@ -399,7 +399,7 @@ KV bucket: offer.active.&lt;userId&gt;     (JetStream KV, TTL; router-only write
                 <tr><th>Stream</th><th>Subjects captured</th><th>Storage / notes</th></tr>
               </thead>
               <tbody>
-                <tr><td><code>INTERACTION_LOGS</code></td><td><code>tenant.*.interaction.*.log</code></td><td>File storage; preserves per-interaction ordering; <code>Nats-Msg-Id = event_id</code> dedup.</td></tr>
+                <tr><td><code>INTERACTION_LOGS</code></td><td><code>tenant.*.interaction.*.log</code></td><td>File storage; preserves per-interaction ordering; publish-dedup by <code>Nats-Msg-Id = &lt;tenant&gt;.&lt;id&gt;.&lt;command_id&gt;</code>.</td></tr>
                 <tr><td><code>NOTIFICATIONS</code></td><td><code>tenant.*.notify.*</code></td><td>Durable; survives reconnect.</td></tr>
                 <tr><td><code>ROUTING_AUDIT</code></td><td><code>tenant.*.routing.audit.&gt;</code></td><td>Privileged-control audit (actor + reason); NOT live offer delivery.</td></tr>
               </tbody>

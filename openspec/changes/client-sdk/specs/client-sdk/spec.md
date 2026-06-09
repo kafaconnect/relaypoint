@@ -226,9 +226,11 @@ The normative field mapping MUST include at least: `commandId↔command_id`, `ca
 - **AND** the projection is precise: `LogEvent` carries `causedBy` but NOT `commandId` (command-only), and event-specific fields (`negotiationId`, `objectRef`, `failureReason`, …) appear INSIDE `data` per the wire envelope, not as top-level `LogEvent` envelope fields — the SDK neither invents wire fields nor promotes data fields to the envelope
 
 ### Requirement: Ordered log delivery with dedup and gap-replay
-The TS SDK MUST consume typed `.log` facts ordered by router `sequence`, dedup on
-`Nats-Msg-Id = event_id`, and on a detected sequence gap pause live apply, replay from
-JetStream until the gap is filled, then resume. When the replay CANNOT fill the gap (JetStream
+The TS SDK MUST consume typed `.log` facts ordered by the router-assigned `sequence` and dedup
+by it (a fact at or below the last applied `sequence` is a duplicate; `event_id` is the fact's
+stable identity — NOT the broker dedup key, which is the command-derived
+`<tenant>.<id>.<command_id>` publish id per `signaling-core`), and on a detected sequence gap
+pause live apply, replay from JetStream until the gap is filled, then resume. When the replay CANNOT fill the gap (JetStream
 unavailable / the stream cannot be reached), the SDK MUST surface a typed degraded/fatal delivery
 state and retry the replay with backoff; it MUST NEVER silently drop facts past the gap nor loop
 forever (it surfaces the degraded state rather than applying out-of-order or resuming live over
