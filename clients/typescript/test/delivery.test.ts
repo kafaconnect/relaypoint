@@ -78,6 +78,17 @@ describe("ordered log delivery", () => {
     await expect(it2.next()).rejects.toThrow(/single-consumer/);
   });
 
+  // Debate (A3): the single-consumer flag releases when a consumer stops, so a NEW consumer can
+  // resume — it is not a permanent lock.
+  it("releases the consumer lock when a consumer stops", async () => {
+    const d = new Delivery(makeDeps([]));
+    d.offer(logEvent(1));
+    for await (const _e of d.events()) break; // first consumer takes one then stops
+    d.offer(logEvent(2));
+    const got = await take(d.events(), 1); // a fresh consumer must work, not throw
+    expect(got.map((e) => e.sequence)).toEqual([2]);
+  });
+
   // @spec:clientsdk.delivery.replay-failure
   it("surfaces a degraded then failed delivery state when replay cannot fill the gap", async () => {
     const states: DeliveryState[] = [];
