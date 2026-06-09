@@ -1,0 +1,9 @@
+# RelayPoint is a standalone (public, source-available) repo. The TS client SDK lives under
+# clients/*; this file makes RelayPoint its own pnpm workspace root so installs never walk up
+# into a parent monorepo (desk deliberately excludes this submodule from its workspace).
+packages:
+  - "clients/*"
+
+# vitest's esbuild fetches its platform binary in a postinstall; approve that one build script.
+allowBuilds:
+  esbuild: true
