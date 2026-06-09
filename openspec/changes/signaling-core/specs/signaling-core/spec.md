@@ -50,6 +50,20 @@ the SAME `command_id` with a DIFFERENT payload MUST be rejected as `conflict` (`
 "rejected"`, `reason = conflict`): the key is bound to its original request, so a divergent
 payload under a reused key is a client bug, never a silent second effect.
 
+**Phase-1 security posture (what is enforced NOW vs deferred).** The NATS account ACL is the
+enforced backstop today: clients are DENIED publish on `.log`, so a client cannot write a fact
+directly — this holds in Phase-1. The stronger guarantees in this requirement — `author == the
+connection's authenticated identity`, per-tenant/per-user scoping, and own-author-only
+`.signal.<userId>` — REQUIRE a per-connection identity that Phase-1 does NOT yet mint: it runs a
+shared `client` NATS user, so the router receives an EMPTY identity and falls back to validating
+against the subject tenant (documented dev-only in `cmd/router/main.go`). Until the deferred
+**auth-callout (NKEY/JWT)** mints a per-connection `Identity{tenant,user}`, a client sharing that
+user CAN still forge another `actor_id` via `.cmd` and publish another user's `.signal.*`. The
+router's forged-author rejection (`signaling.cmd.forged-author-rejected`) is therefore active
+ONLY once a non-empty identity is present. This posture MUST NOT be relied on as production
+authorship security; closing it is a blocking precondition for production, tracked with the
+auth-callout change.
+
 As the single authority, the router MUST serialize **interaction-level** commands against the
 current state via a state-guard / compare-and-set, so concurrent commands from different actors
 do not race. A second `interaction.transfer.requested` while the interaction is already
@@ -451,18 +465,21 @@ MUST be distinguished from `participant.left` (explicit/permanent).
 - **THEN** the router records `participant.offline` (transient, recoverable) versus `participant.left` (permanent), and only `left` removes them from the interaction
 
 ### Requirement: Delivery, ordering, and idempotency
-The router MUST assign `sequence` on every `.log` fact; clients MUST never set it. Each
-JetStream-published fact MUST carry `Nats-Msg-Id = event_id` for broker dedup within the
-dedup window, and clients MUST dedup beyond that window. `message.updated`/`message.deleted`
-MUST carry `ref_id` (the target `event_id`), with tombstone vs redaction defined. Consumers
-MUST track the last durable sequence and, on a detected gap, pause live apply and replay from
-JetStream. `notify.<userId>` is advisory and reconciled by `.log` replay.
+The router MUST assign `sequence` on every `.log` fact; clients MUST never set it. The broker
+publish-dedup key MUST be a deterministic **per-command** id (`Nats-Msg-Id =
+<tenant>.<interactionId>.<command_id>`), so a retried command never appends a second fact — a
+fresh `event_id` per attempt would NOT dedup and is therefore NOT the publish key. Clients MUST
+order and dedup by the router-assigned `sequence` (strictly monotonic per interaction);
+`event_id` is the fact's stable identity, not the broker dedup key. `message.updated`/
+`message.deleted` MUST carry `ref_id` (the target `event_id`), with tombstone vs redaction
+defined. Consumers MUST track the last durable sequence and, on a detected gap, pause live apply
+and replay from JetStream. `notify.<userId>` is advisory and reconciled by `.log` replay.
 
-#### Scenario: Duplicate publish is deduped by event_id
+#### Scenario: Duplicate command publish is deduped by the per-command id
 - **id:** `signaling.delivery.msgid-dedup`
-- **GIVEN** a fact published with `Nats-Msg-Id = event_id`
-- **WHEN** the same `event_id` is published again within the dedup window
-- **THEN** JetStream stores it once; clients also dedup the same `event_id` beyond the window
+- **GIVEN** a fact appended with publish id `Nats-Msg-Id = <tenant>.<interactionId>.<command_id>`
+- **WHEN** the same `command_id` is published again
+- **THEN** JetStream stores the fact once; clients order and dedup by the router-assigned `sequence`
 
 #### Scenario: Update/delete reference the target by ref_id
 - **id:** `signaling.delivery.ref-id-update-delete`

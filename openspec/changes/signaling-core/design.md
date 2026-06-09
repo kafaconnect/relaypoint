@@ -74,7 +74,8 @@ Web-first; calls are **1:1 only** (conference/multi-party deferred); **single-no
 ## JetStream streams (by leaf class, not per-interaction)
 
 - `INTERACTION_LOGS` ← `tenant.*.interaction.*.log` (file storage; per-interaction ordering;
-  `Nats-Msg-Id = event_id` dedup)
+  `Nats-Msg-Id = <tenant>.<iid>.<command_id>` publish-dedup — a retried command never
+  double-appends; clients order/dedup by router `sequence`)
 - `NOTIFICATIONS` ← `tenant.*.notify.*`
 - `ROUTING_AUDIT` ← `tenant.*.routing.audit.>` (privileged-control audit; not live offer delivery)
 - NO stream for `.cmd`, `.signal`, `presence.*`, or live offer/control subjects.

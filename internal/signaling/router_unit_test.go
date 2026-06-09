@@ -3,6 +3,7 @@ package signaling
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 )
@@ -132,6 +133,35 @@ func TestCore_RefIDRequired(t *testing.T) {
 	withRef, _ := json.Marshal(Command{CommandID: "u2", TenantID: "t1", ActorID: "u1", Type: "message.updated", Medium: "chat", RefID: "m1"})
 	if got := r.HandleCommand(context.Background(), subj, withRef); got.Status != "accepted" {
 		t.Fatalf("message.updated with ref_id should be accepted, got %+v", got)
+	}
+}
+
+// dupRebuildFailStore: the first Replay (getState build) succeeds empty; the append reports a
+// duplicate; the dup-path rebuild then fails — the router must NOT keep stale in-memory seq.
+type dupRebuildFailStore struct{ calls int }
+
+func (s *dupRebuildFailStore) Append(string, []byte, string) (bool, error) { return true, nil }
+func (s *dupRebuildFailStore) Replay(string) ([]Event, error) {
+	s.calls++
+	if s.calls == 1 {
+		return nil, nil
+	}
+	return nil, errors.New("replay down")
+}
+
+// On a duplicate append whose reconciling rebuild fails, the interaction is evicted so the next
+// command rebuilds from the log instead of appending behind an untrustworthy sequence.
+func TestCore_DupRebuildFailEvicts(t *testing.T) {
+	r := NewRouter(&dupRebuildFailStore{})
+	got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil))
+	if got.Status != "accepted" {
+		t.Fatalf("dup append should still ack accepted, got %+v", got)
+	}
+	r.mu.Lock()
+	n := len(r.inter)
+	r.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("interaction not evicted after dup+rebuild-fail: %d cached", n)
 	}
 }
 

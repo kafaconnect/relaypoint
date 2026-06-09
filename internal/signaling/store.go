@@ -3,6 +3,7 @@ package signaling
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -53,9 +54,10 @@ func (s *jetstreamStore) Replay(subject string) ([]Event, error) {
 		}
 		for _, m := range msgs {
 			var e Event
-			if json.Unmarshal(m.Data, &e) == nil {
-				out = append(out, e)
+			if err := json.Unmarshal(m.Data, &e); err != nil {
+				return nil, fmt.Errorf("replay %s: corrupt fact: %w", subject, err) // fail closed
 			}
+			out = append(out, e)
 		}
 	}
 	return out, nil

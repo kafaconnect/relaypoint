@@ -248,10 +248,21 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	}
 	res.Status, res.CausedBy = "accepted", cmd.CommandID
 	if dup {
-		// a prior ack was lost / a concurrent writer wrote it — resync seq/status from
-		// the durable log so this router's view is not behind.
-		if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
-			st.seq, st.status = fresh.seq, fresh.status
+		// a prior ack was lost / a concurrent writer wrote it — resync from the durable log.
+		fresh, ferr := r.rebuild(tenant, iid)
+		if ferr != nil {
+			// can't reconcile: our in-memory seq is now untrustworthy. Evict so the NEXT
+			// command rebuilds from the log rather than appending behind a stale seq.
+			r.mu.Lock()
+			delete(r.inter, tenant+"/"+iid)
+			r.mu.Unlock()
+			return res
+		}
+		st.seq, st.status = fresh.seq, fresh.status
+		for k, v := range fresh.results {
+			if _, ok := st.results[k]; !ok { // adopt only facts this router had not yet seen
+				st.results[k] = v
+			}
 		}
 	} else {
 		st.seq = seq

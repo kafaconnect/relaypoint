@@ -5,18 +5,19 @@ import "time"
 // Event is the authoritative `.log` fact envelope (signaling-core design). Chat and
 // call share one envelope; `medium` is a payload field, never a subject.
 type Event struct {
-	Schema     string         `json:"schema"`
-	EventType  string         `json:"event_type"`
-	EventID    string         `json:"event_id"`
-	Sequence   int64          `json:"sequence"`
-	OccurredAt time.Time      `json:"occurred_at"`
-	TenantID   string         `json:"tenant_id"`
-	ActorID    string         `json:"actor_id"`
-	Medium     string         `json:"medium"` // 'chat' | 'call' (chat subset: 'chat')
-	CommandID  string         `json:"command_id,omitempty"`
-	CausedBy   string         `json:"caused_by,omitempty"` // the command_id that produced this fact
-	RefID      string         `json:"ref_id,omitempty"`    // client-stable id (message edits/deletes)
-	Data       map[string]any `json:"data,omitempty"`
+	Schema       string         `json:"schema"`
+	EventType    string         `json:"event_type"`
+	EventID      string         `json:"event_id"`
+	Sequence     int64          `json:"sequence"`
+	OccurredAt   time.Time      `json:"occurred_at"`
+	TenantID     string         `json:"tenant_id"`
+	ActorID      string         `json:"actor_id"`
+	Medium       string         `json:"medium"`                  // 'chat' | 'call' (chat subset: 'chat')
+	MediaProfile string         `json:"media_profile,omitempty"` // call facts (e.g. 'webrtc-p2p')
+	CommandID    string         `json:"command_id,omitempty"`
+	CausedBy     string         `json:"caused_by,omitempty"` // the command_id that produced this fact
+	RefID        string         `json:"ref_id,omitempty"`    // client-stable id (message edits/deletes)
+	Data         map[string]any `json:"data,omitempty"`
 }
 
 // Command is a client intent published on `interaction.<id>.cmd` (request/reply).
