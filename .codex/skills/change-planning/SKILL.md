@@ -24,9 +24,9 @@ Decompose every change the same way. Start from the OpenSpec delta; the spec is 
 source of truth, and the Definition of Done (DoD) is the gate.
 
 **Taxonomy**
-- **Epic** = exactly one OpenSpec change (one capability slice). One GitHub issue; `tasks.md` is one-way synced into it as a tasklist.
+- **Epic** = exactly one OpenSpec change (one capability slice). One GitHub issue; the GENERATED `tasks.md` index is one-way synced into it as a tasklist.
 - **Story** = a user-visible, vertically-sliced behavior that delivers value on its own. Maps to one or more `### Requirement:` / `#### Scenario:`. Demoable against the prototype.
-- **Task** = an executable unit inside a story (few hours to ~1 day): migration, contract change, handler, UI screen, test. A checkbox in `tasks.md`; promoted to its own issue ONLY when it needs a different owner.
+- **Task** = an executable unit inside a story (few hours to ~1 day): migration, contract change, handler, UI screen, test. ONE FILE under `tasks/<SLICE>-<NN>-<slug>.md` with frontmatter status (docs/conventions.md 'Tasks & progress'); promoted to its own issue ONLY when it needs a different owner.
 - **Bug** = a defect against an already-accepted spec.
 
 **Principles**
@@ -46,7 +46,7 @@ story → set each story's acceptance = its scenario ids + DoD.
 Present a short planning brief and STOP for the user. Cover: gray areas, design
 choices, test strategy, contract impact, data/migration/RLS impact, UI/prototype
 impact, open questions, and the proposed Story/Task/Bug breakdown. Use
-**AskUserQuestion**. Do NOT finalize `proposal.md` / `design.md` / `tasks.md` /
+**AskUserQuestion**. Do NOT finalize `proposal.md` / `design.md` / `tasks/` files /
 spec deltas until the user has answered. Required questions:
 1. What behavior is in scope (and explicitly out)?
 2. How to resolve each unresolved design choice?
@@ -59,7 +59,7 @@ export CHANGE="${CHANGE:?aligned change id}"; export TITLE="${TITLE:?human title
 openspec new change "$CHANGE"
 ```
 Generate `proposal.md`, `design.md` (if architecture/contract/storage/security changed),
-`tasks.md`, and `specs/<capability>/spec.md`. Every behavior change gets a
+per-task files under `tasks/` (+ generated tasks.md index), and `specs/<capability>/spec.md`. Every behavior change gets a
 `### Requirement:` + `#### Scenario:` with a stable id; every task names its expected
 scenario ids. Then: `openspec validate "$CHANGE" --strict`.
 
@@ -101,12 +101,13 @@ EPIC_ITEM="$(gh project item-add "$PROJECT_NUMBER" --owner "$ORG" --url "$EPIC_U
 # gh project item-edit ... set Status=Ready, Iteration, Release Train (see step 6 for the field-set call)
 ```
 
-### 5. Create Story/Task/Bug issues from tasks.md, write the numbers back
-For each task line create ONE issue (`type:story|task|bug` + `openspec-change:$CHANGE`
+### 5. Create Story/Task/Bug issues from the task files, write the numbers back
+For each promoted task create ONE issue (`type:story|task|bug` + `openspec-change:$CHANGE`
 labels, milestone, assignee), add it to the project, set Status=Ready + Iteration +
-Release Train, then rewrite the task line in `tasks.md` to `- [ ] #<n> <summary>`.
-The issue body links to `openspec/changes/$CHANGE/tasks.md` + names its scenario ids;
-it does NOT duplicate the spec. Comment a checklist line on the Epic.
+Release Train, then write the number into the task file's frontmatter (`issue: <n>`)
+and regenerate the index (`scripts/tasks-index.sh $CHANGE`) — never hand-edit tasks.md.
+The issue body links to `openspec/changes/$CHANGE/tasks/<file>.md` + names its scenario
+ids; it does NOT duplicate the spec. Comment a checklist line on the Epic.
 
 ### 6. Field-set helper (gh CLI, with GraphQL fallback)
 ```sh
@@ -121,10 +122,10 @@ GraphQL fallback when `gh project` can't set a value:
 
 ## Mode: board-sync (during apply / implementation)
 Trigger points → Status transition (resolve `$ITEM` via `gh project item-list … --jq '.items[]|select(.content.number==N)|.id'`):
-- Start a task → assign `@me`, Status **In Progress**.
+- Start a task → frontmatter `status: in_progress` (committed with the work) → assign `@me`, board Status **In Progress**.
 - Open a PR → Status **Review**, comment the PR URL on the issue.
 - CI green **and** `qa-verify` GO → comment "ready to merge".
-- Merge → Status **Done**, close the issue, tick `- [x] #<n>` in `tasks.md`.
+- Merge → Status **Done**, close the issue, set the task file's `status: done` and regenerate the index.
 
 ## Hooks
 explore → **change-planning(plan)** → propose (finalize artifacts) → board-link (ensure
@@ -134,6 +135,6 @@ CI green (Done) → archive (only after all linked tasks checked off).
 ## Failure modes / guardrails
 - Missing `PROJECT_NUMBER`/field/option → ask the user; STOP before a partial sync.
 - Issue created but project update failed → comment `board-sync:partial` on the issue; retry from the issue number (idempotent).
-- A task already has `#<n>` in tasks.md → reuse it; never create a duplicate.
+- A task file already has `issue:` in its frontmatter → reuse it; never create a duplicate.
 - Scope changed on the board (not in OpenSpec) → reject; update OpenSpec first (one-way rule).
 - GitHub rate limit → check `gh api rate_limit`, retry once, else record unsynced items and continue (file generation must not be blocked by the network).

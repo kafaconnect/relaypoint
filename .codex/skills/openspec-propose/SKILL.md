@@ -14,7 +14,7 @@ Propose a new change - create the change and generate all artifacts in one step.
 I'll create a change with artifacts:
 - proposal.md (what & why)
 - design.md (how)
-- tasks.md (implementation steps)
+- tasks/ (one file per task; tasks.md is the generated index — docs/conventions.md "Tasks & progress")
 
 When ready to implement, run /opsx:apply
 
@@ -68,6 +68,11 @@ When ready to implement, run /opsx:apply
         - `dependencies`: Completed artifacts to read for context
       - Read any completed dependency files for context
       - Create the artifact file using `template` as the structure and write it to `resolvedOutputPath`
+      - **EXCEPTION — the `tasks` artifact**: do NOT write a monolithic checklist. Write one
+        file per task under `<changeRoot>/tasks/<SLICE>-<NN>-<slug>.md` (frontmatter:
+        id, slice, title, status: todo, specs — per the `rules`), then generate the
+        index at `resolvedOutputPath` with `scripts/tasks-index.sh <name>` (the index
+        satisfies the CLI's tasks.md artifact)
       - Apply `context` and `rules` as constraints - but do NOT copy them into the file
       - Show brief progress: "Created <artifact-id>"
 

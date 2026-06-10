@@ -119,7 +119,7 @@ If the user mentions a change or you detect one is relevant:
     | Requirement changed        | `specs/<capability>/spec.md` |
     | Design decision made       | `design.md`                  |
     | Scope changed              | `proposal.md`                |
-    | New work identified        | `tasks.md`                   |
+    | New work identified        | a new file under `tasks/`    |
     | Assumption invalidated     | Relevant artifact              |
 
    Example offers:

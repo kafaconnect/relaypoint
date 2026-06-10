@@ -69,7 +69,9 @@ Implement tasks from an OpenSpec change.
    - Show which task is being worked on
    - Make the code changes required
    - Keep changes minimal and focused
-   - Mark task complete in the tasks file: `- [ ]` → `- [x]`
+   - Set the task file's frontmatter `status: done`, squash its `## Log` to one
+     evidence line (commit hash / test command), regenerate the index with
+     `scripts/tasks-index.sh <name>` — status + index + code = the SAME commit
    - Continue to next task
 
    **Pause if:**
@@ -143,7 +145,7 @@ What would you like to do?
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
 - Keep code changes minimal and scoped to each task
-- Update task checkbox immediately after completing each task
+- Update the task file's frontmatter status (and regenerate the index) immediately after completing each task, in the same commit as the work
 - Pause on errors, blockers, or unclear requirements - don't guess
 - Use contextFiles from CLI output, don't assume specific file names
 

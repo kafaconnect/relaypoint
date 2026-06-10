@@ -69,17 +69,27 @@ Implement tasks from an OpenSpec change.
 
 6. **Implement tasks (loop until done or blocked)**
 
+   Tasks are per-file under `openspec/changes/<name>/tasks/` (docs/conventions.md
+   "Tasks & progress"). Discovery is one grep — never scan the whole index:
+   - Resume after a crash: `grep -l "^status: in_progress" openspec/changes/<name>/tasks/*.md`
+   - Next task: `grep -l "^status: todo" openspec/changes/<name>/tasks/*.md | sort | head -1`
+
    For each pending task:
-   - Show which task is being worked on
-   - Make the code changes required
-   - Keep changes minimal and focused
-   - Mark task complete in the tasks file: `- [ ]` → `- [x]`
+   - Set frontmatter `status: in_progress` + append a dated `## Log` line, commit
+     this WITH the first work commit (progress must survive a crashed session)
+   - Make the code changes required; keep changes minimal and focused
+   - Append Log one-liners for discoveries/decisions/blockers as they happen
+   - On completion: `status: done`, squash the Log to ONE outcome line carrying
+     evidence (commit hash, test command) — done without evidence is not done
+   - Regenerate the index: `scripts/tasks-index.sh <name>` (never hand-edit tasks.md)
+   - Status change + index + code = the SAME commit
    - Continue to next task
 
    **Pause if:**
    - Task is unclear → ask for clarification
    - Implementation reveals a design issue → suggest updating artifacts
-   - Error or blocker encountered → report and wait for guidance
+   - Error or blocker encountered → set `status: blocked` with the blocker named in
+     the Log (committed), report and wait for guidance
    - User interrupts
 
 7. **On completion or pause, show status**

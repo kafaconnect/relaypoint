@@ -94,3 +94,43 @@ await waitForReady()
 ---
 
 `AGENTS.md` enforces these conventions for AI agents.
+
+## Tasks & progress (per-change, in git)
+
+Task state lives in the **repo**, never only in an agent's session/memory — a crashed
+session must lose zero progress. Three rules:
+
+**1. One task = one file.** `openspec/changes/<id>/tasks/<SLICE>-<NN>-<slug>.md`:
+
+```markdown
+---
+id: V0-01
+slice: V0
+title: Example task
+status: todo            # todo | in_progress | blocked | done
+specs: [capability.scenario-id]
+---
+
+What to do, acceptance, references. (The body replaces the old checklist item.)
+
+## Log
+- 2026-06-10 in_progress: started; X discovered, doing Y
+- 2026-06-10 done: outcome line — what landed, evidence (commit abc1234, `test cmd` green)
+```
+
+Frontmatter is the **single source of truth**. Finding work is one grep:
+`grep -l "^status: todo" openspec/changes/<id>/tasks/*.md` (same for `in_progress` on
+crash-resume). Never scan a monolithic checklist.
+
+**2. Progress commits WITH the work.** A status transition (`todo → in_progress → done`,
+or `blocked` with the blocker named in the Log) is part of the same commit as the code it
+describes. `## Log` entries are dated one-liners — discoveries, blockers, decisions — not
+prose. On `done`, squash the Log to a single outcome line carrying the evidence (commit
+hash, test command). qa-verify treats `status: done` without evidence as not done.
+
+**3. tasks.md is a generated index.** `scripts/tasks-index.sh <change-id>` regenerates it
+from frontmatter (a one-line checkbox per task, grouped by slice — keeps the openspec CLI's
+task counting working). Never edit tasks.md by hand; never let it disagree with frontmatter.
+
+Archival needs nothing special: `tasks/` lives inside the change directory, so
+`openspec archive` moves specs, qa, and task history together.
