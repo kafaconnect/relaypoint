@@ -41,8 +41,6 @@ Archive a completed change in the experimental workflow.
    Check per-task frontmatter: `grep -L "^status: done" openspec/changes/<name>/tasks/*.md`
    (legacy fallback: count `- [ ]` in tasks.md). A done task whose Log lacks evidence is incomplete.
 
-   Count tasks marked with `- [ ]` (incomplete) vs `- [x]` (complete).
-
    **If incomplete tasks found:**
    - Display warning showing count of incomplete tasks
    - Prompt user for confirmation to continue

@@ -1,37 +1,42 @@
 ---
 name: openspec-apply-change
-description: Implement tasks from an OpenSpec change. Use when the user wants to start implementing, continue implementation, or work through tasks.
+description: Implement tasks from an OpenSpec change. Use when the user wants to start implementing, continue implementation, work through tasks, or update task status while keeping GitHub Projects board state in sync.
 license: MIT
 compatibility: Requires openspec CLI.
 metadata:
   author: openspec
-  version: "1.0"
+  version: "1.1"
   generatedBy: "1.4.1"
 ---
 
 Implement tasks from an OpenSpec change.
 
-**Input**: Optionally specify a change name. If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
+**Input**: Optionally specify a change name. If omitted, infer only when safe; if
+ambiguous, prompt for available changes.
 
-**Steps**
+## Steps
 
 1. **Select the change**
 
    If a name is provided, use it. Otherwise:
-   - Infer from conversation context if the user mentioned a change
-   - Auto-select if only one active change exists
-   - If ambiguous, run `openspec list --json` to get available changes and use the **AskUserQuestion tool** to let the user select
+   - infer from conversation context if the user named a change;
+   - infer from current branch `change/<name>`;
+   - auto-select only if one active change exists;
+   - if ambiguous, run `openspec list --json` and ask the user.
 
-   Always announce: "Using change: <name>" and how to override (e.g., `/opsx:apply <other>`).
+   Announce: `Using change: <name>`.
 
-2. **Check status to understand the schema**
+2. **Check status**
+
    ```bash
    openspec status --change "<name>" --json
    ```
-   Parse the JSON to understand:
-   - `schemaName`: The workflow being used (e.g., "spec-driven")
-   - `planningHome`, `changeRoot`, and `actionContext`: planning scope and edit constraints
-   - Which artifact contains the tasks (typically "tasks" for spec-driven, check status for others)
+
+   Parse `schemaName`, `planningHome`, `changeRoot`, `actionContext`, and the task
+   artifact paths.
+
+   If `actionContext.mode` is `workspace-planning` and `allowedEditRoots` is empty,
+   STOP before editing and explain that full workspace apply is not supported here.
 
 3. **Get apply instructions**
 
@@ -39,131 +44,74 @@ Implement tasks from an OpenSpec change.
    openspec instructions apply --change "<name>" --json
    ```
 
-   This returns:
-   - `contextFiles`: artifact ID -> array of concrete file paths (varies by schema - could be proposal/specs/design/tasks or spec/tests/implementation/docs)
-   - Progress (total, complete, remaining)
-   - Task list with status
-   - Dynamic instruction based on current state
-
-   **Handle states:**
-   - If `state: "blocked"` (missing artifacts): show message, suggest using openspec-continue-change
-   - If `state: "all_done"`: congratulate, suggest archive
-   - Otherwise: proceed to implementation
-
-   **Workspace guard:** If status JSON reports `actionContext.mode: "workspace-planning"` and `allowedEditRoots` is empty, explain that full workspace apply is not supported in this slice. Treat linked repos and folders as read-only context, ask the user to select an affected area through an explicit implementation workflow, and STOP before editing files.
+   Handle states:
+   - `blocked`: show the missing artifact/blocker and stop.
+   - `all_done`: say all tasks are complete and suggest archive gates.
+   - otherwise continue.
 
 4. **Read context files**
 
-   Read every file path listed under `contextFiles` from the apply instructions output.
-   The files depend on the schema being used:
-   - **spec-driven**: proposal, specs, design, tasks
-   - Other schemas: follow the contextFiles from CLI output
+   Read every concrete path listed under `contextFiles`.
 
 5. **Show current progress**
 
-   Display:
-   - Schema being used
-   - Progress: "N/M tasks complete"
-   - Remaining tasks overview
-   - Dynamic instruction from CLI
+   Display schema, progress `N/M`, remaining task overview, and the dynamic instruction.
 
-6. **Implement tasks (loop until done or blocked)**
+6. **Ensure board linkage before implementation**
 
-   Tasks are per-file under `openspec/changes/<name>/tasks/` (docs/conventions.md
-   "Tasks & progress"). Discovery is one grep — never scan the whole index:
-   - Resume after a crash: `grep -l "^status: in_progress" openspec/changes/<name>/tasks/*.md`
-   - Next task: `grep -l "^status: todo" openspec/changes/<name>/tasks/*.md | sort | head -1`
+   Tasks are per-file under `openspec/changes/<name>/tasks/`. If task files do not have
+   `issue:` frontmatter, run the `change-planning` skill in board-link mode before
+   coding. Required values are Release Train, Iteration, assignee, and optional
+   Capability/Risk. If those cannot be inferred from `.github/project.yml`, the branch,
+   existing issues, or the user request, ask before creating issues.
 
-   For each pending task:
-   - Set frontmatter `status: in_progress` + append a dated `## Log` line, commit
-     this WITH the first work commit (progress must survive a crashed session)
-   - Make the code changes required; keep changes minimal and focused
-   - Append Log one-liners for discoveries/decisions/blockers as they happen
-   - On completion: `status: done`, squash the Log to ONE outcome line carrying
-     evidence (commit hash, test command) — done without evidence is not done
-   - Regenerate the index: `scripts/tasks-index.sh <name>` (never hand-edit tasks.md)
-   - Status change + index + code = the SAME commit
-   - Continue to next task
+7. **Implement tasks**
 
-   **Pause if:**
-   - Task is unclear → ask for clarification
-   - Implementation reveals a design issue → suggest updating artifacts
-   - Error or blocker encountered → set `status: blocked` with the blocker named in
-     the Log (committed), report and wait for guidance
-   - User interrupts
+   Discovery commands:
 
-7. **On completion or pause, show status**
+   ```bash
+   grep -l "^status: in_progress" openspec/changes/<name>/tasks/*.md
+   grep -l "^status: todo" openspec/changes/<name>/tasks/*.md | sort | head -1
+   ```
 
-   Display:
-   - Tasks completed this session
-   - Overall progress: "N/M tasks complete"
-   - If all done: suggest archive
-   - If paused: explain why and wait for guidance
+   For each task:
+   - set frontmatter `status: in_progress`;
+   - append a dated `## Log` line for the start;
+   - regenerate `tasks.md` with `scripts/tasks-index.sh <name>` if present;
+   - run `change-planning` board-sync so the task issue moves to `In Progress`;
+   - make the minimal code changes for that task;
+   - append short log entries only for decisions, evidence, or blockers;
+   - on completion, set `status: done`, squash the task log to one outcome line with
+     evidence such as test command or commit hash, regenerate `tasks.md`, and run
+     board-sync so the task issue closes and moves to `Done`;
+   - commit status/index/code together when committing is part of the workflow.
 
-**Output During Implementation**
+   If blocked, set `status: blocked`, name the blocker in the task log, regenerate
+   `tasks.md`, run board-sync, then report the blocker.
 
-```
-## Implementing: <change-name> (schema: <schema-name>)
+8. **Pause conditions**
 
-Working on task 3/7: <task description>
-[...implementation happening...]
-✓ Task complete
+   Pause and ask when the task is unclear, implementation reveals a design/spec issue,
+   required board values are missing, tests expose unrelated breakage, or the user
+   interrupts.
 
-Working on task 4/7: <task description>
-[...implementation happening...]
-✓ Task complete
-```
+9. **On completion or pause**
 
-**Output On Completion**
+   Show tasks completed this session, overall progress, verification commands run, and
+   any board-sync failures that need retry.
 
-```
-## Implementation Complete
+## Guardrails
 
-**Change:** <change-name>
-**Schema:** <schema-name>
-**Progress:** 7/7 tasks complete ✓
+- Keep going through tasks until done or blocked.
+- Always read context files before starting.
+- Do not implement legacy checkbox-only `tasks.md` as the canonical task source; convert
+  to per-task files first.
+- Keep changes minimal and scoped to the active task.
+- Do not mark a task `done` without evidence.
+- Board state follows task frontmatter; do not edit board scope directly.
 
-### Completed This Session
-- [x] Task 1
-- [x] Task 2
-...
+## Fluid workflow integration
 
-All tasks complete! Ready to archive this change.
-```
-
-**Output On Pause (Issue Encountered)**
-
-```
-## Implementation Paused
-
-**Change:** <change-name>
-**Schema:** <schema-name>
-**Progress:** 4/7 tasks complete
-
-### Issue Encountered
-<description of the issue>
-
-**Options:**
-1. <option 1>
-2. <option 2>
-3. Other approach
-
-What would you like to do?
-```
-
-**Guardrails**
-- Keep going through tasks until done or blocked
-- Always read context files before starting (from the apply instructions output)
-- If task is ambiguous, pause and ask before implementing
-- If implementation reveals issues, pause and suggest artifact updates
-- Keep code changes minimal and scoped to each task
-- Update task checkbox immediately after completing each task
-- Pause on errors, blockers, or unclear requirements - don't guess
-- Use contextFiles from CLI output, don't assume specific file names
-
-**Fluid Workflow Integration**
-
-This skill supports the "actions on a change" model:
-
-- **Can be invoked anytime**: Before all artifacts are done (if tasks exist), after partial implementation, interleaved with other actions
-- **Allows artifact updates**: If implementation reveals design issues, suggest updating artifacts - not phase-locked, work fluidly
+This skill can run before all artifacts are final, after partial implementation, or
+interleaved with proposal/design updates. If implementation changes scope, update
+OpenSpec first, then rerun board-link/board-sync.

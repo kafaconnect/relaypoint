@@ -1,6 +1,6 @@
 ---
 name: "OPSX: Apply"
-description: Implement tasks from an OpenSpec change (Experimental)
+description: Implement tasks from an OpenSpec change and sync board state
 category: Workflow
 tags: [workflow, artifacts, experimental]
 ---
@@ -63,24 +63,33 @@ Implement tasks from an OpenSpec change.
    - Remaining tasks overview
    - Dynamic instruction from CLI
 
-6. **Implement tasks (loop until done or blocked)**
+6. **Ensure board linkage**
+
+   Tasks are per-file under `openspec/changes/<name>/tasks/`. If task files lack
+   `issue:` frontmatter, invoke the **change-planning** skill in `board-link` mode
+   before coding. Required values: Release Train, Iteration, assignee, optional
+   Capability/Risk.
+
+7. **Implement tasks (loop until done or blocked)**
 
    For each pending task:
-   - Show which task is being worked on
-   - Make the code changes required
-   - Keep changes minimal and focused
-   - Set the task file's frontmatter `status: done`, squash its `## Log` to one
-     evidence line (commit hash / test command), regenerate the index with
-     `scripts/tasks-index.sh <name>` — status + index + code = the SAME commit
+   - Set the task file's frontmatter `status: in_progress`, append a dated `## Log`
+     start line, regenerate `tasks.md`, and run board-sync so the issue moves to
+     `In Progress`
+   - Make the code changes required; keep changes minimal and focused
+   - On completion, set frontmatter `status: done`, squash its `## Log` to one
+     evidence line, regenerate the index with `scripts/tasks-index.sh <name>`, and run
+     board-sync so the task issue closes and moves to `Done`
    - Continue to next task
 
    **Pause if:**
    - Task is unclear → ask for clarification
    - Implementation reveals a design issue → suggest updating artifacts
-   - Error or blocker encountered → report and wait for guidance
+   - Error or blocker encountered → set `status: blocked`, log the blocker, run
+     board-sync, report and wait for guidance
    - User interrupts
 
-7. **On completion or pause, show status**
+8. **On completion or pause, show status**
 
    Display:
    - Tasks completed this session
@@ -145,7 +154,8 @@ What would you like to do?
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
 - Keep code changes minimal and scoped to each task
-- Update the task file's frontmatter status (and regenerate the index) immediately after completing each task, in the same commit as the work
+- Update the task file's frontmatter status, regenerate the index, and sync the board
+  when starting, blocking, or completing each task
 - Pause on errors, blockers, or unclear requirements - don't guess
 - Use contextFiles from CLI output, don't assume specific file names
 

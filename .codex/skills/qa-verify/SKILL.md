@@ -31,7 +31,8 @@ required surface is NO-GO (never a silent pass).
 
 ## 1. Resolve issue + change
 ```sh
-export REPO=kafaconnect/desk REPO_ROOT="$(git rev-parse --show-toplevel)"; cd "$REPO_ROOT"
+export REPO_ROOT="$(git rev-parse --show-toplevel)"; cd "$REPO_ROOT"
+export REPO="${REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 export ISSUE="${ISSUE_NUMBER:?Story/Task/Bug issue number}"; export TS="$(date -u +%Y%m%dT%H%M%SZ)"
 export WORK="$(mktemp -d -t oc-qa.XXXXXX)"
 gh issue view "$ISSUE" -R "$REPO" --json number,title,body,labels,url > "$WORK/issue.json"
