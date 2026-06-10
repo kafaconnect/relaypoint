@@ -38,7 +38,8 @@ Archive a completed change in the experimental workflow.
 
 3. **Check task completion status**
 
-   Read the tasks file (typically `tasks.md`) to check for incomplete tasks.
+   Check per-task frontmatter: `grep -L "^status: done" openspec/changes/<name>/tasks/*.md`
+   (legacy fallback: count `- [ ]` in tasks.md). A done task whose Log lacks evidence is incomplete.
 
    Count tasks marked with `- [ ]` (incomplete) vs `- [x]` (complete).
 
@@ -47,7 +48,7 @@ Archive a completed change in the experimental workflow.
    - Prompt user for confirmation to continue
    - Proceed if user confirms
 
-   **If no tasks file exists:** Proceed without task-related warning.
+   **If no tasks exist:** Proceed without task-related warning. `tasks/` archives with the change directory automatically.
 
 4. **Assess delta spec sync state**
 

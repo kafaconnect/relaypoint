@@ -42,16 +42,25 @@ Archive a completed change in the experimental workflow.
 
 3. **Check task completion status**
 
-   Read the tasks file (typically `tasks.md`) to check for incomplete tasks.
-
-   Count tasks marked with `- [ ]` (incomplete) vs `- [x]` (complete).
+   Tasks are per-file with frontmatter status (docs/conventions.md "Tasks & progress"):
+   ```sh
+   grep -L "^status: done" openspec/changes/<name>/tasks/*.md   # files NOT done
+   ```
+   Also verify compaction: every `status: done` task's `## Log` is squashed to one
+   outcome line WITH evidence (commit hash / test command) — done without evidence
+   is incomplete. (Fallback for legacy changes with only a checklist tasks.md:
+   count `- [ ]` vs `- [x]`.)
 
    **If incomplete tasks found:**
-   - Display warning showing count of incomplete tasks
+   - Display warning listing the not-done task files (id + status)
    - Use **AskUserQuestion tool** to confirm user wants to proceed
    - Proceed if user confirms
 
-   **If no tasks file exists:** Proceed without task-related warning.
+   **If no tasks exist:** Proceed without task-related warning.
+
+   Archival carries progress automatically: `tasks/` lives inside the change
+   directory, so the move to `changes/archive/` takes specs, qa, and task history
+   together — nothing extra to do.
 
 4. **Assess delta spec sync state**
 

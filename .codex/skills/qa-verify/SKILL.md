@@ -45,7 +45,10 @@ export QA_DIR="openspec/changes/$CHANGE/qa"; mkdir -p "$QA_DIR"
 openspec validate "$CHANGE" --strict
 ```
 Determine the scenario ids in scope: prefer ids listed in the issue body, else the
-linked `tasks.md` line, else the spec delta under `openspec/changes/$CHANGE/specs`.
+`specs:` frontmatter of the task files under `openspec/changes/$CHANGE/tasks/`
+(`grep -h "^specs:" tasks/*.md`), else the spec delta under
+`openspec/changes/$CHANGE/specs`. A task with `status: done` whose Log carries no
+evidence (commit hash / test command) is treated as NOT done — flag it.
 If the mapping is ambiguous → ask the human; do NOT mark GO.
 
 Every scenario id MUST have a tagged automated test, then run it:
@@ -90,7 +93,7 @@ export PROTO="docs/prototype"
 [ -d "$PROTO" ] || { echo "NO-GO: prototype path missing: $PROTO"; exit 2; }
 ```
 Locate the reference screen/flow: prefer a `Prototype route:` in the issue body, else
-a `UI flow:` in the tasks.md line, else the screen named in the scenario text, else
+a `UI flow:` line in the task file, else the screen named in the scenario text, else
 search `docs/prototype`. If several screens match → ask the human (ambiguous = NO-GO).
 `IMPL_ROUTE`: read `Impl route:` from the issue body, else default to `$PROTO_ROUTE`.
 ```sh

@@ -49,5 +49,9 @@ rules:
     - Reference existing project patterns and ADRs before introducing new ones.
     - Media decisions must preserve the "media never touches NATS" rule.
   tasks:
-    - Use checklists verifiable through code, tests, docs, or CI output.
+    - "One task = one file under `tasks/<SLICE>-<NN>-<slug>.md` with frontmatter (id, slice, title, status, specs) — see docs/conventions.md 'Tasks & progress'. Frontmatter `status` is the single source of truth."
+    - "`tasks.md` is a GENERATED index (scripts/tasks-index.sh) — never hand-edited; it keeps the openspec CLI checkbox counting working."
+    - "Status transitions (todo -> in_progress -> done; blocked names its blocker in the Log) are committed in the SAME commit as the work they describe — a crashed session loses zero progress."
+    - "Each task body is verifiable through code, tests, docs, or CI output. On done, the `## Log` squashes to one outcome line carrying evidence (commit hash, test command); `status: done` without evidence is treated as not done."
+    - "Each task's frontmatter may carry a GitHub issue number (`issue:`) once synced to the board."
     - "Definition of Done: openspec validate --strict; lint/typecheck/test green; every scenario has a // @spec: test; independent cross-review done; ADR if architecture changed."

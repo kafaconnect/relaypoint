@@ -55,15 +55,15 @@ fi
 
 ## 3. Enumerate linked Story/Task/Bug issues
 
-Two sources, unioned: `#<n>` refs in `tasks.md`, and issues carrying the
+Two sources, unioned: `issue:` frontmatter in `tasks/*.md` (legacy: `#<n>` refs in tasks.md), and issues carrying the
 `openspec-change:<change>` label.
 
 ```sh
-from_tasks="$(grep -oE '#[0-9]+' "$CHDIR/tasks.md" 2>/dev/null | tr -d '#' | sort -u)"
+from_tasks="$( { grep -hoE '^issue: *[0-9]+' "$CHDIR"/tasks/*.md 2>/dev/null | grep -oE '[0-9]+'; grep -oE '#[0-9]+' "$CHDIR/tasks.md" 2>/dev/null | tr -d '#'; } | sort -u)"
 from_label="$(gh issue list -R "$REPO" --label "openspec-change:$CHANGE" --state all \
   --json number --jq '.[].number' 2>/dev/null | sort -u)"
 LINKED="$(printf '%s\n%s\n' "$from_tasks" "$from_label" | grep -E '^[0-9]+$' | sort -un)"
-[ -z "$LINKED" ] && echo "BLOCK: no linked Story/Task/Bug issues found (tasks.md #refs or openspec-change:$CHANGE label)" >> "$BLOCKS"
+[ -z "$LINKED" ] && echo "BLOCK: no linked Story/Task/Bug issues found (task-file issue: frontmatter, tasks.md #refs, or openspec-change:$CHANGE label)" >> "$BLOCKS"
 ```
 
 Drop the Epic itself from the GO requirement — it is the container, not a deliverable:

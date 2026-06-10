@@ -10,7 +10,7 @@ archive command does NOT call it for you.
 
 Use the **archive-guard** skill: for the active change, verify a
 `reviews/cross-review-*.md` exists with no unresolved `[BLOCKER]`, and that every
-linked Story/Task/Bug issue (from `tasks.md` `#<n>` refs or the
+linked Story/Task/Bug issue (from task-file frontmatter `issue:` refs or the
 `openspec-change:<change>` label) has a `GO` report under `qa/`. On any failure it
 BLOCKS and prints the precise reasons; if all pass it states archive is allowed.
 
