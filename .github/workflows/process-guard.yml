@@ -1,0 +1,15 @@
+name: process-guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  skills-mirror:
+    # .codex/skills is a hand-synced copy of .claude/skills; block merging drift.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check .claude/.codex skills mirror
+        run: bash scripts/check-skills-mirror.sh
