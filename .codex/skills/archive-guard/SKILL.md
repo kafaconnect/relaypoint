@@ -30,7 +30,8 @@ never "probably fine".
 ## 1. Resolve the change
 
 ```sh
-export REPO=kafaconnect/desk REPO_ROOT="$(git rev-parse --show-toplevel)"; cd "$REPO_ROOT"
+export REPO_ROOT="$(git rev-parse --show-toplevel)"; cd "$REPO_ROOT"
+export REPO="${REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 export CHANGE="${CHANGE:?openspec change id, e.g. m1-unified-inbox}"
 export CHDIR="openspec/changes/$CHANGE"
 [ -d "$CHDIR" ] || { echo "BLOCK: no such change folder: $CHDIR"; exit 2; }
