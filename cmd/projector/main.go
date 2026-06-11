@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,7 +46,14 @@ func main() {
 	snaps, err := projector.NewSnapshotStore(js)
 	must("snapshot-store", err)
 
-	p := projector.New(src, sink, lease, snaps, projector.Config{MaxDeliver: maxDeliver})
+	cfg := projector.Config{MaxDeliver: maxDeliver}
+	// Dev/test shortcut (off by default): tenant-wide fan-out to a static agent roster, bypassing the
+	// participation gate that stays empty until desk emits participation facts. See projector.Config.
+	if os.Getenv("PROJECTOR_FANOUT_MODE") == "tenant-wide" {
+		cfg.TenantWideAgents = parseTenantAgents(os.Getenv("PROJECTOR_TENANT_AGENTS"))
+		slog.Warn("projector.tenant-wide", "tenants", len(cfg.TenantWideAgents), "note", "participation gate bypassed")
+	}
+	p := projector.New(src, sink, lease, snaps, cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -55,6 +63,25 @@ func main() {
 		slog.Error("projector.exit", "err", err)
 		os.Exit(1)
 	}
+}
+
+// parseTenantAgents reads PROJECTOR_TENANT_AGENTS="<tid>:<agent>[,<tid>:<agent>...]" into the
+// per-tenant roster the tenant-wide shortcut fans to. Repeated tids accumulate agents.
+func parseTenantAgents(csv string) map[string][]string {
+	out := map[string][]string{}
+	for _, pair := range strings.Split(csv, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		tid, agent, ok := strings.Cut(pair, ":")
+		tid, agent = strings.TrimSpace(tid), strings.TrimSpace(agent)
+		if !ok || tid == "" || agent == "" {
+			continue
+		}
+		out[tid] = append(out[tid], agent)
+	}
+	return out
 }
 
 func workerID() string {

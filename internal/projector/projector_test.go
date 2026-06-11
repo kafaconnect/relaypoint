@@ -206,6 +206,25 @@ func TestFanoutToParticipantsOnly(t *testing.T) {
 	}
 }
 
+// Tenant-wide dev/test shortcut: with TenantWideAgents set, every fact of the tenant reaches the
+// configured agents' feeds regardless of participation (no participant.joined at all here), and a
+// non-listed agent gets nothing.
+func TestTenantWideFanoutShortcut(t *testing.T) {
+	src := newFakeSource(
+		fact(1, "I", 1, "interaction.started", "u1"),
+		fact(2, "I", 2, "message.created", "u1"),
+	)
+	sink := newFakeSink()
+	runAll(t, src, sink, nil, Config{TenantWideAgents: map[string][]string{tn: {"agent1"}}})
+
+	if got := len(sink.feedsFor("agent1", "I")); got != 2 { // started + message, no join needed
+		t.Fatalf("agent1 feed = %d facts, want 2 (tenant-wide ignores participation)", got)
+	}
+	if got := len(sink.feedsFor("bob", "I")); got != 0 {
+		t.Fatalf("bob (not in roster) feed = %d, want 0", got)
+	}
+}
+
 // @spec:signaling.feed.fanout-dedup
 // Concurrent/redelivered same-fact is deduped to one stored copy per (agent, interaction, sequence).
 func TestFanoutDedup(t *testing.T) {

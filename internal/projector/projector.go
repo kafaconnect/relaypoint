@@ -78,6 +78,13 @@ type Config struct {
 	PublishRetry  int           // per-feed publish attempts before Nak (default 4)
 	RetryBackoff  time.Duration // base backoff between publish attempts (default 50ms)
 	LeaseRenew    time.Duration // lease heartbeat interval (default 2s; lease TTL ~5s)
+
+	// TenantWideAgents is a DEV/TEST shortcut, off by default (nil): for a tenant present here, every
+	// fact of that tenant fans out to the listed agents' feeds, bypassing the participation gate. This
+	// exists because desk M1 emits no participation facts yet, so the stock per-participation fan-out
+	// leaves every feed empty. Participation is still folded (snapshots stay correct); only the
+	// recipient set is overridden. Production leaves this nil → strict per-participation fan-out.
+	TenantWideAgents map[string][]string
 }
 
 func (c Config) withDefaults() Config {
@@ -225,6 +232,9 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	// their agent but no fact at S > L reaches an already-left agent.
 	view.ApplyFact(e)
 	recipients := coveredBy(view, e.Sequence)
+	if agents := p.cfg.TenantWideAgents[e.TenantId]; len(agents) > 0 {
+		recipients = agents // dev/test shortcut: fan to the configured tenant agents, no participation gate
+	}
 
 	payload, err := proto.Marshal(e)
 	if err != nil {
