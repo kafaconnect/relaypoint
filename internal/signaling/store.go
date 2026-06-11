@@ -21,6 +21,13 @@ type LogStore interface {
 	// ErrOCCConflict unless the subject's current last STREAM sequence equals expectedLastSubjSeq
 	// (0 = the subject is expected empty). dedupID makes the append idempotent: a retry with the
 	// same dedupID returns duplicate=true and writes no second fact.
+	//
+	// dedup-vs-OCC ordering is BROKER-DEPENDENT, not guaranteed: on a single-server (R1) JetStream
+	// the expected-subject check runs BEFORE dedup, so a genuine retry of an already-committed
+	// command_id can surface as ErrOCCConflict instead of duplicate=true (a clustered broker may
+	// order them differently). Callers therefore MUST treat ErrOCCConflict as "rebuild + re-check
+	// command_id dedup", never as a hard "this command was not committed" — the router does exactly
+	// this (its re-fold reveals the committed command_id and replays the cached accepted result).
 	Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (duplicate bool, err error)
 	// Replay MUST error (not return a short slice) if the log can't be fully read, so callers
 	// fail closed. It also returns the subject's current last STREAM sequence (0 if empty) — the

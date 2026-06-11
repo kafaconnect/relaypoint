@@ -238,6 +238,56 @@ func TestCore_DupRebuildFailEvicts(t *testing.T) {
 	}
 }
 
+// occBeforeDedupStore models a single-server (R1) JetStream where the expected-subject (OCC)
+// check runs BEFORE Nats-Msg-Id dedup. The initial fold (getState) is one sequence behind the
+// true tail — it omits the already-committed command_id — so the router believes it must append;
+// the Append then comes back as ErrOCCConflict (not duplicate=true), and the re-fold reveals the
+// committed fact. Append MUST be called at most once: the router satisfies the retry from its
+// re-fold, never a second append.
+type occBeforeDedupStore struct {
+	base    []*Event // visible on the stale first fold
+	hidden  *Event   // the already-committed command_id, revealed only after the OCC conflict
+	replays int
+	appends int
+}
+
+func (s *occBeforeDedupStore) Append(string, []byte, string, uint64) (bool, error) {
+	s.appends++
+	return false, ErrOCCConflict
+}
+func (s *occBeforeDedupStore) Replay(string) ([]*Event, uint64, error) {
+	s.replays++
+	if s.replays == 1 {
+		return append([]*Event(nil), s.base...), uint64(len(s.base)), nil
+	}
+	out := append(append([]*Event(nil), s.base...), s.hidden)
+	return out, uint64(len(out)), nil
+}
+
+// On an R1 broker the OCC check precedes dedup, so a retry of an already-committed command_id
+// surfaces as ErrOCCConflict. The router MUST re-fold, recognise the committed command_id, and
+// replay the original cached accepted result (same caused_by) — not a spurious rejection — and
+// MUST NOT append a second fact.
+func TestCore_OCCBeforeDedupReplaysAccepted(t *testing.T) {
+	started := &Event{Schema: SchemaV1, EventType: "interaction.started", EventId: "e1", Sequence: 1, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "c1", CausedBy: "c1"}
+	origCmd := &Command{CommandId: "m1", TenantId: "t1", ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatData("A")}
+	committed := &Event{Schema: SchemaV1, EventType: "message.created", EventId: "e2", Sequence: 2, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "m1", PayloadHash: hashPayload(origCmd), CausedBy: "m1"}
+
+	st := &occBeforeDedupStore{base: []*Event{started}, hidden: committed}
+	r := NewRouter(st)
+
+	got := r.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A"))
+	if got.Status != statusAccepted {
+		t.Fatalf("OCC-before-dedup retry must replay accepted, got %+v", got)
+	}
+	if got.CausedBy != "m1" {
+		t.Fatalf("replayed result must keep original caused_by m1, got %q", got.CausedBy)
+	}
+	if st.appends != 1 {
+		t.Fatalf("router must append no second fact (re-fold satisfies the retry): %d appends", st.appends)
+	}
+}
+
 // a rejected command_id reused with a DIFFERENT payload is a conflict (key bound to
 // its first request); the SAME payload may be retried once it becomes legal.
 func TestCore_RejectedReuseConflict(t *testing.T) {
