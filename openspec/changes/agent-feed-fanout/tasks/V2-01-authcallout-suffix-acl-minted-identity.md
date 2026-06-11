@@ -2,7 +2,7 @@
 id: V2-01
 slice: V2
 title: Auth-callout — suffix-ACL grants + per-connection minted identity (production precondition)
-status: todo
+status: done
 specs:
   - signaling.feed.inbox-reads-own-feed-only
   - signaling.feed.cross-agent-denied
@@ -19,3 +19,12 @@ enforced: the auth-callout mints a per-connection AUTHENTICATED identity and pin
 
 ## Log
 - 2026-06-11 todo: deferred from the V1 slice; requires NATS auth-callout config (no Go-only unit test).
+- 2026-06-11 done: built `internal/authcallout/` (pure `GrantsFor` policy + `Verifier` port/`HMACVerifier`
+  dev impl + NATS `Responder` adapter) and `cmd/authcallout`; minted per-connection identity pins
+  `…cmd.<self>` / `agent.<self>.feed.>` / `_INBOX_<conn>.>`, denies `cmd.<other>` / `.log` / feed-publish /
+  broad `_INBOX.>`; trusted-backend gets privileged-cmd + service grants. `deploy/nats/nats-server.conf`
+  enables `authorization{auth_callout{issuer,account:RP,auth_users:[router,authsvc,client]}}`, `system_account: SYS`
+  kept; compose + Dockerfile + .env wired. Verified on EPHEMERAL Docker NATS: agent ACLs + desk ACLs +
+  bad-token-denied enforced by real NATS; existing signaling integration suite still green against the
+  auth_callout conf (client exempt via auth_users). Shared `rp-nats` (infra/nats, no auth today) NOT
+  reloaded — cross-repo cutover, see report.
