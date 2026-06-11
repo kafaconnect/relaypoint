@@ -66,8 +66,6 @@ export function decodeCommandResult(bytes: Uint8Array): CommandResult {
   };
 }
 
-// command_id and payload_hash on the Event are router-internal and intentionally NOT projected:
-// payload_hash is dedup metadata, and on a fact command_id == caused_by (projected below).
 export function decodeLogEvent(bytes: Uint8Array): LogEvent {
   const w = fromBinary(EventSchema, bytes);
   return {

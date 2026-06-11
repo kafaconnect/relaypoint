@@ -96,11 +96,8 @@ func applyTransition(st *interactionState, cmdType string) {
 	}
 }
 
-// hashPayload is a canonical, length-delimited hash over the Command's fixed fields (command_id
-// excluded — it is bound to its first payload). It deliberately does NOT use proto.Marshal:
-// proto's deterministic marshal is not guaranteed stable across protobuf-library versions, and the
-// hash is persisted on the fact and recomputed after a router restart/upgrade — a marshal drift
-// would false-conflict an identical retry. This field-wise hash is stable forever.
+// NOT proto.Marshal: its deterministic output isn't stable across protobuf-lib upgrades, and this
+// hash is persisted on the fact then recompared after a restart/upgrade.
 func hashPayload(c *Command) string {
 	h := sha256.New()
 	put := func(b []byte) {
@@ -241,7 +238,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	if prev, seen := st.results[cmd.CommandId]; seen {
 		switch {
 		case prev.payloadHash == "": // legacy fact, hash unknown
-			return proto.Clone(prev.result).(*CommandResult) // cached — clone so a caller can't mutate st.results
+			return proto.Clone(prev.result).(*CommandResult)
 		case prev.payloadHash != hashPayload(cmd):
 			res.Status, res.Reason = statusRejected, "conflict: command_id reused with a different payload"
 			return res
