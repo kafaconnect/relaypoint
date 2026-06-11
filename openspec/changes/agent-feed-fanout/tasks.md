@@ -15,8 +15,8 @@
 
 ## V2
 
-- [ ] V2-01 — Auth-callout — suffix-ACL grants + per-connection minted identity (production precondition) ([tasks/V2-01-authcallout-suffix-acl-minted-identity.md](tasks/V2-01-authcallout-suffix-acl-minted-identity.md))
-- [ ] V2-02 — Participation/Fan-out projector service (lease/snapshot/feed subjects) ([tasks/V2-02-fanout-projector-service.md](tasks/V2-02-fanout-projector-service.md))
+- [x] V2-01 — Auth-callout — suffix-ACL grants + per-connection minted identity (production precondition) ([tasks/V2-01-authcallout-suffix-acl-minted-identity.md](tasks/V2-01-authcallout-suffix-acl-minted-identity.md))
+- [x] V2-02 — Participation/Fan-out projector service (lease/snapshot/feed subjects) ([tasks/V2-02-fanout-projector-service.md](tasks/V2-02-fanout-projector-service.md))
 
 ## V3
 

@@ -2,7 +2,7 @@
 id: V2-02
 slice: V2
 title: Participation/Fan-out projector service (lease/snapshot/feed subjects)
-status: todo
+status: done
 specs:
   - signaling.feed.fanout-to-participants
   - signaling.feed.fanout-dedup
@@ -31,3 +31,15 @@ read+write planes share one fold. Core behind owned ports (`ParticipationView`, 
 
 ## Log
 - 2026-06-11 todo: deferred from the V1 slice; depends on the fan-out service + ephemeral feed stream + NATS KV lease.
+- 2026-06-11 done: built `internal/projector` (core) + `cmd/projector` (wiring). Core behind owned ports
+  `LogSource`/`FeedSink`/`LeaseStore`/`SnapshotStore`, reusing `signaling.ParticipationView`
+  (added `NewParticipationView`/`ApplyFact`/`Agents`/`SetIntervals`). Leased single-active worker;
+  durable consumer `fanout-projector` on INTERACTION_LOGS with `MaxAckPending=1` (serial fold);
+  per-fact epoch-guarded fan-out (join≤S≤left) with deterministic `Nats-Msg-Id`; ack-after-publish;
+  KV leader lease + acked-prefix KV snapshot hydration (AckFloor → load snapshot≤floor → fold
+  (snap,floor] → live); `feed.revoked` FeedControl tombstone (additive proto msg); DLQ to
+  `tenant.<tid>.agent.dlq.feed`; ephemeral `AGENT_FEED` stream (short max_age + dedup window).
+  Unit tests with in-memory fakes (no NATS) + integration over ephemeral `nats:2.10-alpine`.
+  gofmt/vet/build/test green; full `-tags integration ./...` green (serialized, single server);
+  `openspec validate agent-feed-fanout --strict` valid. Deferred: V3-01 desk consumer; live
+  shared-`infra/nats` cutover (separate coordinated task).
