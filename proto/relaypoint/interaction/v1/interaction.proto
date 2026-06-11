@@ -37,6 +37,14 @@ message Event {
   string caused_by = 12;       // = the producing command_id
   string ref_id = 13;
   bytes data = 14;             // opaque per event_type/medium (payload registry above); router never parses
+
+  // Audit trail for a router-written participation fact (participant.joined/left,
+  // interaction.assigned) produced from a privileged participation command. Empty on ordinary
+  // facts. actor_id stays the AFFECTED agent; commanded_by is the privileged ACTOR.
+  // See openspec change agent-feed-fanout (Decision 2a).
+  string commanded_by = 15;    // the privileged actor (e.g. desk-svc identity) that issued the command
+  string reason = 16;          // audit reason
+  string request_id = 17;      // audit correlation id of the originating command
 }
 
 // Command is a client intent published on `interaction.<id>.cmd` (request/reply, write-only).

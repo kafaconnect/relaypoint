@@ -24,7 +24,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file relaypoint/interaction/v1/interaction.proto.
  */
 export const file_relaypoint_interaction_v1_interaction: GenFile = /*@__PURE__*/
-  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIqcCCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDCJ+CgdDb21tYW5kEhIKCmNvbW1hbmRfaWQYASABKAkSEQoJdGVuYW50X2lkGAIgASgJEhAKCGFjdG9yX2lkGAMgASgJEgwKBHR5cGUYBCABKAkSDgoGbWVkaXVtGAUgASgJEg4KBnJlZl9pZBgGIAEoCRIMCgRkYXRhGAcgASgMItMBCg1Db21tYW5kUmVzdWx0EhIKCmNvbW1hbmRfaWQYASABKAkSPwoGc3RhdHVzGAIgASgOMi8ucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5Db21tYW5kUmVzdWx0LlN0YXR1cxIRCgljYXVzZWRfYnkYAyABKAkSDgoGcmVhc29uGAQgASgJIkoKBlN0YXR1cxIWChJTVEFUVVNfVU5TUEVDSUZJRUQQABITCg9TVEFUVVNfQUNDRVBURUQQARITCg9TVEFUVVNfUkVKRUNURUQQAiJLCgtTaWduYWxFdmVudBIOCgZzY2hlbWEYASABKAkSDAoEdHlwZRgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgRkYXRhGAQgASgMIjQKC0NoYXRNZXNzYWdlEgwKBHRleHQYASABKAkSFwoPYXR0YWNobWVudF9yZWZzGAIgAygJQlJaUGdpdGh1Yi5jb20va2FmYWNvbm5lY3QvcmVsYXlwb2ludC9nZW4vZ28vcmVsYXlwb2ludC9pbnRlcmFjdGlvbi92MTtpbnRlcmFjdGlvbnBiYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIuECCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDBIUCgxjb21tYW5kZWRfYnkYDyABKAkSDgoGcmVhc29uGBAgASgJEhIKCnJlcXVlc3RfaWQYESABKAkifgoHQ29tbWFuZBISCgpjb21tYW5kX2lkGAEgASgJEhEKCXRlbmFudF9pZBgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgR0eXBlGAQgASgJEg4KBm1lZGl1bRgFIAEoCRIOCgZyZWZfaWQYBiABKAkSDAoEZGF0YRgHIAEoDCLTAQoNQ29tbWFuZFJlc3VsdBISCgpjb21tYW5kX2lkGAEgASgJEj8KBnN0YXR1cxgCIAEoDjIvLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuQ29tbWFuZFJlc3VsdC5TdGF0dXMSEQoJY2F1c2VkX2J5GAMgASgJEg4KBnJlYXNvbhgEIAEoCSJKCgZTdGF0dXMSFgoSU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPU1RBVFVTX0FDQ0VQVEVEEAESEwoPU1RBVFVTX1JFSkVDVEVEEAIiSwoLU2lnbmFsRXZlbnQSDgoGc2NoZW1hGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIYWN0b3JfaWQYAyABKAkSDAoEZGF0YRgEIAEoDCI0CgtDaGF0TWVzc2FnZRIMCgR0ZXh0GAEgASgJEhcKD2F0dGFjaG1lbnRfcmVmcxgCIAMoCUJSWlBnaXRodWIuY29tL2thZmFjb25uZWN0L3JlbGF5cG9pbnQvZ2VuL2dvL3JlbGF5cG9pbnQvaW50ZXJhY3Rpb24vdjE7aW50ZXJhY3Rpb25wYmIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * Event is the authoritative `.log` fact (one envelope for chat AND call; `medium` is a
@@ -118,6 +118,32 @@ export type Event = Message<"relaypoint.interaction.v1.Event"> & {
    * @generated from field: bytes data = 14;
    */
   data: Uint8Array;
+
+  /**
+   * Audit trail for a router-written participation fact (participant.joined/left,
+   * interaction.assigned) produced from a privileged participation command. Empty on ordinary
+   * facts. actor_id stays the AFFECTED agent; commanded_by is the privileged ACTOR.
+   * See openspec change agent-feed-fanout (Decision 2a).
+   *
+   * the privileged actor (e.g. desk-svc identity) that issued the command
+   *
+   * @generated from field: string commanded_by = 15;
+   */
+  commandedBy: string;
+
+  /**
+   * audit reason
+   *
+   * @generated from field: string reason = 16;
+   */
+  reason: string;
+
+  /**
+   * audit correlation id of the originating command
+   *
+   * @generated from field: string request_id = 17;
+   */
+  requestId: string;
 };
 
 /**

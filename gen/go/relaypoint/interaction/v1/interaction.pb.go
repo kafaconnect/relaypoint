@@ -86,21 +86,28 @@ func (CommandResult_Status) EnumDescriptor() ([]byte, []int) {
 // Event is the authoritative `.log` fact (one envelope for chat AND call; `medium` is a
 // payload field, never a subject). Router-written only.
 type Event struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Schema        string                 `protobuf:"bytes,1,opt,name=schema,proto3" json:"schema,omitempty"`
-	EventType     string                 `protobuf:"bytes,2,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"` // message.created, interaction.started/ended, webrtc.offer, ...
-	EventId       string                 `protobuf:"bytes,3,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
-	Sequence      int64                  `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`                      // dense per-interaction, router-assigned (NOT the stream seq)
-	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"` // display-only — never order/dedup/secure by this
-	TenantId      string                 `protobuf:"bytes,6,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	ActorId       string                 `protobuf:"bytes,7,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
-	Medium        string                 `protobuf:"bytes,8,opt,name=medium,proto3" json:"medium,omitempty"`                                 // 'chat' | 'call'
-	MediaProfile  string                 `protobuf:"bytes,9,opt,name=media_profile,json=mediaProfile,proto3" json:"media_profile,omitempty"` // 'webrtc-p2p' (call facts only); "" when absent
-	CommandId     string                 `protobuf:"bytes,10,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	PayloadHash   string                 `protobuf:"bytes,11,opt,name=payload_hash,json=payloadHash,proto3" json:"payload_hash,omitempty"` // cross-restart conflict detection (router-internal)
-	CausedBy      string                 `protobuf:"bytes,12,opt,name=caused_by,json=causedBy,proto3" json:"caused_by,omitempty"`          // = the producing command_id
-	RefId         string                 `protobuf:"bytes,13,opt,name=ref_id,json=refId,proto3" json:"ref_id,omitempty"`
-	Data          []byte                 `protobuf:"bytes,14,opt,name=data,proto3" json:"data,omitempty"` // opaque per event_type/medium (payload registry above); router never parses
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Schema       string                 `protobuf:"bytes,1,opt,name=schema,proto3" json:"schema,omitempty"`
+	EventType    string                 `protobuf:"bytes,2,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"` // message.created, interaction.started/ended, webrtc.offer, ...
+	EventId      string                 `protobuf:"bytes,3,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	Sequence     int64                  `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`                      // dense per-interaction, router-assigned (NOT the stream seq)
+	OccurredAt   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"` // display-only — never order/dedup/secure by this
+	TenantId     string                 `protobuf:"bytes,6,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ActorId      string                 `protobuf:"bytes,7,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	Medium       string                 `protobuf:"bytes,8,opt,name=medium,proto3" json:"medium,omitempty"`                                 // 'chat' | 'call'
+	MediaProfile string                 `protobuf:"bytes,9,opt,name=media_profile,json=mediaProfile,proto3" json:"media_profile,omitempty"` // 'webrtc-p2p' (call facts only); "" when absent
+	CommandId    string                 `protobuf:"bytes,10,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	PayloadHash  string                 `protobuf:"bytes,11,opt,name=payload_hash,json=payloadHash,proto3" json:"payload_hash,omitempty"` // cross-restart conflict detection (router-internal)
+	CausedBy     string                 `protobuf:"bytes,12,opt,name=caused_by,json=causedBy,proto3" json:"caused_by,omitempty"`          // = the producing command_id
+	RefId        string                 `protobuf:"bytes,13,opt,name=ref_id,json=refId,proto3" json:"ref_id,omitempty"`
+	Data         []byte                 `protobuf:"bytes,14,opt,name=data,proto3" json:"data,omitempty"` // opaque per event_type/medium (payload registry above); router never parses
+	// Audit trail for a router-written participation fact (participant.joined/left,
+	// interaction.assigned) produced from a privileged participation command. Empty on ordinary
+	// facts. actor_id stays the AFFECTED agent; commanded_by is the privileged ACTOR.
+	// See openspec change agent-feed-fanout (Decision 2a).
+	CommandedBy   string `protobuf:"bytes,15,opt,name=commanded_by,json=commandedBy,proto3" json:"commanded_by,omitempty"` // the privileged actor (e.g. desk-svc identity) that issued the command
+	Reason        string `protobuf:"bytes,16,opt,name=reason,proto3" json:"reason,omitempty"`                              // audit reason
+	RequestId     string `protobuf:"bytes,17,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`       // audit correlation id of the originating command
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -231,6 +238,27 @@ func (x *Event) GetData() []byte {
 		return x.Data
 	}
 	return nil
+}
+
+func (x *Event) GetCommandedBy() string {
+	if x != nil {
+		return x.CommandedBy
+	}
+	return ""
+}
+
+func (x *Event) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *Event) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
 }
 
 // Command is a client intent published on `interaction.<id>.cmd` (request/reply, write-only).
@@ -524,7 +552,7 @@ var File_relaypoint_interaction_v1_interaction_proto protoreflect.FileDescriptor
 
 const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\n" +
-	"+relaypoint/interaction/v1/interaction.proto\x12\x19relaypoint.interaction.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb1\x03\n" +
+	"+relaypoint/interaction/v1/interaction.proto\x12\x19relaypoint.interaction.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8b\x04\n" +
 	"\x05Event\x12\x16\n" +
 	"\x06schema\x18\x01 \x01(\tR\x06schema\x12\x1d\n" +
 	"\n" +
@@ -543,7 +571,11 @@ const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\fpayload_hash\x18\v \x01(\tR\vpayloadHash\x12\x1b\n" +
 	"\tcaused_by\x18\f \x01(\tR\bcausedBy\x12\x15\n" +
 	"\x06ref_id\x18\r \x01(\tR\x05refId\x12\x12\n" +
-	"\x04data\x18\x0e \x01(\fR\x04data\"\xb7\x01\n" +
+	"\x04data\x18\x0e \x01(\fR\x04data\x12!\n" +
+	"\fcommanded_by\x18\x0f \x01(\tR\vcommandedBy\x12\x16\n" +
+	"\x06reason\x18\x10 \x01(\tR\x06reason\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x11 \x01(\tR\trequestId\"\xb7\x01\n" +
 	"\aCommand\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x1b\n" +
