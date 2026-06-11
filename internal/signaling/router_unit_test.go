@@ -20,11 +20,16 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{facts: map[string][]*Event{}, dedup: map[string]bool{}}
 }
 
-func (s *fakeStore) Append(subject string, data []byte, dedupID string) (bool, error) {
+// streamSeq is the fake's per-subject STREAM sequence — the in-memory analogue of JetStream's
+// per-subject last-sequence the router echoes for OCC. Append enforces it like the real store.
+func (s *fakeStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dedup[dedupID] {
 		return true, nil
+	}
+	if uint64(len(s.facts[subject])) != expectedLastSubjSeq {
+		return false, ErrOCCConflict
 	}
 	s.dedup[dedupID] = true
 	e := &Event{}
@@ -33,10 +38,11 @@ func (s *fakeStore) Append(subject string, data []byte, dedupID string) (bool, e
 	return false, nil
 }
 
-func (s *fakeStore) Replay(subject string) ([]*Event, error) {
+func (s *fakeStore) Replay(subject string) ([]*Event, uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]*Event(nil), s.facts[subject]...), nil
+	out := append([]*Event(nil), s.facts[subject]...)
+	return out, uint64(len(out)), nil
 }
 
 // chatData marshals chat message text into the `data` payload (the registry: medium=chat).
@@ -65,14 +71,14 @@ func TestCore_NoNATS(t *testing.T) {
 	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi")); got.Status != statusAccepted {
 		t.Fatalf("message: %+v", got)
 	}
-	facts, _ := st.Replay(logSubjectFor("t1", "iX"))
+	facts, _, _ := st.Replay(logSubjectFor("t1", "iX"))
 	if len(facts) != 2 || facts[0].Sequence != 1 || facts[1].Sequence != 2 {
 		t.Fatalf("sequences %+v want 1,2", facts)
 	}
 
 	// idempotency: same command replayed → no second fact
 	a := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi"))
-	facts, _ = st.Replay(logSubjectFor("t1", "iX"))
+	facts, _, _ = st.Replay(logSubjectFor("t1", "iX"))
 	if a.Status != statusAccepted || len(facts) != 2 {
 		t.Fatalf("retry double-appended: %+v / %d facts", a, len(facts))
 	}
@@ -103,13 +109,13 @@ func TestCore_RestartRebuild(t *testing.T) {
 	if got.Status != statusAccepted {
 		t.Fatalf("post-restart message rejected (state not rebuilt): %+v", got)
 	}
-	facts, _ := st.Replay(logSubjectFor("t1", "iX"))
+	facts, _, _ := st.Replay(logSubjectFor("t1", "iX"))
 	if n := len(facts); n != 3 || facts[2].Sequence != 3 {
 		t.Fatalf("post-restart sequence wrong: %d facts, last seq %d (want 3,3)", n, facts[len(facts)-1].Sequence)
 	}
 	// a replayed command from before the restart is recognised (no double-append)
 	got = r2.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "a"))
-	facts, _ = st.Replay(logSubjectFor("t1", "iX"))
+	facts, _, _ = st.Replay(logSubjectFor("t1", "iX"))
 	if got.Status != statusAccepted || len(facts) != 3 {
 		t.Fatalf("post-restart replay double-appended: %+v / %d", got, len(facts))
 	}
@@ -141,13 +147,16 @@ type concurrentWriterStore struct {
 	replays int
 }
 
-func (s *concurrentWriterStore) Append(string, []byte, string) (bool, error) { return true, nil }
-func (s *concurrentWriterStore) Replay(string) ([]*Event, error) {
+func (s *concurrentWriterStore) Append(string, []byte, string, uint64) (bool, error) {
+	return true, nil
+}
+func (s *concurrentWriterStore) Replay(string) ([]*Event, uint64, error) {
 	s.replays++
 	if s.replays == 1 {
-		return append([]*Event(nil), s.base...), nil
+		return append([]*Event(nil), s.base...), uint64(len(s.base)), nil
 	}
-	return append(append([]*Event(nil), s.base...), s.hidden), nil
+	out := append(append([]*Event(nil), s.base...), s.hidden)
+	return out, uint64(len(out)), nil
 }
 
 // The dup-append path must compare the COMMITTED fact's payload_hash: a divergent reuse is a
@@ -202,13 +211,15 @@ func TestCore_RefIDRequired(t *testing.T) {
 // duplicate; the dup-path rebuild then fails — the router must NOT keep stale in-memory seq.
 type dupRebuildFailStore struct{ calls int }
 
-func (s *dupRebuildFailStore) Append(string, []byte, string) (bool, error) { return true, nil }
-func (s *dupRebuildFailStore) Replay(string) ([]*Event, error) {
+func (s *dupRebuildFailStore) Append(string, []byte, string, uint64) (bool, error) {
+	return true, nil
+}
+func (s *dupRebuildFailStore) Replay(string) ([]*Event, uint64, error) {
 	s.calls++
 	if s.calls == 1 {
-		return nil, nil
+		return nil, 0, nil
 	}
-	return nil, errors.New("replay down")
+	return nil, 0, errors.New("replay down")
 }
 
 // On a duplicate append whose reconciling rebuild fails, the interaction is evicted so the next

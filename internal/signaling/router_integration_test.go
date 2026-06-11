@@ -241,7 +241,7 @@ func TestResetLogStreamPurgesFacts(t *testing.T) {
 	}
 
 	store := NewJetStreamStore(js)
-	facts, err := store.Replay(subj)
+	facts, _, err := store.Replay(subj)
 	if err != nil {
 		t.Fatalf("replay after reset must succeed on a clean stream, got %v", err)
 	}
