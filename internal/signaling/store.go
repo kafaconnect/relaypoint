@@ -20,8 +20,10 @@ type LogStore interface {
 	// Append publishes a fact under per-subject optimistic concurrency: the store rejects with
 	// ErrOCCConflict unless the subject's current last STREAM sequence equals expectedLastSubjSeq
 	// (0 = the subject is expected empty). dedupID makes the append idempotent: a retry with the
-	// same dedupID returns duplicate=true and writes no second fact.
-	Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (duplicate bool, err error)
+	// same dedupID returns duplicate=true and writes no second fact. newSubjSeq is the STREAM
+	// sequence the store actually assigned (GLOBAL, not per-subject contiguous) — the OCC token the
+	// caller MUST echo on its next append, never a naive +1.
+	Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (newSubjSeq uint64, duplicate bool, err error)
 	// Replay MUST error (not return a short slice) if the log can't be fully read, so callers
 	// fail closed. It also returns the subject's current last STREAM sequence (0 if empty) — the
 	// OCC token a subsequent Append must echo, distinct from the dense per-interaction sequence.
@@ -32,17 +34,17 @@ type jetstreamStore struct{ js nats.JetStreamContext }
 
 func NewJetStreamStore(js nats.JetStreamContext) LogStore { return &jetstreamStore{js: js} }
 
-func (s *jetstreamStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+func (s *jetstreamStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (uint64, bool, error) {
 	ack, err := s.js.Publish(subject, data,
 		nats.MsgId(dedupID), nats.ExpectLastSequencePerSubject(expectedLastSubjSeq))
 	if err != nil {
 		var apiErr *nats.APIError
 		if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
-			return false, ErrOCCConflict
+			return 0, false, ErrOCCConflict
 		}
-		return false, err
+		return 0, false, err
 	}
-	return ack.Duplicate, nil
+	return ack.Sequence, ack.Duplicate, nil
 }
 
 func (s *jetstreamStore) Replay(subject string) ([]*Event, uint64, error) {

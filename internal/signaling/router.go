@@ -243,6 +243,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	// A loser re-folds and retries ONCE: a concurrent writer may have advanced the subject, ended
 	// the interaction, or already committed THIS command_id. See openspec change router-occ.
 	var dup bool
+	var committedSubjSeq uint64
 	for attempt := 0; ; attempt++ {
 		// A command_id is bound to its first payload (re-checked each attempt: a re-fold can reveal
 		// a concurrent writer committed it).
@@ -276,7 +277,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		payload, _ := proto.Marshal(ev)
 		// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even
 		// if a prior append's ack was lost.
-		d, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
+		newSubjSeq, d, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
 			// Lost the race: another writer advanced the subject. Re-fold once from the log and
 			// retry; if we still lose, surface a retryable rejection (never append behind a stale seq).
@@ -314,6 +315,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			return res
 		}
 		dup = d
+		committedSubjSeq = newSubjSeq
 		break
 	}
 	res.Status, res.CausedBy = statusAccepted, cmd.CommandId
@@ -345,7 +347,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return res
 	}
 	st.seq++
-	st.streamSeq++ // we committed exactly one fact under OCC: the subject advanced by one
+	st.streamSeq = committedSubjSeq // the OCC token is the store-assigned GLOBAL stream seq, never +1
 	applyTransition(st, cmd.Type)
 	st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
 
