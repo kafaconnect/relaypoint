@@ -10,6 +10,9 @@ services:
     environment:                       # @spec:deploy.creds.env-externalised
       ROUTER_PASSWORD: ${ROUTER_PASSWORD:-router-dev}
       CLIENT_PASSWORD: ${CLIENT_PASSWORD:-client-dev}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-auth-dev}
+      # The auth account PUBLIC nkey that signs minted users (the SEED stays with the responder).
+      AUTH_CALLOUT_ISSUER: ${AUTH_CALLOUT_ISSUER:?set AUTH_CALLOUT_ISSUER — mint an account nkey, see deploy/.env.example}
     volumes:
       - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats-data:/data/jetstream
@@ -35,6 +38,21 @@ services:
     depends_on:                        # @spec:deploy.health.router-waits-for-nats
       nats:
         condition: service_healthy     # don't race NATS startup
+    restart: unless-stopped
+
+  authcallout:
+    build: { context: .., dockerfile: deploy/authcallout.Dockerfile }
+    environment:
+      NATS_URL: "nats://nats:4222"
+      NATS_AUTH_USER: "authsvc"
+      NATS_AUTH_PASSWORD: ${AUTH_PASSWORD:-auth-dev}
+      AUTH_CALLOUT_ACCOUNT: "RP"
+      # The issuer SEED + token-verify secret live ONLY here — never in the NATS config.
+      AUTH_CALLOUT_ISSUER_SEED: ${AUTH_CALLOUT_ISSUER_SEED:?set AUTH_CALLOUT_ISSUER_SEED — the account seed matching AUTH_CALLOUT_ISSUER}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?set AUTH_TOKEN_SECRET}
+    depends_on:
+      nats:
+        condition: service_healthy
     restart: unless-stopped
 
   coturn:

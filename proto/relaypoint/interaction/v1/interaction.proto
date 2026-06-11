@@ -37,6 +37,14 @@ message Event {
   string caused_by = 12;       // = the producing command_id
   string ref_id = 13;
   bytes data = 14;             // opaque per event_type/medium (payload registry above); router never parses
+
+  // Audit trail for a router-written participation fact (participant.joined/left,
+  // interaction.assigned) produced from a privileged participation command. Empty on ordinary
+  // facts. actor_id stays the AFFECTED agent; commanded_by is the privileged ACTOR.
+  // See openspec change agent-feed-fanout (Decision 2a).
+  string commanded_by = 15;    // the privileged actor (e.g. desk-svc identity) that issued the command
+  string reason = 16;          // audit reason
+  string request_id = 17;      // audit correlation id of the originating command
 }
 
 // Command is a client intent published on `interaction.<id>.cmd` (request/reply, write-only).
@@ -79,4 +87,17 @@ message SignalEvent {
 message ChatMessage {
   string text = 1;
   repeated string attachment_refs = 2; // object refs (media off NATS)
+}
+
+// FeedControl is the ONE agent-feed message that is NOT a copied .log Event: a small
+// feed-control marker the Fan-out service writes into tenant.<tid>.agent.<aid>.feed.<iid>.
+// A feed consumer distinguishes it from a projected Event by the `control` type marker.
+// `feed.revoked` is the only control type this change defines (agent-feed-fanout, Decision 8):
+// it is the terminal tombstone for a revoked interaction, carrying the .log `sequence` at which
+// the membership interval closed, so a reconnecting client drops the interaction deterministically.
+message FeedControl {
+  string schema = 1;          // "relaypoint.interaction.v1"
+  string control = 2;         // "feed.revoked"
+  string interaction_id = 3;
+  int64 at_sequence = 4;      // the .log sequence at which membership closed
 }

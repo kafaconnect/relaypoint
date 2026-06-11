@@ -24,7 +24,7 @@ func seedCtx(m *nats.Msg, base *slog.Logger) context.Context {
 func TestSubscribeTraceparentPropagated(t *testing.T) {
 	const inbound = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	var buf bytes.Buffer
-	m := nats.NewMsg("tenant.t1.interaction.iX.cmd")
+	m := nats.NewMsg("tenant.t1.interaction.iX.cmd.u1")
 	m.Header.Set("traceparent", inbound)
 	ctx := seedCtx(m, captureLogger(&buf))
 
@@ -46,7 +46,7 @@ func TestSubscribeTraceparentPropagated(t *testing.T) {
 // @spec:obs.nats-traceparent-propagated (missing header → fresh trace, not a drop)
 func TestSubscribeMissingHeaderFreshTrace(t *testing.T) {
 	var buf bytes.Buffer
-	m := nats.NewMsg("tenant.t1.interaction.iX.cmd") // no traceparent header
+	m := nats.NewMsg("tenant.t1.interaction.iX.cmd.u1") // no traceparent header
 	ctx := seedCtx(m, captureLogger(&buf))
 
 	tc, ok := obs.TraceFromContext(ctx)

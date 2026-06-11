@@ -2,11 +2,21 @@ package signaling
 
 import "context"
 
-// Identity is the trusted source of tenant/actor — the authenticated caller, NOT the
-// client-controlled subject or payload, which the router validates against it.
+// Role MUST come from the authenticated identity, never the payload; RoleTrustedBackend gates the
+// privileged participation commands. See openspec change agent-feed-fanout (Decision 2).
+type Role string
+
+const (
+	RoleAgent          Role = "agent"
+	RoleTrustedBackend Role = "trusted-backend"
+)
+
+// Identity is the trusted source of tenant/actor — the authenticated caller, not the client-controlled
+// subject or payload, which the router validates against it. Empty fields mean unauthenticated.
 type Identity struct {
-	TenantID string // "" if the transport authenticated no tenant
-	UserID   string // "" if not yet bound (pre auth-callout)
+	TenantID string
+	UserID   string
+	Role     Role
 }
 
 type identityKey struct{}
@@ -20,4 +30,12 @@ func IdentityFrom(ctx context.Context) Identity {
 		return id
 	}
 	return Identity{}
+}
+
+// RoleOf returns the identity's role, defaulting an unset role to RoleAgent.
+func RoleOf(id Identity) Role {
+	if id.Role != "" {
+		return id.Role
+	}
+	return RoleAgent
 }

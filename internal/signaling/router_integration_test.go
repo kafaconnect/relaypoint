@@ -39,8 +39,8 @@ func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 	if err := ResetLogStream(rjs); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	r := NewRouter(NewJetStreamStore(rjs))
-	sub, err := rnc.QueueSubscribe("tenant.*.interaction.*.cmd", "router", func(m *nats.Msg) {
+	r := NewRouter(NewJetStreamStore(rjs), WithDevMode())
+	sub, err := rnc.QueueSubscribe("tenant.*.interaction.*.cmd.*", "router", func(m *nats.Msg) {
 		b, _ := proto.Marshal(r.HandleCommand(context.Background(), m.Subject, m.Data))
 		if m.Reply != "" {
 			_ = m.Respond(b)
@@ -60,7 +60,7 @@ func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 func sendCmd(t *testing.T, cnc *nats.Conn, tenant, iid string, c *Command) *CommandResult {
 	t.Helper()
 	b, _ := proto.Marshal(c)
-	msg, err := cnc.Request(fmt.Sprintf("tenant.%s.interaction.%s.cmd", tenant, iid), b, 2*time.Second)
+	msg, err := cnc.Request(fmt.Sprintf("tenant.%s.interaction.%s.cmd.%s", tenant, iid, c.ActorId), b, 2*time.Second)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
