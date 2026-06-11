@@ -231,7 +231,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	// role-gated to a trusted backend, they WRITE participant.* / interaction.assigned facts with
 	// audit fields. Agent-role connections are rejected here (Decision 2a).
 	if isParticipationCommand(cmd.Type) {
-		return r.handleParticipation(ctx, tenant, iid, suffix, roleOf(id), cmd)
+		return r.handleParticipation(ctx, tenant, iid, suffix, RoleOf(id), cmd)
 	}
 
 	if requiresRefID(cmd.Type) && cmd.RefId == "" {
@@ -247,7 +247,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	// suffix advisory (Decision 1 precondition), so it does not gate participation. Interaction
 	// lifecycle (started/ended) is not participant-gated — an interaction has no participants
 	// before it is started (chicken-and-egg).
-	if isAuthenticated(id) && roleOf(id) == RoleAgent && !isLifecycleCommand(cmd.Type) {
+	if isAuthenticated(id) && RoleOf(id) == RoleAgent && !isLifecycleCommand(cmd.Type) {
 		facts, _, ferr := r.store.Replay(logSubjectFor(tenant, iid))
 		if ferr != nil {
 			res.Status, res.Reason = statusRejected, "state unavailable (log replay failed) — retry"
@@ -399,13 +399,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 // Until the auth-callout mints a per-connection identity, this suffix is the dev identity source
 // (see openspec change agent-feed-fanout, Decision 1: write-identity precondition). The bare
 // 5-token .cmd subject is retired — the router subscribes tenant.*.interaction.*.cmd.* now.
-func roleOf(id Identity) Role {
-	if id.Role != "" {
-		return id.Role
-	}
-	return RoleAgent
-}
-
+//
 // isAuthenticated reports whether the transport bound a real identity (auth-callout minted). The
 // shared-`client` dev posture leaves both fields empty; in that posture the suffix is advisory and
 // the participant/role gates are not enforced (Decision 1 write-identity precondition).

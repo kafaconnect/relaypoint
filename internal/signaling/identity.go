@@ -33,3 +33,11 @@ func IdentityFrom(ctx context.Context) Identity {
 	}
 	return Identity{}
 }
+
+// RoleOf returns the identity's role, defaulting an unset role to RoleAgent.
+func RoleOf(id Identity) Role {
+	if id.Role != "" {
+		return id.Role
+	}
+	return RoleAgent
+}
