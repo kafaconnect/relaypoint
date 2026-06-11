@@ -4,13 +4,16 @@ All subjects are prefixed `tenant.<tenantId>.` (omitted below for brevity), dot-
 lowercase; ids carry no dots/slashes — the same rules as `.log`. This delta ADDS a per-agent
 fan-out **feed** as the agent-inbox read surface and a server-side **Participation/Fan-out
 service** that projects canonical `.log` facts into it. The canonical `interaction.<id>.log` /
-`.cmd` / `.signal` / offer subjects, the event envelope, and router authority are UNCHANGED; the
-feed is a derived, read-only projection of the same facts. The feed message reuses the
+`.signal` / offer subjects, the event envelope, and router authority are UNCHANGED; the `.cmd`
+subject's SEMANTICS are unchanged but its SHAPE gains an `<identity>` suffix (requiring a router +
+SDK migration). The feed is a derived, read-only projection of the same facts and reuses the
 signaling-core event envelope verbatim (it is a copy of the source `.log` `Event`, same
 `sequence`/`event_id`). This is a PINNED, deterministic authorization boundary: participation is
 derived SOLELY from `.log` facts (source A); the inbox `.cmd` grant is wildcard-interaction with an
-ACL-pinned `<self>` identity suffix authorized server-side; the feed is ephemeral with the
-canonical `.log` + a history-read command as the audit source.
+ACL-pinned `<self>` identity suffix authorized server-side; the feed is **live-only from the
+agent's join point forward** (RelayPoint serves NO conversation history — that is DESK's data,
+served by desk REST against Postgres); the feed is ephemeral with the canonical `.log` as RP's
+audit source.
 
 ## ADDED Requirements
 
@@ -62,7 +65,10 @@ MUST NOT be required for `.cmd` (the wildcard command grant below already covers
 ### Requirement: Command publishes carry an ACL-pinned identity suffix; participation is authorized server-side (no write reconnect)
 The command subject MUST carry an identity suffix `tenant.<tid>.interaction.<iid>.cmd.<identity>`,
 mirroring the existing `.signal.<userId>` precedent: the publisher's id is in the subject and the
-NATS publish-ACL — NOT a payload field — binds each command to its author. The inbox connection
+NATS publish-ACL — NOT a payload field — binds each command to its author. The `.cmd` SEMANTICS are
+unchanged; only the subject SHAPE gains this `<identity>` suffix — a breaking migration the router
+(subscribe `*.cmd.*`, read the suffix) and the SDK (publish to `…cmd.<self>`) MUST both adopt.
+The inbox connection
 MUST hold a SINGLE grant `publish tenant.<tid>.interaction.*.cmd.<self>` for its lifetime (wildcard
 INTERACTION, FIXED `<self>` suffix; `*.cmd.<other>` MUST be denied) — NOT a per-accepted-interaction
 grant — so a newly-assigned agent can issue commands with NO token refresh and NO reconnect, yet can
@@ -78,6 +84,12 @@ membership (the same `ParticipationView` fold) that drives the feed. A `.cmd` fr
 agent MUST be REJECTED with a `CommandResult{REJECTED}` and MUST NOT produce any `.log` fact. The
 router's participant check and the Fan-out service's projection check MUST use the SAME participation
 view so the WRITE and READ planes cannot disagree.
+
+The `.cmd.<self>` suffix-ACL is AIRTIGHT only once the auth-callout mints a per-connection
+AUTHENTICATED identity that the ACL pins `<self>` to. Replacing the dev shared `client` user with a
+per-connection minted identity is therefore a Phase-1 → PRODUCTION precondition of this requirement
+(tied to the auth-callout work): under the shared-`client` dev posture the suffix is advisory and
+NOT enforced.
 
 #### Scenario: Newly-assigned agent commands without reconnect
 - **id:** `signaling.feed.cmd-wildcard-no-reconnect`
@@ -137,7 +149,7 @@ client, and MUST NOT modify the canonical `.log` (the `.log` remains the sole so
 feed is a derived projection). Participation MUST be **server-derived from facts**, never asserted
 by the client: the service MUST add an agent on `participant.joined` / `interaction.assigned` and
 remove the agent on `participant.left`. The service core MUST depend on owned ports (a
-participation view over facts, a feed sink, a durable cursor, a bounded history reader), not on a
+participation view over facts, a feed sink, a durable cursor), not on a
 concrete NATS client, and MUST be unit-testable with an in-memory fake (replay a fact sequence,
 assert the resulting per-agent feed projections).
 
@@ -172,7 +184,7 @@ not project a fact twice into an agent's feed. Cross-interaction global ordering
 
 #### Scenario: Fan-out core is unit-testable without live NATS
 - **id:** `signaling.feed.core-port-isolated`
-- **GIVEN** the Fan-out service core behind owned participation-view + feed-sink + cursor + history-reader ports
+- **GIVEN** the Fan-out service core behind owned participation-view + feed-sink + cursor ports
 - **WHEN** a sequence of `.log` facts is replayed through an in-memory fake
 - **THEN** the test asserts exactly which agent feeds receive which facts, with no NATS client imported into the core (loose-coupling HARD RULE)
 
@@ -181,21 +193,29 @@ The Participation/Fan-out service MUST run as a SINGLE active worker — ONE dur
 consumer on `tenant.*.interaction.*.log`, with standby replicas contending for a NATS KV leader
 lease (TTL ~5s, heartbeat-renewed) — NOT a sharded fleet; it MUST NOT use partition subject-mapping,
 per-shard durables, or a rebalance protocol (it is not engineered to higher availability than the
-single-node NATS + single router it derives from). Delivery MUST be **effectively-once
-(at-least-once delivery + idempotent feed publish)** — the service MUST NOT claim exactly-once. A
-source `.log` message MUST be acked ONLY after ALL intended per-agent feed publishes for that fact
-are acknowledged; if the worker crashes after some but not all publishes, the un-acked source fact
-MUST be redelivered and re-projected, and the deterministic dedup id MUST make the redelivery a
-no-op — yielding NO drop and at-most-once per `(agent, interaction, sequence)`. The service MUST
-**hydrate** by loading a KV snapshot of the participation view (keyed by stream sequence, written
-every N facts/seconds), doing a read-only fold of the tail up to the durable ack floor, then going
-live — NOT replaying the whole log from sequence 0. The durable consumer's ack floor MUST be the
-recovery cursor; a failed publish MUST be retried with backoff WITHOUT advancing the cursor; a fact
-failing past `max_deliver` MUST be routed to a dead-letter subject (`tenant.<tid>.agent.dlq.feed`)
-with the failure reason and source `event_id`/`sequence` (never silently dropped). A transient
-double-ownership window across lease failover MUST remain safe via the same dedup. A
-`{{partition(N,…)}}` sharded scale-out (one durable per shard, subjects/semantics unchanged) MAY be
-added later, triggered by measured single-consumer lag, but is NOT part of this requirement.
+single-node NATS + single router it derives from). The durable consumer MUST be configured
+`MaxAckPending=1` (NO prefetch, NO concurrent projection): EXACTLY ONE `.log` fact MUST be in flight
+at a time, and the stateful participation fold MUST apply fact N fully (fold + fan-out + ack) before
+fact N+1 is delivered — so two active fetchers can NEVER fold facts N and N+1 concurrently or
+out of order. On lease takeover the standby MUST wait for the prior delivery's ack/redelivery to
+resolve before processing (takeover never overlaps in-flight processing). Delivery MUST be
+**effectively-once (at-least-once delivery + idempotent feed publish)** — the service MUST NOT claim
+exactly-once. A source `.log` message MUST be acked ONLY after ALL intended per-agent feed publishes
+for that fact are acknowledged; if the worker crashes after some but not all publishes, the un-acked
+source fact MUST be redelivered and re-projected, and the deterministic dedup id MUST make the
+redelivery a no-op — yielding NO drop and at-most-once per `(agent, interaction, sequence)`. The
+participation-view KV snapshot MUST represent an ACKED PREFIX ONLY: the service MUST advance the
+snapshot only after the corresponding source ack / ack-floor advance, so NO snapshot ever represents
+state AHEAD of the durable cursor. The service MUST **hydrate** by loading the latest snapshot whose
+`seq <= durable_ack_floor`, doing a read-only fold of `(snapshot_seq, ack_floor]` to go live, then
+resuming live projection — NOT replaying the whole log from sequence 0. The durable consumer's ack
+floor MUST be the recovery cursor; a failed publish MUST be retried with backoff WITHOUT advancing
+the cursor; a fact failing past `max_deliver` MUST be routed to a dead-letter subject
+(`tenant.<tid>.agent.dlq.feed`) with the failure reason and source `event_id`/`sequence` (never
+silently dropped). A transient double-ownership window across lease failover MUST remain safe via the
+same dedup AND the serial `MaxAckPending=1` discipline. A `{{partition(N,…)}}` sharded scale-out
+(one durable per shard, subjects/semantics unchanged) MAY be added later, triggered by measured
+single-consumer lag, but is NOT part of this requirement.
 
 #### Scenario: Partial publish then crash drops nothing and duplicates nothing
 - **id:** `signaling.feed.exactly-once-crash`
@@ -204,11 +224,19 @@ added later, triggered by measured single-consumer lag, but is NOT part of this 
 - **THEN** the redelivery re-publishes to both feeds; `alice`'s feed dedups `sequence` N to one copy and `bob`'s feed now receives it
 - **AND** the source is acked only after BOTH publishes succeed (no drop, at-most-once per feed)
 
-#### Scenario: Failover resumes from the lease, snapshot, and durable cursor with no SPOF on the data path
+#### Scenario: Failover hydrates from an acked-prefix snapshot, never ahead of the cursor
 - **id:** `signaling.feed.shard-ownership`
-- **GIVEN** the Fan-out service running as one active worker holding the KV leader lease plus standby replicas
+- **GIVEN** the Fan-out service running as one active worker holding the KV leader lease plus standby replicas, where the KV participation snapshot is advanced ONLY after the corresponding source ack (so the latest snapshot's `seq <= durable_ack_floor`)
 - **WHEN** the active worker dies and a standby acquires the expired lease
-- **THEN** the new active worker hydrates from the latest KV participation snapshot, read-only-folds the tail up to the durable ack floor, and resumes live projection from the durable cursor with per-interaction `sequence` order preserved and no lost or duplicated projection
+- **THEN** the new active worker loads the latest snapshot whose `seq <= durable_ack_floor`, read-only-folds `(snapshot_seq, ack_floor]` to go live, and resumes live projection from the durable cursor
+- **AND** because no snapshot ever represents state ahead of the cursor, hydration neither re-projects an already-acked fact nor skips an un-projected one (no lost or duplicated projection, per-interaction `sequence` order preserved)
+
+#### Scenario: Serial MaxAckPending=1 prevents concurrent or out-of-order fold under failover
+- **id:** `signaling.feed.serial-fold`
+- **GIVEN** the durable consumer configured `MaxAckPending=1` (one in-flight fact, no prefetch) and facts at `sequence` N then N+1 on the same stream
+- **WHEN** the active worker is processing fact N and a standby takes over the lease (or the same worker is mid-fold)
+- **THEN** fact N+1 is NOT delivered until fact N is fully folded, fanned out, and acked (or redelivered), so no two facts are folded concurrently and the stateful participation fold is never applied out of order
+- **AND** a lease takeover waits for the prior delivery's ack/redelivery before processing, so takeover never overlaps in-flight processing
 
 #### Scenario: Poison fact is dead-lettered, not wedged
 - **id:** `signaling.feed.poison-dlq`
@@ -218,8 +246,8 @@ added later, triggered by measured single-consumer lag, but is NOT part of this 
 
 ### Requirement: Reply-inbox is a per-connection minted prefix (no command-result snooping)
 The system MUST mint a per-connection reply prefix for the inbox connection and grant ONLY that
-prefix. The request/reply replies for the inbox connection (the `.cmd` `CommandResult` and the
-history-read response) MUST land on a per-connection reply prefix `_INBOX_<conn>.>`, where `<conn>` is
+prefix. The request/reply replies for the inbox connection (the `.cmd` `CommandResult`) MUST land on
+a per-connection reply prefix `_INBOX_<conn>.>`, where `<conn>` is
 a high-entropy per-connection token bound to the connection by the auth-callout. The auth-callout
 MUST grant `subscribe`/`publish` ONLY for that connection's `_INBOX_<conn>.>` and MUST DENY broad
 `_INBOX.>` and any other connection's `_INBOX_<other>.>`. The SDK MUST use `_INBOX_<conn>` as its
@@ -230,58 +258,50 @@ closes it.
 #### Scenario: A second client cannot snoop another connection's command results
 - **id:** `signaling.feed.inbox-prefix-isolated`
 - **GIVEN** two connected clients in tenant `T`, each granted only its own `_INBOX_<conn>.>`
-- **WHEN** client 1 issues a `.cmd` or history-read whose reply lands on `_INBOX_<conn1>` and client 2 attempts to subscribe `_INBOX.>` or `_INBOX_<conn1>.>`
-- **THEN** NATS denies client 2's subscription, so client 2 cannot observe client 1's CommandResult or history-read reply
+- **WHEN** client 1 issues a `.cmd` whose `CommandResult` reply lands on `_INBOX_<conn1>` and client 2 attempts to subscribe `_INBOX.>` or `_INBOX_<conn1>.>`
+- **THEN** NATS denies client 2's subscription, so client 2 cannot observe client 1's CommandResult
 - **Phase-1:** full enforcement requires the auth-callout minting the `<conn>`-scoped reply ACL; the shared-`client` dev posture does not satisfy this.
 
-### Requirement: Feed history backfill is a bounded participation-checked read command (not replay-from-0)
-The feed MUST carry only LIVE facts from the agent's assignment forward; the system MUST NOT seed an
-agent feed by replaying `interaction.<id>.log` from `sequence 0`. Prior history MUST be served by a
-bounded, paginated, participation-checked **history-read request** on
-`tenant.<tid>.agent.<self>.feed.history` (reply on the connection's `_INBOX_<conn>`), which the
-Fan-out service answers ONLY after confirming the requesting `<self>` has a membership interval
-covering the requested range. The request carries `{interaction_id, from_sequence, to_sequence?,
-limit, direction}`; the service reads `.log` over the range capped at a server `limit` and returns
-ascending `sequence` with a `next_cursor` when truncated. A range below the interaction's retained
-`.log` floor MUST be REJECTED (`out_of_retention`); a `.log` read error MUST yield
-`CommandResult{REJECTED, reason: history_unavailable}`. A fresh assignment MUST auto-backfill at most
-`MAX_AUTO_BACKFILL` facts; older history is fetched on-demand via the same command. The browser MUST
-track a per-interaction feed cursor and, on reconnect or a detected gap, history-read ONLY the
-missing range — never falling back to a direct `.log` subscribe.
+### Requirement: Feed is live-only from join forward; conversation history is desk REST (out of RP scope)
+The feed MUST carry ONLY LIVE facts from the agent's join point (`participant.joined` /
+`interaction.assigned` at `sequence` J) FORWARD; the system MUST NOT seed an agent feed by replaying
+`interaction.<id>.log` from `sequence 0`, and RelayPoint MUST expose NO conversation-history surface:
+there MUST be NO `tenant.<tid>.agent.<self>.feed.history` request/reply, NO history auth grant, and
+NO backfill-on-assignment behavior. Conversation history is DESK's data (Postgres, the source of
+truth) served by **desk's REST API** — ownership is orthogonal (desk owns the DATA, RelayPoint owns
+live DELIVERY). On open/assignment the browser MUST load prior messages from desk REST, then attach
+the live feed for facts from its join point forward; on reconnect or a detected gap the browser MUST
+heal via a **desk REST refetch** of the missing range, then resume the live feed — it MUST NOT fall
+back to a direct `interaction.<id>.log` subscribe, and RelayPoint MUST NOT replay history to it.
+Because the feed never carries pre-join facts, the live-feed authz is SIMPLY the membership interval
+`[join_seq, left_seq)` — there MUST be NO pre-join `[0, join_seq)` visibility rule.
 
-#### Scenario: Newly-assigned agent gets bounded history via the read command, not direct log
-- **id:** `signaling.feed.backfill-on-assignment`
-- **GIVEN** interaction `I` with existing `.log` facts at `sequence` 1..N and agent `bob` newly assigned (a `participant.joined{agent: bob}` fact)
-- **WHEN** `bob`'s inbox requests `feed.history{interaction: I, ...}` for up to `MAX_AUTO_BACKFILL` recent facts
-- **THEN** the Fan-out service confirms `bob`'s membership, reads `.log` for the bounded range, and replies with ascending facts (plus `next_cursor` if truncated)
-- **AND** `bob`'s browser never subscribes `interaction.I.log` directly, and the feed itself is never seeded from `sequence 0`
+#### Scenario: Feed is live-only and exposes no RelayPoint history surface
+- **id:** `signaling.feed.live-only-no-history`
+- **GIVEN** interaction `I` with existing `.log` facts at `sequence` 1..N and agent `bob` newly assigned at `sequence` J (a `participant.joined{agent: bob}` fact)
+- **WHEN** `bob`'s inbox attaches to `tenant.<tid>.agent.bob.feed.>`
+- **THEN** RelayPoint projects to `bob`'s feed ONLY facts at `sequence >= J` (live from join forward), never seeds the feed from `sequence 0`, and exposes NO `feed.history` request/reply for `bob` to call
+- **AND** `bob`'s browser loads prior messages (`sequence < J`) from DESK's REST API, not from RelayPoint, and never subscribes `interaction.I.log` directly
 
-#### Scenario: History read denied for a non-participant
-- **id:** `signaling.feed.history-participation-checked`
-- **GIVEN** agent `carol` who has no membership interval for interaction `I`
-- **WHEN** she sends `feed.history{interaction: I, ...}`
-- **THEN** the service REJECTS it (`not_a_participant`) and returns no `.log` data
-
-#### Scenario: Reconnect resumes from the feed cursor without a log subscribe
+#### Scenario: Reconnect heals the gap via desk REST, not a log subscribe
 - **id:** `signaling.feed.cursor-resume`
-- **GIVEN** an agent that applied feed facts for `I` up to `sequence` M, then disconnects
+- **GIVEN** an agent that applied feed facts for `I` up to `sequence` M, then disconnects past the ephemeral feed window
 - **WHEN** it reconnects and resumes `tenant.<tid>.agent.<aid>.feed.>`
-- **THEN** it history-reads only for `sequence > M` (the gap) and resumes live, never opening a direct `interaction.I.log` subscription
+- **THEN** it refetches the missing range (`sequence > M`) from DESK's REST API and resumes the live feed, never opening a direct `interaction.I.log` subscription and never asking RelayPoint for history
 
 ### Requirement: Membership is an interval and every feed write is epoch-guarded (no post-revocation write)
 Membership MUST be modeled as a half-open interval `[join_seq, left_seq)` keyed by `(tenant,
 interaction, agent)`: a `participant.joined` / `interaction.assigned` at `.log` `sequence` J opens
 `[J, ∞)`; a `participant.left` / un-assign / transfer-away at `sequence` L closes it to `[J, L)`.
-Every projection AND every queued/in-flight backfill MUST be guarded by this interval so NO
-post-revocation feed write occurs: a fact at `sequence` S is projected to agent A ONLY if S falls in
-an OPEN interval of A for that interaction, and a backfill carries the interval it was authorized
-under so that a `participant.left` closing the interval CANCELS the remaining backfill — a
-`participant.left` racing a `participant.joined` backfill MUST NOT deliver any post-revocation fact.
-For a cold transfer the new-leg-before-old-revoked ordering MUST be preserved: the NEW agent's
-`participant.joined` (opening its interval + triggering its backfill) MUST be applied BEFORE the OLD
-agent's `participant.left` is folded, so the interaction is never absent from both inboxes at once.
-The router's `.cmd` participant check MUST use the SAME intervals (an OPEN interval authorizes a
-command), so a revoked agent's late `.cmd` is rejected for the same reason its feed stops.
+Every feed projection MUST be guarded by this interval so NO post-revocation feed write occurs: a
+fact at `sequence` S is projected to agent A ONLY if S falls in an OPEN interval of A for that
+interaction; the instant `participant.left` at L closes the interval, no fact at `sequence >= L` is
+projected to A. For a cold transfer the new-leg-before-old-revoked ordering MUST be preserved: the
+NEW agent's `participant.joined` (opening its interval, so live facts begin projecting to it) MUST
+be applied BEFORE the OLD agent's `participant.left` is folded, so the interaction is never absent
+from both inboxes at once. The router's `.cmd` participant check MUST use the SAME intervals (an OPEN
+interval authorizes a command), so a revoked agent's late `.cmd` is rejected for the same reason its
+feed stops.
 
 #### Scenario: Future facts stop the instant the interval closes
 - **id:** `signaling.feed.revoke-future-facts`
@@ -289,33 +309,28 @@ command), so a revoked agent's late `.cmd` is rejected for the same reason its f
 - **WHEN** a `participant.left{agent: alice}` fact lands at `sequence` L (closing the interval to `[J, L)`)
 - **THEN** the `participant.left` fact at L is projected (so the client drops `I`), and NO fact at `sequence >= L` is ever projected to `alice` for `I`
 
-#### Scenario: A leave racing a join-backfill cancels the backfill
-- **id:** `signaling.feed.revoke-cancels-backfill`
-- **GIVEN** agent `alice` newly joined `I` (backfill in flight) when a `participant.left{agent: alice}` is folded before the backfill drains
-- **WHEN** the interval closes
-- **THEN** the remaining queued/in-flight backfill is cancelled and no post-revocation fact is delivered to `alice` for `I`
-
 #### Scenario: Transfer fans the new agent before revoking the old
 - **id:** `signaling.feed.transfer-no-gap`
 - **GIVEN** interaction `I` transferred from `alice` to `bob` (cold transfer)
 - **WHEN** the Fan-out service applies the transfer facts
-- **THEN** `bob`'s interval opens and its backfill is triggered BEFORE `alice`'s interval is closed, so the interaction is never absent from both inboxes at once (new-leg-before-old-revoked, mirroring the call leg handover)
+- **THEN** `bob`'s interval opens (so live facts begin projecting to `bob`) BEFORE `alice`'s interval is closed, so the interaction is never absent from both inboxes at once (new-leg-before-old-revoked, mirroring the call leg handover; `bob` loads prior messages from desk REST)
 
-### Requirement: Feed is ephemeral low-retention; canonical log + history-read is the audit source
+### Requirement: Feed is ephemeral low-retention; canonical log is RP's audit source, history is desk REST
 The agent feed MUST be an EPHEMERAL, short-`max_age` JetStream stream sized ONLY to bridge a live
-disconnect gap — it MUST NOT be the long-term/audit store. The canonical `interaction.<id>.log`
-(retained per audit policy) plus the bounded `feed.history` read command MUST be the long-term /
-audit source; the feed MUST NOT duplicate `.log` per-agent for retention. Feed messages MUST age out
-by `max_age`. On revocation the service MUST write a terminal `feed.revoked{interaction_id,
-at_sequence}` tombstone into the agent's `…feed.<iid>` so a reconnecting client deterministically
-drops the interaction even if it missed the `participant.left`; post-revocation feed content MAY then
-be purged (the `.log` retains the audit copy). The feed MUST NOT be silently used as the audit record.
+disconnect gap — it MUST NOT be the long-term/audit store. Within RelayPoint the canonical
+`interaction.<id>.log` (retained per audit policy) MUST be the audit source; conversation history for
+the browser is DESK's REST API against Postgres (out of RP scope). The feed MUST NOT duplicate `.log`
+per-agent for retention. Feed messages MUST age out by `max_age`. On revocation the service MUST
+write a terminal `feed.revoked{interaction_id, at_sequence}` tombstone into the agent's `…feed.<iid>`
+so a reconnecting client deterministically drops the interaction even if it missed the
+`participant.left`; post-revocation feed content MAY then be purged (the `.log` retains the audit
+copy). The feed MUST NOT be silently used as the audit record.
 
 #### Scenario: Feed is the disconnect-gap bridge, log is the audit record
 - **id:** `signaling.feed.ephemeral-bridge`
 - **GIVEN** the agent feed configured with a short `max_age` and the canonical `.log` retained per audit policy
 - **WHEN** an agent is briefly offline and reconnects within `max_age`
-- **THEN** it catches up from the retained feed window without a history-read; history older than `max_age` is fetched via the `feed.history` command against the canonical `.log`
+- **THEN** it catches up from the retained feed window with no refetch; if it was offline longer than `max_age` it refetches the gap from DESK's REST API (RelayPoint serves no history)
 
 #### Scenario: Revocation writes a tombstone, then content may be purged
 - **id:** `signaling.feed.revoke-tombstone`

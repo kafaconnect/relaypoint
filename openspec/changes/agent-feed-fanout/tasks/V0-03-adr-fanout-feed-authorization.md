@@ -26,3 +26,9 @@ spec delta ids.
   last subject token); decision 4 → leased single-active worker + KV snapshot hydration,
   effectively-once (renamed from exactly-once), sharding → scale-out appendix. Decisions 1, 2a, 5,
   6, 7-feed, 8 stand. Updated consequences + alternatives.
+- 2026-06-11 final design round (owner decisions): decision 6 → history is DESK REST, RelayPoint
+  serves none (dropped `feed.history`/`MAX_AUTO_BACKFILL`/backfill-on-assignment + the pre-join
+  visibility gate; feed live-only from join forward); decision 4 → `MaxAckPending=1` serial fold +
+  ACKED-prefix snapshot (snapshot never ahead of the cursor); decision 3 → `.cmd`
+  semantics-unchanged/shape-gains-suffix + router/SDK migration + write-identity auth-callout
+  precondition. Updated consequences, spec-id list, alternatives.

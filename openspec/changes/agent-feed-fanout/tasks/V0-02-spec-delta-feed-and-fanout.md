@@ -19,13 +19,12 @@ specs:
   - signaling.feed.core-port-isolated
   - signaling.feed.exactly-once-crash
   - signaling.feed.shard-ownership
+  - signaling.feed.serial-fold
   - signaling.feed.poison-dlq
   - signaling.feed.inbox-prefix-isolated
-  - signaling.feed.backfill-on-assignment
-  - signaling.feed.history-participation-checked
+  - signaling.feed.live-only-no-history
   - signaling.feed.cursor-resume
   - signaling.feed.revoke-future-facts
-  - signaling.feed.revoke-cancels-backfill
   - signaling.feed.transfer-no-gap
   - signaling.feed.ephemeral-bridge
   - signaling.feed.revoke-tombstone
@@ -53,3 +52,11 @@ agent-feed-fanout --strict` must pass.
   scenario `signaling.feed.cmd-identity-pinned`. (2) projector = leased single-active worker + KV
   snapshot hydration (effectively-once, not exactly-once); sharding demoted to a scale-out
   appendix; rewrote `exactly-once-crash` + `shard-ownership` scenarios. validate --strict green.
+- 2026-06-11 final design round (owner decisions): (CHANGE 1) DROPPED the RelayPoint history plane —
+  removed the `feed.history` requirement + `backfill-on-assignment`/`history-participation-checked`
+  scenarios + the pre-join visibility gate; feed is now live-only from join forward, history is desk
+  REST (new `live-only-no-history` scenario, reworded `cursor-resume`/`ephemeral-bridge`/`transfer-no-gap`,
+  dropped `revoke-cancels-backfill`). (CHANGE 2) snapshot tied to the ACKED ack floor (rewrote
+  `shard-ownership`). (CHANGE 3) projector `MaxAckPending=1` serial fold (new `serial-fold`). (CHANGE 4)
+  `.cmd` semantics-unchanged/shape-gains-suffix wording + router/SDK migration. (CHANGE 5) write-identity
+  auth-callout precondition recorded. validate --strict green.

@@ -60,15 +60,28 @@ tenant-wide read.
    authenticated identity, and enforces participation on every agent `.cmd` against the SAME
    `.log`-derived membership (the same `ParticipationView`) that drives the feed. A newly-assigned
    agent commands with no reconnect; a non-participant agent command is rejected and writes no fact;
-   trusted-backend identities are exempt from the participant check.
+   trusted-backend identities are exempt from the participant check. The `.cmd` SEMANTICS are
+   unchanged; only the subject SHAPE gains the `<identity>` suffix — a breaking migration the router
+   (subscribe `*.cmd.*`) and the SDK (publish `…cmd.<self>`) both adopt. **Write-identity
+   precondition:** the suffix-ACL is airtight ONLY once the auth-callout mints a per-connection
+   authenticated identity (replacing the dev shared `client` user); pinning `<self>` to that minted
+   identity is a Phase-1 → production precondition tied to the auth-callout work (under shared
+   `client` the suffix is advisory, not enforced).
 
-4. **Fan-out service: leased single-active worker, effectively-once.** The Participation/Fan-out
-   service is a SINGLE active worker (ONE durable consumer on `tenant.*.interaction.*.log`; standby
-   replicas behind a NATS KV leader lease, TTL ~5s) — NOT a sharded fleet, not engineered to higher
-   availability than the single-node NATS + single router it derives from; NO partition
-   subject-mapping, NO per-shard durables, NO rebalance protocol. It hydrates from a KV participation
-   snapshot (keyed by stream sequence) + a read-only fold of the tail to the ack floor, then goes
-   live. A source `.log` message is acked ONLY after all intended per-agent feed publishes succeed;
+4. **Fan-out service: leased single-active worker, serial fold, effectively-once.** The
+   Participation/Fan-out service is a SINGLE active worker (ONE durable consumer on
+   `tenant.*.interaction.*.log`; standby replicas behind a NATS KV leader lease, TTL ~5s) — NOT a
+   sharded fleet, not engineered to higher availability than the single-node NATS + single router it
+   derives from; NO partition subject-mapping, NO per-shard durables, NO rebalance protocol. The
+   durable consumer is `MaxAckPending=1` (no prefetch, no concurrent projection): EXACTLY ONE `.log`
+   fact is in flight at a time, so two fetchers can never fold facts N and N+1 concurrently or out of
+   order and corrupt the stateful participation fold; a lease takeover waits for the prior delivery's
+   ack/redelivery before proceeding (never overlaps in-flight processing). It hydrates from a KV
+   participation snapshot that represents an **ACKED PREFIX ONLY** (the snapshot advances only after
+   the source ack, so it is never ahead of the cursor): on start/failover it loads the latest
+   snapshot whose `seq <= durable_ack_floor`, read-only-folds `(snapshot_seq, ack_floor]` to go live,
+   then resumes. A source `.log` message is acked ONLY after all intended per-agent feed publishes
+   succeed;
    publishes carry a deterministic `Nats-Msg-Id = <tid>.<aid>.<iid>.<sequence>` for idempotent
    replay, so delivery is **effectively-once (at-least-once delivery + idempotent feed publish)** —
    NOT exactly-once. Partial-publish-then-crash and a lease-failover double-ownership window yield no
@@ -80,48 +93,53 @@ tenant-wide read.
    broad `_INBOX.>` is denied. A feed-only read grant does not close command-result snooping
    (replies travel on `_INBOX`); the minted prefix does.
 
-6. **Backfill = bounded history-read command (not replay-from-0).** The feed carries LIVE facts
-   from assignment forward only. Prior history is served by a bounded, paginated,
-   participation-checked `tenant.<tid>.agent.<self>.feed.history` request the service answers after
-   a membership check; a `MAX_AUTO_BACKFILL` threshold caps the auto-load. The browser never reads
-   `.log` directly.
+6. **History is desk REST, not RelayPoint (owner decision).** The feed carries LIVE facts from the
+   agent's join point FORWARD ONLY. RelayPoint serves NO conversation history — no `feed.history`
+   request/reply, no history grant, no `MAX_AUTO_BACKFILL`, no backfill-on-assignment, and no
+   pre-join visibility gate. History is DESK's data (Postgres, source of truth, served by desk's REST
+   API); ownership is orthogonal — desk owns the DATA, RelayPoint owns live DELIVERY. On
+   open/assignment the browser loads prior messages from desk REST; on reconnect/gap it heals via a
+   desk REST refetch (the existing rp1 pattern); it never reads `.log` directly. The live-feed authz
+   is simply the membership interval `[join_seq, left_seq)` — no pre-join `[0, join_seq)` rule.
 
-7. **Revocation epoch.** Membership is an interval `[join_seq, left_seq)`. Every projection and
-   every queued backfill is interval-guarded, so no post-revocation feed write occurs; a
-   `participant.left` racing a `participant.joined` backfill cancels it. Cold transfer keeps
+7. **Revocation epoch.** Membership is an interval `[join_seq, left_seq)`. Every feed projection is
+   interval-guarded, so no post-revocation feed write occurs. Cold transfer keeps
    new-leg-before-old-revoked.
 
 8. **Feed durability: ephemeral low-retention.** The feed is an ephemeral, short-`max_age`
-   JetStream stream sized only to bridge a live disconnect gap; the canonical `.log` + the
-   history-read command are the long-term/audit source. Revocation writes a `feed.revoked`
-   tombstone; content may then be purged. The feed is never the audit record.
+   JetStream stream sized only to bridge a live disconnect gap; the canonical `.log` is RP's
+   long-term/audit source and conversation history for the browser is desk REST (out of RP scope).
+   Revocation writes a `feed.revoked` tombstone; content may then be purged. The feed is never the
+   audit record.
 
 ## Consequences
 
 - **New container/service:** the RelayPoint Participation/Fan-out service — a leased single-active
-  trusted-server JetStream consumer of `tenant.*.interaction.*.log`, the only new publisher of
-  `tenant.<tid>.agent.<aid>.feed.>` and responder to `…feed.history`. Its core depends on owned
-  ports (`ParticipationView`, `FeedSink`, `Cursor`, `HistoryReader`), not on
-  `nats.JetStreamContext` (loose-coupling HARD RULE).
+  trusted-server JetStream consumer of `tenant.*.interaction.*.log` (durable, `MaxAckPending=1`),
+  the only new publisher of `tenant.<tid>.agent.<aid>.feed.>`. Its core depends on owned ports
+  (`ParticipationView`, `FeedSink`, `Cursor`), not on `nats.JetStreamContext` (loose-coupling HARD
+  RULE).
 - **Router gains** a server-side participant-authz check on every agent `.cmd.*` (taking the
   publisher identity from the last subject token, reusing the `ParticipationView` port) and a
   privileged participation-command path (`…cmd.<desk-svc-identity>`) that lands `participant.*` /
   `interaction.assigned` facts with audit fields.
-- **Subject change:** the command subject GAINS an identity suffix
-  `tenant.<tid>.interaction.<iid>.cmd.<identity>` (publisher in subject, ACL-enforced — mirrors
-  `.signal.<self>`); the router subscribes `tenant.*.interaction.*.cmd.*`.
+- **Subject change:** the command subject's SEMANTICS are unchanged but its SHAPE gains an identity
+  suffix `tenant.<tid>.interaction.<iid>.cmd.<identity>` (publisher in subject, ACL-enforced —
+  mirrors `.signal.<self>`); the router migrates to subscribe `tenant.*.interaction.*.cmd.*` and the
+  SDK migrates to publish `…cmd.<self>` (no compatibility shim; bare `.cmd` retired).
 - **Auth-callout gains** a new inbox grant shape (feed-subscribe + `publish
   tenant.<tid>.interaction.*.cmd.<self>` (ACL-pinned suffix) + minted `_INBOX_<conn>.>`; no `.log`
   subscribe, no broad `_INBOX.>`).
 - **New subjects:** `tenant.<tid>.agent.<aid>.feed.<interaction_id>` (server-write, agent-read-own),
-  `tenant.<tid>.agent.<aid>.feed.history` (participation-checked request/reply),
-  `tenant.<tid>.agent.dlq.feed` (operator-drained). `.log`/`.cmd`/`.signal`/offer are unchanged;
-  the protobuf wire (ADR-0002) is reused verbatim (the feed copies the `Event`).
+  `tenant.<tid>.agent.dlq.feed` (operator-drained). RelayPoint exposes NO history subject —
+  conversation history is desk REST, out of RP scope. `.log`/`.signal`/offer are unchanged; `.cmd`
+  gains the `<identity>` suffix (semantics unchanged); the protobuf wire (ADR-0002) is reused
+  verbatim (the feed copies the `Event`).
 - **Dependent desk rework:** `rp1-web-consumer-auth` MUST consume the per-agent feed (drop
-  tenant-wide read + direct `.log`; history via `feed.history`; assignment via the privileged
-  participation command as `…cmd.<desk-svc-identity>`; `publish …interaction.*.cmd.<self>` +
-  minted `_INBOX_<conn>`). Tracked on the desk repo; not
-  edited here.
+  tenant-wide read + direct `.log`; conversation history stays desk REST against Postgres —
+  RelayPoint serves none; assignment via the privileged participation command as
+  `…cmd.<desk-svc-identity>`; `publish …interaction.*.cmd.<self>` + minted `_INBOX_<conn>`). Tracked
+  on the desk repo; not edited here.
 
 Spec delta ids: `signaling.feed.inbox-reads-own-feed-only`, `signaling.feed.cross-agent-denied`,
 `signaling.feed.unified-medium`, `signaling.feed.write-server-only`,
@@ -131,11 +149,11 @@ Spec delta ids: `signaling.feed.inbox-reads-own-feed-only`, `signaling.feed.cros
 `signaling.feed.fanout-to-participants`, `signaling.feed.participation-from-facts`,
 `signaling.feed.fanout-dedup`, `signaling.feed.core-port-isolated`,
 `signaling.feed.exactly-once-crash`, `signaling.feed.shard-ownership`,
-`signaling.feed.poison-dlq`, `signaling.feed.inbox-prefix-isolated`,
-`signaling.feed.backfill-on-assignment`, `signaling.feed.history-participation-checked`,
+`signaling.feed.serial-fold`, `signaling.feed.poison-dlq`,
+`signaling.feed.inbox-prefix-isolated`, `signaling.feed.live-only-no-history`,
 `signaling.feed.cursor-resume`, `signaling.feed.revoke-future-facts`,
-`signaling.feed.revoke-cancels-backfill`, `signaling.feed.transfer-no-gap`,
-`signaling.feed.ephemeral-bridge`, `signaling.feed.revoke-tombstone`.
+`signaling.feed.transfer-no-gap`, `signaling.feed.ephemeral-bridge`,
+`signaling.feed.revoke-tombstone`.
 
 ## Alternatives considered
 
@@ -148,13 +166,15 @@ Spec delta ids: `signaling.feed.inbox-reads-own-feed-only`, `signaling.feed.cros
   ACL-pinned `.cmd.<self>` suffix (mirrors `.signal.<self>`).
 - **Broad `_INBOX.>` reply grant** — a command-result snooping hole a feed-only read does not
   close; rejected for the minted `_INBOX_<conn>.>`.
-- **Backfill by replaying `.log` from sequence 0 into the feed** — re-injects whole-thread history
-  into the ephemeral stream and races live projection; rejected for the bounded history-read.
+- **RelayPoint serving conversation history at all** (replay-from-0 into the feed OR a bounded
+  `feed.history` request/reply) — duplicates desk's source of truth, complicates live-feed authz
+  with a pre-join visibility gate, and inflates the ephemeral stream; rejected (owner decision):
+  history is desk REST, the feed is live-only from join forward.
 - **Sharded fan-out fleet as the Phase-1 shape** — over-engineers the projector beyond the
   single-node NATS + single router it derives from; rejected for a leased single-active worker + KV
   snapshot hydration + ack-after-publish (effectively-once), with sharding demoted to a
   lag-triggered scale-out path.
 - **Durable per-agent feed as the audit store** — duplicates `.log` N times under retention;
-  rejected for ephemeral feed + canonical `.log`/history-read.
+  rejected for ephemeral feed + canonical `.log` (RP audit) and desk REST (browser history).
 - **Tenant-wide `.log` read grant** (desk's provisional choice) — breaks per-interaction isolation.
   Rejected.

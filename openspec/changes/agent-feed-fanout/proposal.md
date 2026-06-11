@@ -47,7 +47,9 @@ implementable authorization boundary.
   reconnect**; the **router** subscribes `tenant.*.interaction.*.cmd.*`, takes the publisher
   identity from the LAST subject token (NEVER the payload), and enforces participation
   server-side (an agent may only act on interactions it participates in, checked against the
-  `.log`-derived membership).
+  `.log`-derived membership). The `.cmd` **semantics** are unchanged; only the subject **shape**
+  gains the `<identity>` suffix — which requires a router + SDK migration (the router now subscribes
+  the `*.cmd.*` wildcard and reads the suffix; the SDK publishes to `…cmd.<self>`).
 
 - **Participation = `.log` facts (PINNED: source A).** Participation `(tenant, interaction,
   agent)` is derived **SOLELY** from `.log` facts (`participant.joined` / `participant.left` /
@@ -84,33 +86,34 @@ implementable authorization boundary.
   `interaction.<id>.signal.<self>` media scope (signaling-core's accept-reconnect), but NEVER to
   widen inbox READ scope and NEVER for `.cmd` (the wildcard command grant already covers it).
 
-- **Backfill = bounded history-read COMMAND (PINNED).** The feed carries LIVE facts from
-  assignment forward only — it is NEVER replayed from `sequence 0`. On assignment the agent gets
-  prior history via a **participation-checked, bounded, paginated history-read request**
-  (`tenant.<tid>.agent.<self>.feed.history`) that the service answers AFTER checking
-  membership. Range/pagination/ordering/failure semantics and a max-auto-backfill threshold are
-  specified. The browser never reads `.log` directly.
+- **History is DESK's data, NOT RelayPoint's (PINNED — owner decision).** The feed carries LIVE
+  facts **from the agent's join point FORWARD ONLY** — it is NEVER replayed from `sequence 0` and
+  RelayPoint serves NO conversation history. Prior messages are DESK's data (Postgres, source of
+  truth, served over DESK's REST). On open/assignment the browser loads prior messages from desk
+  REST; on reconnect/gap it heals via a desk REST refetch (the existing rp1 pattern). Ownership is
+  orthogonal: **desk owns the DATA, RelayPoint owns live DELIVERY.** RelayPoint exposes NO
+  `feed.history` request/reply, NO history grant, and NO backfill-on-assignment behavior.
 
 - **Revocation epoch (PINNED).** Membership is an **interval `[join_seq, left_seq)`**. Every
-  projection AND every queued/in-flight backfill is epoch/interval-guarded, so NO
-  post-revocation feed write occurs. A `participant.left` racing a `participant.joined` backfill
-  cancels the backfill. Transfer keeps **new-leg-before-old-revoked**.
+  feed projection is epoch/interval-guarded, so NO post-revocation feed write occurs. Transfer
+  keeps **new-leg-before-old-revoked**.
 
 - **Feed durability (PINNED: ephemeral low-retention).** The feed is an **EPHEMERAL,
   short-max-age JetStream stream** sized only to bridge a live disconnect gap. The canonical
-  `.log` plus the history-read command are the long-term / audit source. Purge and
-  `feed.revoked` tombstone behavior are specified.
+  `.log` is the long-term / audit source within RelayPoint, and conversation history for the
+  browser is desk REST (out of RP scope). Purge and `feed.revoked` tombstone behavior are
+  specified.
 
 ## Impact
 
 - New container/service: **RelayPoint Participation/Fan-out service** — a leased single-active,
   trusted-server JetStream consumer of `tenant.*.interaction.*.log`; the only NEW publisher of
-  `tenant.<tid>.agent.<aid>.feed.>` and the responder to `…feed.history`. Loose-coupling rule:
-  its core depends on owned ports (a `ParticipationView`, a `FeedSink`, a `Cursor`, a
-  `HistoryReader`), not on `nats.JetStreamContext`.
-- New subjects: `tenant.<tid>.agent.<aid>.feed.<interaction_id>` (server-write, agent-read-own)
-  and `tenant.<tid>.agent.<aid>.feed.history` (request/reply, participation-checked).
-  `.log` / `.cmd` / `.signal` / offer subjects are UNCHANGED.
+  `tenant.<tid>.agent.<aid>.feed.>`. Loose-coupling rule: its core depends on owned ports (a
+  `ParticipationView`, a `FeedSink`, a `Cursor`), not on `nats.JetStreamContext`.
+- New subjects: `tenant.<tid>.agent.<aid>.feed.<interaction_id>` (server-write, agent-read-own).
+  `.log` / `.signal` / offer subjects are UNCHANGED; the `.cmd` subject **semantics** are
+  unchanged but its **shape** gains an `<identity>` suffix (below). RelayPoint exposes NO history
+  subject — conversation history is desk REST, out of RP scope.
 - Auth-callout: a NEW grant shape for the inbox connection (feed-subscribe + ACL-pinned
   `publish tenant.<tid>.interaction.*.cmd.<self>` (fixed `<self>` suffix) + per-connection
   `_INBOX_<conn>.>` reply scope; NO `.log` subscribe, NO broad `_INBOX.>`) — generalizes
@@ -127,8 +130,9 @@ implementable authorization boundary.
 - **Dependent DESK follow-up (not in this repo):** the desk change `rp1-web-consumer-auth` —
   which assumed a direct per-interaction subscribe + a desk-minted tenant-wide read grant — MUST
   be REWORKED to consume the per-agent feed instead (`agent.<aid>.feed.>`, no tenant-wide read,
-  no direct `.log`; history via the `feed.history` command; assignment via the privileged
-  participation command). Tracked as a follow-up on the desk repo; this change does not edit it.
+  no direct `.log`; **conversation history stays desk REST against Postgres — RelayPoint serves no
+  history**; assignment via the privileged participation command). Tracked as a follow-up on the
+  desk repo; this change does not edit it.
 
 ## Non-goals
 
