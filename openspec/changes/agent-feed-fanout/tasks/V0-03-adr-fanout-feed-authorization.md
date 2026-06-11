@@ -2,7 +2,7 @@
 id: V0-03
 slice: V0
 title: ADR — per-agent fan-out feed as the inbox authorization model
-status: todo
+status: done
 specs: []
 ---
 
@@ -15,8 +15,9 @@ vs per-interaction grant), the research baseline, the decision, the participatio
 question, and consequences (new fan-out service, desk rework). Reference signaling-core and the
 spec delta ids.
 
-NOTE: this task is part of the design package; it is `todo` here because the ADR file is written
-when the change is accepted (apply phase), not at proposal time. Listed so the DoD's "ADR added
-if architecture changed" is tracked.
-
 ## Log
+- 2026-06-11 done: authored `docs/architecture/decisions/0003-agent-fanout-feed.md` (Accepted) as
+  part of the cross-review remediation — pins all 8 decisions (feed grant, participation source A
+  via privileged command→fact, wildcard `.cmd` + server-side authz, sharded exactly-once fan-out,
+  `_INBOX_<conn>` isolation, bounded history-read, revocation-epoch intervals, ephemeral feed);
+  references signaling-core + the 24 spec delta ids + the desk rework.

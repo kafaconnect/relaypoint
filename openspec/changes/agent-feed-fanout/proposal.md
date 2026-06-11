@@ -27,81 +27,90 @@ participant is entitled to into a per-user channel; the client never authorizes 
 
 Adds a **per-agent fan-out feed** as the agent inbox's read surface, generalizing
 signaling-core's offer-accept/auth-callout model from "one interaction grant" to "one personal
-feed grant":
+feed grant". This proposal PINS every decision (no OR-branches): the result is a deterministic,
+implementable authorization boundary.
 
 - **Feed subject + grant.** Each agent has ONE personal feed
   `tenant.<tid>.agent.<aid>.feed.>` (a sub-subject per interaction:
   `tenant.<tid>.agent.<aid>.feed.<interaction_id>`). The auth-callout grants an inbox
-  connection ONLY: `subscribe tenant.<tid>.agent.<aid>.feed.>` + the EXISTING `.cmd` publish
-  plane (per accepted interaction) + the agent's own `routing.offer.user.<aid>(.control)`,
-  `notify.<aid>`, `presence.<aid>` (read). It grants **NO** direct
-  `tenant.<tid>.interaction.*.log` subscribe. `<aid>` MUST be the connection's authenticated
-  user — an agent can read only its own feed.
+  connection ONLY: `subscribe tenant.<tid>.agent.<aid>.feed.>` + a **WILDCARD** command-publish
+  grant `publish tenant.<tid>.interaction.*.cmd` (NOT per-accepted-interaction) + a
+  **per-connection minted reply-inbox** `subscribe _INBOX_<conn>.>` + the agent's own
+  `routing.offer.user.<aid>(.control)`, `notify.<aid>`, `presence.<aid>` (read). It grants
+  **NO** direct `tenant.<tid>.interaction.*.log` subscribe and **NO** broad `_INBOX.>`. `<aid>`
+  MUST be the connection's authenticated user — an agent reads only its own feed. Because the
+  publish grant is a wildcard, a newly-assigned agent can issue commands with **no reconnect**;
+  the **router enforces participation server-side** on every `.cmd` (an agent may only act on
+  interactions it participates in, checked against the `.log`-derived membership).
 
-- **Participation/Fan-out service.** A new server-side RelayPoint service (a trusted-server
-  consumer, NOT a client) tails the canonical `tenant.*.interaction.*.log`, maintains
-  `(tenant, interaction, agent)` participation from the **participation facts the router already
-  writes** (`participant.joined` / `participant.left`, plus the assignment/transfer facts), and
-  **projects each fact into the feed of every currently-participating agent**:
-  `tenant.<tid>.agent.<aid>.feed.<interaction_id>`. The canonical `.log` is **unchanged** and
-  remains the sole source of truth; the feed is a derived projection.
+- **Participation = `.log` facts (PINNED: source A).** Participation `(tenant, interaction,
+  agent)` is derived **SOLELY** from `.log` facts (`participant.joined` / `participant.left` /
+  `interaction.assigned`). There is no second control plane. Desk, a trusted backend, does NOT
+  call a participation API: it issues an **authorized assignment/participation command** that
+  the router **validates (actor + authz) and writes as the `participant.joined` /
+  `interaction.assigned` / `participant.left` fact** on the canonical `.log`, with audit fields
+  (commanding actor, reason, request id). Single source of truth, single ordering authority.
+
+- **Participation/Fan-out service (sharded, exactly-once, HA).** A new server-side RelayPoint
+  service (a trusted-server JetStream consumer, NOT a client) tails the canonical
+  `tenant.*.interaction.*.log`, maintains participation from those facts, and **projects each
+  fact into the feed of every currently-participating agent**. It is **SHARDABLE stateless
+  workers** (partition by `(tenant, interaction)` hash; durable consumer groups; no single
+  instance, no SPOF). A source `.log` message is **acked ONLY after all intended per-agent feed
+  publishes succeed**; feed publishes carry a deterministic `Nats-Msg-Id` for idempotent
+  replay; cursor storage, retry/backoff, poison/DLQ, and shard ownership/rebalance are
+  specified. The canonical `.log` is **unchanged** and remains the sole source of truth.
 
 - **Unified chat + voice.** The feed carries facts for ANY medium (chat, voice, video) — medium
   stays a payload field, never a subject (signaling-core invariant). There is **no per-medium
-  auth fork**: inbox read scope is the same feed for chat and voice. A voice **media** leg may
-  still reconnect for the narrow `interaction.<id>.signal.<self>` + `.cmd` media scope
-  (signaling-core's accept-reconnect), but NEVER to widen inbox READ scope.
+  auth fork**. A voice **media** leg may still reconnect for the narrow
+  `interaction.<id>.signal.<self>` media scope (signaling-core's accept-reconnect), but NEVER to
+  widen inbox READ scope and NEVER for `.cmd` (the wildcard command grant already covers it).
 
-- **History / backfill.** On assignment/open the Fan-out service **backfills** the feed from the
-  canonical `.log` (replay from `sequence 0` up to live) so a freshly-participating agent sees
-  the thread's history without a direct `.log` subscribe; the browser tracks a feed cursor and
-  the service is the only authority that reads `.log` on its behalf.
+- **Backfill = bounded history-read COMMAND (PINNED).** The feed carries LIVE facts from
+  assignment forward only — it is NEVER replayed from `sequence 0`. On assignment the agent gets
+  prior history via a **participation-checked, bounded, paginated history-read request**
+  (`tenant.<tid>.agent.<self>.feed.history`) that the service answers AFTER checking
+  membership. Range/pagination/ordering/failure semantics and a max-auto-backfill threshold are
+  specified. The browser never reads `.log` directly.
 
-- **Revocation.** On `participant.left` / un-assign / transfer-away the service STOPS projecting
-  future facts into that agent's feed sub-subject; policy for already-delivered feed retention
-  (audit/history) is defined.
+- **Revocation epoch (PINNED).** Membership is an **interval `[join_seq, left_seq)`**. Every
+  projection AND every queued/in-flight backfill is epoch/interval-guarded, so NO
+  post-revocation feed write occurs. A `participant.left` racing a `participant.joined` backfill
+  cancels the backfill. Transfer keeps **new-leg-before-old-revoked**.
+
+- **Feed durability (PINNED: ephemeral low-retention).** The feed is an **EPHEMERAL,
+  short-max-age JetStream stream** sized only to bridge a live disconnect gap. The canonical
+  `.log` plus the history-read command are the long-term / audit source. Purge and
+  `feed.revoked` tombstone behavior are specified.
 
 ## Impact
 
-- New container/service: **RelayPoint Participation/Fan-out service** — a trusted-server
+- New container/service: **RelayPoint Participation/Fan-out service** — a sharded, trusted-server
   JetStream consumer of `tenant.*.interaction.*.log`; the only NEW publisher of
-  `tenant.<tid>.agent.<aid>.feed.>`. Loose-coupling rule: it depends on owned ports
-  (a `ParticipationView` + a `FeedSink`), not on `nats.JetStreamContext` in its core.
-- New subjects: `tenant.<tid>.agent.<aid>.feed.<interaction_id>` (server-write, agent-read-own).
+  `tenant.<tid>.agent.<aid>.feed.>` and the responder to `…feed.history`. Loose-coupling rule:
+  its core depends on owned ports (a `ParticipationView`, a `FeedSink`, a `Cursor`, a
+  `HistoryReader`), not on `nats.JetStreamContext`.
+- New subjects: `tenant.<tid>.agent.<aid>.feed.<interaction_id>` (server-write, agent-read-own)
+  and `tenant.<tid>.agent.<aid>.feed.history` (request/reply, participation-checked).
   `.log` / `.cmd` / `.signal` / offer subjects are UNCHANGED.
-- Auth-callout: a NEW grant shape (feed-subscribe + `.cmd`-publish; NO `.log` subscribe) for the
-  inbox connection — generalizes signaling-core's per-interaction grant.
-- ADR: a new ADR records the fan-out-feed decision (it changes the authorization architecture
-  signaling-core's auth-callout section established).
+- Auth-callout: a NEW grant shape for the inbox connection (feed-subscribe + WILDCARD
+  `.cmd`-publish + per-connection `_INBOX_<conn>.>` reply scope; NO `.log` subscribe, NO broad
+  `_INBOX.>`) — generalizes signaling-core's per-interaction grant.
+- Router: a NEW server-side participation authorization check on every `tenant.<tid>.interaction.*.cmd`
+  (already the `.cmd` writer); and a NEW privileged assignment/participation command path that
+  Desk uses to land `participant.*` / `interaction.assigned` facts with audit fields.
+- ADR: a new ADR records the fan-out-feed authorization architecture change.
 - **Dependent DESK follow-up (not in this repo):** the desk change `rp1-web-consumer-auth` —
   which assumed a direct per-interaction subscribe + a desk-minted tenant-wide read grant — MUST
   be REWORKED to consume the per-agent feed instead (`agent.<aid>.feed.>`, no tenant-wide read,
-  no direct `.log`). Tracked as a follow-up on the desk repo; this change does not edit it.
-
-## Open questions (decisions owed — see design "Open questions")
-
-1. **Participation source — the crux.** Whose facts establish `(tenant, interaction, agent)`?
-   RelayPoint's router writes `participant.joined/left` and the assignment/transfer facts, so RP
-   *can* be self-sufficient. BUT: does RP actually OWN assignment, or does Desk decide who is
-   assigned and merely have RP record it? If assignment authority lives in Desk, how does Desk
-   feed participation in — a Desk-issued command the router turns into a `participant.joined`
-   fact (preferred: keeps the feed driven purely by `.log`), or an out-of-band participation API?
-   This determines whether the Fan-out service is `.log`-only or needs a second input.
-2. Fact projection: **copy the full event** into the feed vs a **pointer** (feed carries
-   `{interaction_id, sequence}` and the client fetches)? Copy is simpler and matches the
-   research baselines; pointer keeps one stored copy but reintroduces a per-interaction read.
-3. Feed **ordering/dedup**: per-`<interaction_id>` ordering is the canonical `sequence`; is a
-   feed-global order across interactions needed, or is per-interaction order sufficient (inbox
-   merges by interaction)?
-4. Retained-feed policy on revocation: purge the agent's feed sub-subject, or retain for
-   audit/history with a tombstone? (Interacts with whether the feed is JetStream-durable.)
-5. Tenant isolation baseline: hard `tenant.<tid>` subject prefix on the feed (assumed) — confirm
-   no account-level shortcut.
+  no direct `.log`; history via the `feed.history` command; assignment via the privileged
+  participation command). Tracked as a follow-up on the desk repo; this change does not edit it.
 
 ## Non-goals
 
-- No change to the canonical `.log` / `.cmd` / `.signal` / offer contract or the protobuf wire.
+- No change to the canonical `.log` / `.cmd` / `.signal` / offer contract or the protobuf wire
+  (the privileged participation command reuses the existing `.cmd` plane + `Event` envelope).
 - No change to the router's authority over `.log` facts (the feed is read-only projection).
 - Not editing the desk repo (the desk rework is a tracked dependent follow-up).
-- No multi-party/conference, no mobile, no HA fan-out clustering (single fan-out instance;
-  HA/sharding deferred like the router's).
+- No multi-party/conference, no mobile.

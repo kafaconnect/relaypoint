@@ -8,15 +8,26 @@ specs:
   - signaling.feed.cross-agent-denied
   - signaling.feed.unified-medium
   - signaling.feed.write-server-only
+  - signaling.feed.cmd-wildcard-no-reconnect
+  - signaling.feed.cmd-nonparticipant-denied
+  - signaling.feed.privileged-assign-to-fact
+  - signaling.feed.privileged-actor-guarded
   - signaling.feed.fanout-to-participants
   - signaling.feed.participation-from-facts
   - signaling.feed.fanout-dedup
   - signaling.feed.core-port-isolated
+  - signaling.feed.exactly-once-crash
+  - signaling.feed.shard-ownership
+  - signaling.feed.poison-dlq
+  - signaling.feed.inbox-prefix-isolated
   - signaling.feed.backfill-on-assignment
+  - signaling.feed.history-participation-checked
   - signaling.feed.cursor-resume
   - signaling.feed.revoke-future-facts
+  - signaling.feed.revoke-cancels-backfill
   - signaling.feed.transfer-no-gap
-  - signaling.feed.revoke-retention-policy
+  - signaling.feed.ephemeral-bridge
+  - signaling.feed.revoke-tombstone
 ---
 
 Author `specs/signaling-core/spec.md` ADDED requirements with `#### Scenario:` blocks carrying
@@ -29,3 +40,9 @@ agent-feed-fanout --strict` must pass.
 
 ## Log
 - 2026-06-11 done: 4 ADDED requirements, 13 scenarios with stable ids; validate --strict green.
+- 2026-06-11 remediation: reworked to a pinned auth boundary (cross-review BLOCKED). Now 10 ADDED
+  requirements / 24 scenarios: wildcard `.cmd` + server-side participant authz (no write
+  reconnect), privileged participation-command→fact contract (source A), exactly-once/sharded/HA
+  fan-out (crash, DLQ, shard rebalance), per-connection `_INBOX_<conn>` isolation, bounded
+  history-read backfill, revocation-epoch intervals, ephemeral feed + tombstone. validate
+  --strict green.
