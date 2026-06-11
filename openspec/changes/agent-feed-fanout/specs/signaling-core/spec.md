@@ -127,6 +127,12 @@ with AUDIT fields (commanding `actor` taken from the suffix, `reason`, `request_
 Trusted-backend identities MUST be EXEMPT from the agent participant check. The fact — not the
 command — is the single source of truth for participation.
 
+For a `participant.transfer` the router MUST emit the NEW agent's `participant.joined` fact BEFORE
+the OLD agent's `participant.left` fact (lower `sequence` for the join), so the interaction is never
+absent from both agents' membership at once (no-gap, mirroring the call-leg handover). This write
+ordering is the router's responsibility — it is what makes the fan-out side's
+new-leg-before-old-revoked guarantee hold, since the fan-out folds the facts in `sequence` order.
+
 #### Scenario: Trusted backend assignment lands as an audited log fact
 - **id:** `signaling.feed.privileged-assign-to-fact`
 - **GIVEN** Desk (trusted-backend identity `desk`) authorized for tenant `T`
@@ -139,6 +145,13 @@ command — is the single source of truth for participation.
 - **GIVEN** an ordinary agent connection (agent role `alice`, not trusted-backend)
 - **WHEN** it publishes `participant.assign{interaction: I, agent: self}` on `tenant.T.interaction.I.cmd.alice`
 - **THEN** the router derives the agent role from the `alice` suffix, REJECTS it (actor validation fails), and writes no participation fact
+
+#### Scenario: Transfer writes joined-before-left (no-gap)
+- **id:** `signaling.feed.privileged-transfer-ordering`
+- **GIVEN** Desk (trusted-backend identity `desk`) and interaction `I` currently assigned to `alice`
+- **WHEN** it issues `participant.transfer{interaction: I, from: alice, to: bob, reason: r, request_id: q}` on `tenant.T.interaction.I.cmd.desk`
+- **THEN** the router writes `participant.joined{agent: bob}` at a LOWER `sequence` than `participant.left{agent: alice}` on `interaction.I.log` (new leg before old revoked), each carrying audit fields `actor=desk`, `reason=r`, `request_id=q`
+- **AND** so `bob`'s membership opens before `alice`'s closes — the interaction is never absent from both at once
 
 ### Requirement: Fan-out service projects log facts by server-checked participation
 A trusted server-side **Participation/Fan-out service** MUST consume the canonical
@@ -197,8 +210,12 @@ single-node NATS + single router it derives from). The durable consumer MUST be 
 `MaxAckPending=1` (NO prefetch, NO concurrent projection): EXACTLY ONE `.log` fact MUST be in flight
 at a time, and the stateful participation fold MUST apply fact N fully (fold + fan-out + ack) before
 fact N+1 is delivered — so two active fetchers can NEVER fold facts N and N+1 concurrently or
-out of order. On lease takeover the standby MUST wait for the prior delivery's ack/redelivery to
-resolve before processing (takeover never overlaps in-flight processing). Delivery MUST be
+out of order. On lease takeover the standby MUST follow a fixed ordering: (1) acquire the lease, (2) WAIT for
+the prior holder's in-flight delivery's ack/redelivery to settle, (3) ONLY THEN read the
+`durable_ack_floor` and hydrate (load the latest snapshot whose `seq <= durable_ack_floor`,
+read-only-fold `(snapshot_seq, ack_floor]`), (4) go live. Reading the ack floor BEFORE the prior
+in-flight delivery settles is FORBIDDEN — the floor could otherwise advance past a fact the
+snapshot has not folded, skipping a projection (takeover never overlaps in-flight processing). Delivery MUST be
 **effectively-once (at-least-once delivery + idempotent feed publish)** — the service MUST NOT claim
 exactly-once. A source `.log` message MUST be acked ONLY after ALL intended per-agent feed publishes
 for that fact are acknowledged; if the worker crashes after some but not all publishes, the un-acked
@@ -236,7 +253,7 @@ single-consumer lag, but is NOT part of this requirement.
 - **GIVEN** the durable consumer configured `MaxAckPending=1` (one in-flight fact, no prefetch) and facts at `sequence` N then N+1 on the same stream
 - **WHEN** the active worker is processing fact N and a standby takes over the lease (or the same worker is mid-fold)
 - **THEN** fact N+1 is NOT delivered until fact N is fully folded, fanned out, and acked (or redelivered), so no two facts are folded concurrently and the stateful participation fold is never applied out of order
-- **AND** a lease takeover waits for the prior delivery's ack/redelivery before processing, so takeover never overlaps in-flight processing
+- **AND** the taking-over worker acquires the lease, WAITS for the prior in-flight delivery's ack/redelivery to settle, and ONLY THEN reads `durable_ack_floor` and hydrates — it never reads the ack floor before the prior delivery settles, so the floor can never advance past an un-folded fact (takeover never overlaps in-flight processing)
 
 #### Scenario: Poison fact is dead-lettered, not wedged
 - **id:** `signaling.feed.poison-dlq`
@@ -321,10 +338,18 @@ disconnect gap — it MUST NOT be the long-term/audit store. Within RelayPoint t
 `interaction.<id>.log` (retained per audit policy) MUST be the audit source; conversation history for
 the browser is DESK's REST API against Postgres (out of RP scope). The feed MUST NOT duplicate `.log`
 per-agent for retention. Feed messages MUST age out by `max_age`. On revocation the service MUST
-write a terminal `feed.revoked{interaction_id, at_sequence}` tombstone into the agent's `…feed.<iid>`
+write a terminal `feed.revoked` tombstone into the agent's `…feed.<iid>`
 so a reconnecting client deterministically drops the interaction even if it missed the
 `participant.left`; post-revocation feed content MAY then be purged (the `.log` retains the audit
 copy). The feed MUST NOT be silently used as the audit record.
+
+The `feed.revoked` tombstone is the ONE feed message that is NOT a copied `.log` `Event`: it is a
+small **feed-control** message type, distinct from a projected fact. It MUST carry only
+`{interaction_id, at_sequence}` (the interaction being revoked and the `.log` `sequence` at which
+the membership interval closed). A feed consumer MUST distinguish a feed-control message from a
+copied `Event` (e.g. by a feed-control envelope/type marker) and MUST treat `feed.revoked` as the
+terminal marker for that interaction's feed sub-subject. No other feed-control type is defined by
+this change.
 
 #### Scenario: Feed is the disconnect-gap bridge, log is the audit record
 - **id:** `signaling.feed.ephemeral-bridge`

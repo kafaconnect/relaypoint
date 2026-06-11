@@ -13,6 +13,7 @@ specs:
   - signaling.feed.cmd-identity-pinned
   - signaling.feed.privileged-assign-to-fact
   - signaling.feed.privileged-actor-guarded
+  - signaling.feed.privileged-transfer-ordering
   - signaling.feed.fanout-to-participants
   - signaling.feed.participation-from-facts
   - signaling.feed.fanout-dedup
@@ -52,6 +53,13 @@ agent-feed-fanout --strict` must pass.
   scenario `signaling.feed.cmd-identity-pinned`. (2) projector = leased single-active worker + KV
   snapshot hydration (effectively-once, not exactly-once); sharding demoted to a scale-out
   appendix; rewrote `exactly-once-crash` + `shard-ownership` scenarios. validate --strict green.
+- 2026-06-11 review nits folded: (nit 1) pinned lease-takeover ordering — acquire lease → WAIT for
+  prior in-flight ack/redelivery to settle → THEN read ack_floor + hydrate → go live (`serial-fold`
+  + hydration requirement). (nit 2) router transfer ordering — privileged-command requirement now
+  states the router emits `participant.joined`(new) BEFORE `participant.left`(old) on
+  `participant.transfer` (new scenario `signaling.feed.privileged-transfer-ordering`). (nit 3)
+  defined `feed.revoked` as a small feed-control message type `{interaction_id, at_sequence}` — the
+  one feed message that is NOT a copied `.log` Event. validate --strict green.
 - 2026-06-11 final design round (owner decisions): (CHANGE 1) DROPPED the RelayPoint history plane —
   removed the `feed.history` requirement + `backfill-on-assignment`/`history-participation-checked`
   scenarios + the pre-join visibility gate; feed is now live-only from join forward, history is desk

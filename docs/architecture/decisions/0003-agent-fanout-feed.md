@@ -75,10 +75,13 @@ tenant-wide read.
    derives from; NO partition subject-mapping, NO per-shard durables, NO rebalance protocol. The
    durable consumer is `MaxAckPending=1` (no prefetch, no concurrent projection): EXACTLY ONE `.log`
    fact is in flight at a time, so two fetchers can never fold facts N and N+1 concurrently or out of
-   order and corrupt the stateful participation fold; a lease takeover waits for the prior delivery's
-   ack/redelivery before proceeding (never overlaps in-flight processing). It hydrates from a KV
+   order and corrupt the stateful participation fold. A lease takeover follows a FIXED ordering:
+   acquire the lease → WAIT for the prior holder's in-flight delivery's ack/redelivery to settle →
+   ONLY THEN read `durable_ack_floor` and hydrate → go live (reading the floor before the prior
+   delivery settles is forbidden — it could advance past an un-folded fact; takeover never overlaps
+   in-flight processing). It hydrates from a KV
    participation snapshot that represents an **ACKED PREFIX ONLY** (the snapshot advances only after
-   the source ack, so it is never ahead of the cursor): on start/failover it loads the latest
+   the source ack, so it is never ahead of the cursor): it loads the latest
    snapshot whose `seq <= durable_ack_floor`, read-only-folds `(snapshot_seq, ack_floor]` to go live,
    then resumes. A source `.log` message is acked ONLY after all intended per-agent feed publishes
    succeed;
@@ -109,8 +112,10 @@ tenant-wide read.
 8. **Feed durability: ephemeral low-retention.** The feed is an ephemeral, short-`max_age`
    JetStream stream sized only to bridge a live disconnect gap; the canonical `.log` is RP's
    long-term/audit source and conversation history for the browser is desk REST (out of RP scope).
-   Revocation writes a `feed.revoked` tombstone; content may then be purged. The feed is never the
-   audit record.
+   Revocation writes a `feed.revoked` tombstone — the ONE feed message that is NOT a copied `.log`
+   `Event`, but a small feed-control message type carrying only `{interaction_id, at_sequence}`; a
+   consumer distinguishes feed-control from a projected `Event` by a type marker. Content may then be
+   purged. The feed is never the audit record.
 
 ## Consequences
 
@@ -145,7 +150,7 @@ Spec delta ids: `signaling.feed.inbox-reads-own-feed-only`, `signaling.feed.cros
 `signaling.feed.unified-medium`, `signaling.feed.write-server-only`,
 `signaling.feed.cmd-wildcard-no-reconnect`, `signaling.feed.cmd-nonparticipant-denied`,
 `signaling.feed.cmd-identity-pinned`, `signaling.feed.privileged-assign-to-fact`,
-`signaling.feed.privileged-actor-guarded`,
+`signaling.feed.privileged-actor-guarded`, `signaling.feed.privileged-transfer-ordering`,
 `signaling.feed.fanout-to-participants`, `signaling.feed.participation-from-facts`,
 `signaling.feed.fanout-dedup`, `signaling.feed.core-port-isolated`,
 `signaling.feed.exactly-once-crash`, `signaling.feed.shard-ownership`,

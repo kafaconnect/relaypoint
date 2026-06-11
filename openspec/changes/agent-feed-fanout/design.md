@@ -263,9 +263,12 @@ scale-out path (appendix below).
   leader lease** (TTL ~5s, renewed by heartbeat); the holder is the single active worker. On holder
   death the lease expires (~TTL) and a standby claims it and resumes from the durable cursor.
   Because `MaxAckPending=1`, JetStream redelivers the single un-acked fact to the new holder only
-  after the prior delivery's ack/redelivery timer resolves — the standby waits for ack/redelivery
-  before proceeding, so a lease takeover can NEVER fold two facts (or the same fact twice)
-  concurrently. Any brief double-ownership window is still made safe by the idempotent `Nats-Msg-Id`
+  after the prior delivery's ack/redelivery timer resolves. The takeover ordering is FIXED: the
+  standby (1) acquires the lease, (2) WAITS for the prior holder's in-flight delivery's
+  ack/redelivery to settle, (3) ONLY THEN reads `durable_ack_floor` and hydrates, (4) goes live.
+  Reading the ack floor before that settle is forbidden — it could advance past a fact the
+  snapshot has not folded, skipping a projection. So a lease takeover can NEVER fold two facts (or
+  the same fact twice) concurrently nor read a floor ahead of an un-folded fact. Any brief double-ownership window is still made safe by the idempotent `Nats-Msg-Id`
   dedup (Decision 3); serial-by-`MaxAckPending=1` additionally guarantees no out-of-order or
   concurrent fold.
 - **Hydration from an ACKED-prefix snapshot.** The participation view is snapshotted to KV every N
@@ -318,10 +321,15 @@ inbox catches up without a desk REST refetch. It is NOT the long-term/audit stor
 - **Purge.** Feed messages age out by `max_age`; on `participant.left` the service may purge the
   agent's `…feed.<iid>` subject after writing the tombstone (below), since post-revocation feed
   content has no live purpose and `.log` retains the audit copy.
-- **Tombstone.** On revocation the service writes a terminal `feed.revoked{interaction_id,
-  at_sequence}` marker into `…feed.<iid>` so a reconnecting client deterministically drops the
-  interaction from its inbox even if it missed the `participant.left`. The tombstone is the only
-  thing that must outlive immediate purge (covered by `max_age`).
+- **Tombstone.** On revocation the service writes a terminal `feed.revoked` marker into
+  `…feed.<iid>` so a reconnecting client deterministically drops the interaction from its inbox even
+  if it missed the `participant.left`. The tombstone is the only thing that must outlive immediate
+  purge (covered by `max_age`). It is the ONE feed message that is NOT a copied `.log` `Event`: a
+  small **feed-control** message type carrying only `{interaction_id, at_sequence}` (the revoked
+  interaction + the `.log` `sequence` at which the interval closed). The feed therefore carries two
+  shapes — projected `Event` copies and feed-control messages — and a consumer distinguishes them by
+  a feed-control envelope/type marker. `feed.revoked` is the only feed-control type this change
+  defines.
 - **Why not durable-per-agent:** a durable per-agent feed would duplicate `.log` content N times
   (once per participant) under audit retention — strictly worse than one canonical `.log` + desk's
   REST history, with no offline-inbox benefit the ephemeral bridge doesn't already give.
