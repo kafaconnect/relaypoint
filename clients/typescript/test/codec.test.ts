@@ -51,6 +51,7 @@ describe("protobuf wire codec", () => {
     expect(result).toEqual({ commandId: "K1", status: "accepted", causedBy: "K1" });
   });
 
+  // @spec:wire.protobuf.round-trip
   // Round-trip each wire message through protobuf encode/decode unchanged.
   describe("encode/decode round-trip", () => {
     it("Command", () => {

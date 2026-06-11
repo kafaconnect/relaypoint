@@ -102,6 +102,7 @@ func readLog(t *testing.T, js nats.JetStreamContext, tenant, iid string) []*Even
 	return out
 }
 
+// @spec:wire.protobuf.router-end-to-end
 func TestRouterChat(t *testing.T) {
 	cnc, js := startRouter(t)
 	iid := fmt.Sprintf("im%d", time.Now().UnixNano())
@@ -210,5 +211,41 @@ func TestClientCannotWriteLog(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("client was allowed to publish to .log (ACL not enforced)")
+	}
+}
+
+// @spec:wire.protobuf.stream-reset
+// ResetLogStream deletes + recreates INTERACTION_LOGS so a protobuf router replays a clean log:
+// a pre-existing (JSON-era) fact does NOT survive the reset, and the recreated stream is empty.
+func TestResetLogStreamPurgesFacts(t *testing.T) {
+	rnc, err := nats.Connect(urlOr("NATS_URL_ROUTER", "nats://router:router-dev@localhost:14222"))
+	if err != nil {
+		t.Skipf("no NATS: %v", err)
+	}
+	defer rnc.Drain()
+	js, err := rnc.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := EnsureLogStream(js); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	iid := fmt.Sprintf("ir%d", time.Now().UnixNano())
+	subj := logSubjectFor("t1", iid)
+	if _, err := js.Publish(subj, []byte(`{"legacy":"json"}`)); err != nil { // a JSON-era fact
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := ResetLogStream(js); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	store := NewJetStreamStore(js)
+	facts, err := store.Replay(subj)
+	if err != nil {
+		t.Fatalf("replay after reset must succeed on a clean stream, got %v", err)
+	}
+	if len(facts) != 0 {
+		t.Fatalf("reset must purge facts, found %d", len(facts))
 	}
 }
