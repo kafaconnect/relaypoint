@@ -30,8 +30,8 @@ type Snapshot struct {
 	Intervals map[string]map[string][]signaling.Interval
 }
 
-// state is the projector's in-memory participation across ALL interactions on the stream (the
-// stateful fold the serial MaxAckPending=1 discipline protects from concurrent mutation).
+// state is the in-memory participation across all interactions; the serial MaxAckPending=1 discipline
+// protects this fold from concurrent mutation.
 type state struct {
 	views map[string]*signaling.ParticipationView // keyed by interaction id
 }
@@ -220,12 +220,9 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	key := e.TenantId + "/" + iid
 	view := p.st.view(key)
 
-	// Fold FIRST, then pick recipients by the membership interval covering S (epoch guard, Decision
-	// 6). The guard is half-open on the low end, INCLUSIVE on the high end — join ≤ S ≤ left — so a
-	// join fact at J reaches the joining agent ([J,∞), J≥J) and the participant.left fact at L
-	// reaches the leaving agent (its closing interval [J,L], L≤L), while any fact at S > L (a later
-	// fact, or after re-fold) does NOT reach a left agent. The fold updates the view before the
-	// guard so the closing left fact's own interval is the one consulted.
+	// Fold FIRST so the closing left fact's own interval is consulted, then pick recipients by the
+	// interval covering S (epoch guard, Decision 6): join ≤ S ≤ left, so join@J and left@L each reach
+	// their agent but no fact at S > L reaches an already-left agent.
 	view.ApplyFact(e)
 	recipients := coveredBy(view, e.Sequence)
 
@@ -326,10 +323,8 @@ func (p *Projector) maybeSnapshot(ctx context.Context, seq uint64) {
 	p.sinceSnap = 0
 }
 
-// coveredBy returns the agents whose membership interval covers sequence S: join ≤ S ≤ left for a
-// closed interval [join,left] (inclusive of the closing left fact's own sequence), or join ≤ S for
-// an open interval. This is the per-fact epoch guard — the recipient set of the fact at S
-// (Decision 6).
+// coveredBy returns the agents whose membership interval covers sequence S (join ≤ S ≤ left, or
+// join ≤ S for an open interval) — the recipient set of the fact at S.
 func coveredBy(v *signaling.ParticipationView, s int64) []string {
 	var out []string
 	for _, a := range v.Agents() {
@@ -343,7 +338,5 @@ func coveredBy(v *signaling.ParticipationView, s int64) []string {
 	return out
 }
 
-// interactionOf returns the interaction id a fact belongs to. The durable consumer's subject is
-// tenant.<tid>.interaction.<iid>.log; the adapter carries the parsed iid on the Fact via the Event
-// is insufficient (the Event has no iid field), so the adapter sets it. See nats.go.
+// interactionOf returns the iid the adapter parsed from the delivery subject (the Event has no iid).
 func interactionOf(f Fact) string { return f.iid }

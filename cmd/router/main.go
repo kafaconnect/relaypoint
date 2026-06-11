@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/nats-io/nats.go"
@@ -37,19 +38,26 @@ func main() {
 	}
 	must("stream", signaling.EnsureLogStream(js))
 
-	// core depends only on the LogStore port; NATS is the adapter (loose coupling).
-	r := signaling.NewRouter(signaling.NewJetStreamStore(js))
-	// The .cmd subject now carries an identity suffix (tenant.*.interaction.*.cmd.<identity>); the
-	// router reads the publisher from the last token (openspec change agent-feed-fanout, Decision 1).
+	// RP_DEV_NO_AUTH=1 runs the permissive pre-auth-callout posture (no identity → suffix advisory,
+	// gates off). Production leaves it unset: an unauthenticated command fails closed (A1).
+	devMode := os.Getenv("RP_DEV_NO_AUTH") == "1"
+	var ropts []signaling.Option
+	if devMode {
+		ropts = append(ropts, signaling.WithDevMode())
+		slog.Warn("router.dev-no-auth", "note", "participation/role gates disabled")
+	}
+	r := signaling.NewRouter(signaling.NewJetStreamStore(js), ropts...)
+
+	// The auth-callout ACL pins each connection to publish only `…cmd.<self>`, so the subject suffix
+	// IS the authenticated user; trusted-backend identities are operator-listed in RP_TRUSTED_BACKENDS
+	// (anything else is RoleAgent). See openspec change agent-feed-fanout, Decision 1 / A1.
+	trusted := trustedSet(os.Getenv("RP_TRUSTED_BACKENDS"))
 	_, err = nc.QueueSubscribe("tenant.*.interaction.*.cmd.*", "router", func(m *nats.Msg) {
-		// Seed the per-message context from the publisher's `traceparent` (subscribe side of
-		// @spec:obs.nats-traceparent-propagated): the router's logs share the publisher's
-		// trace_id. A missing/malformed header mints a fresh trace — never a drop.
 		ctx := obs.ContextFromTraceparent(context.Background(), traceparentOf(m))
 		ctx = obs.WithCorrelation(ctx, slog.Default())
-		// Phase-1 has no per-connection identity (shared `client` user) → empty Identity, so the
-		// router validates against the subject tenant. Auth-callout will mint a real one here.
-		ctx = signaling.WithIdentity(ctx, signaling.Identity{})
+		if !devMode {
+			ctx = signaling.WithIdentity(ctx, identityFromSubject(m.Subject, trusted))
+		}
 		res := r.HandleCommand(ctx, m.Subject, m.Data)
 		if m.Reply != "" {
 			b, _ := proto.Marshal(res)
@@ -62,6 +70,33 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+}
+
+// identityFromSubject derives the authenticated identity from tenant.<tid>.interaction.<iid>.cmd.<self>:
+// the auth-callout ACL guarantees a connection can only publish its own `<self>` suffix, so the suffix
+// is the trusted user and p[1] the trusted tenant. A malformed subject yields a zero Identity, which
+// the router rejects as unauthenticated. The role is RoleTrustedBackend only for an operator-listed
+// identity; everything else is RoleAgent.
+func identityFromSubject(subject string, trusted map[string]bool) signaling.Identity {
+	p := strings.Split(subject, ".")
+	if len(p) != 6 || p[1] == "" || p[5] == "" {
+		return signaling.Identity{}
+	}
+	role := signaling.RoleAgent
+	if trusted[p[5]] {
+		role = signaling.RoleTrustedBackend
+	}
+	return signaling.Identity{TenantID: p[1], UserID: p[5], Role: role}
+}
+
+func trustedSet(csv string) map[string]bool {
+	set := map[string]bool{}
+	for _, s := range strings.Split(csv, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			set[s] = true
+		}
+	}
+	return set
 }
 
 // traceparentOf reads the inbound W3C trace header; nats.Msg.Header is nil for a header-less

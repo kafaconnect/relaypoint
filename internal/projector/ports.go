@@ -11,26 +11,22 @@ import (
 // RULE). NATS is the Phase-1 adapter behind each port (nats.go). See openspec change
 // agent-feed-fanout, Decision 7.
 
-// Fact is one delivered `.log` message: the decoded Event, the interaction id parsed from the
-// delivery subject (the Event envelope carries no interaction id), and the JetStream stream
-// sequence the durable consumer assigns it (the cursor unit — distinct from Event.Sequence, the
-// dense per-interaction router sequence). The projector folds in StreamSeq order and snapshots by it.
+// Fact is one delivered `.log` message. StreamSeq is the JetStream cursor unit (the snapshot/fold
+// order) — distinct from Event.Sequence, the dense per-interaction router sequence. iid is parsed
+// from the delivery subject (the Event has none).
 type Fact struct {
 	Event     *signaling.Event
 	iid       string
 	StreamSeq uint64
-	// msg is the adapter's opaque delivery handle (e.g. *nats.Msg), kept as `any` so the core never
-	// imports a transport type (loose coupling). The adapter type-asserts it in Ack/Nak/Delivered.
+	// opaque delivery handle (e.g. *nats.Msg) as `any` so the core imports no transport type
 	msg any
 }
 
-// NewFact constructs a Fact (the adapter parses the interaction id from the delivery subject).
-// Exposed so unit-test fakes build facts the same way the live adapter does.
+// NewFact lets unit-test fakes build facts the same way the live adapter does.
 func NewFact(e *signaling.Event, iid string, streamSeq uint64) Fact {
 	return Fact{Event: e, iid: iid, StreamSeq: streamSeq}
 }
 
-// Iid is the interaction id this fact belongs to (from the delivery subject).
 func (f Fact) Iid() string { return f.iid }
 
 // LogSource is the durable, serial (MaxAckPending=1) consumer of `tenant.*.interaction.*.log`.

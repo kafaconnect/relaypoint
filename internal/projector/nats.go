@@ -14,8 +14,8 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-// The NATS adapters: the ONLY code in this package that imports nats.go. They implement the owned
-// ports so the core (projector.go) never sees a NATS type — loose-coupling HARD RULE.
+// The NATS adapters — the only code here importing nats.go — implement the owned ports so the core
+// never sees a NATS type (loose-coupling HARD RULE).
 
 const (
 	feedStream   = "AGENT_FEED"
@@ -54,8 +54,6 @@ func EnsureFeedStream(js nats.JetStreamContext, maxAge, dedupWindow time.Duratio
 	}
 	return nil
 }
-
-// --- LogSource: durable, serial (MaxAckPending=1) consumer of INTERACTION_LOGS ---
 
 type jsLogSource struct {
 	js      nats.JetStreamContext
@@ -191,8 +189,6 @@ func iidFromLogSubject(s string) string {
 	return ""
 }
 
-// --- FeedSink: publish a projection to one agent feed subject with a deterministic dedup id ---
-
 type jsFeedSink struct{ js nats.JetStreamContext }
 
 func NewFeedSink(js nats.JetStreamContext) FeedSink { return &jsFeedSink{js: js} }
@@ -209,8 +205,6 @@ func (s *jsFeedSink) Dlq(_ context.Context, tenant, reason, eventID string, seq 
 	_, err := s.js.Publish(subj, body)
 	return err
 }
-
-// --- LeaseStore: a NATS KV single-key leader lease (TTL ~5s, heartbeat-renewed) ---
 
 type kvLease struct {
 	kv     nats.KeyValue
@@ -277,8 +271,6 @@ func (l *kvLease) Release(_ context.Context) error {
 	}
 	return l.kv.Delete(l.key)
 }
-
-// --- SnapshotStore: the participation view persisted in a KV bucket, keyed by stream sequence ---
 
 type kvSnapshot struct{ kv nats.KeyValue }
 
