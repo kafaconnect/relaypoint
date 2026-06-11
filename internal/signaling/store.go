@@ -9,55 +9,74 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ErrOCCConflict means the append's expected last-subject-sequence no longer matched: another
+// writer (or a stale rebuilt state) advanced the subject. It is retryable — the caller must
+// re-fold and retry, never blindly append behind it. See openspec change router-occ.
+var ErrOCCConflict = errors.New("optimistic-concurrency conflict: expected last-subject-sequence mismatch")
+
 // LogStore is the router core's only infrastructure dependency — the core depends on this port,
 // not on NATS (loose-coupling HARD RULE). JetStream is the Phase-1 adapter.
 type LogStore interface {
-	// dedupID makes the append idempotent: a retry with the same dedupID returns duplicate=true
-	// and writes no second fact.
-	Append(subject string, data []byte, dedupID string) (duplicate bool, err error)
+	// Append publishes a fact under per-subject optimistic concurrency: the store rejects with
+	// ErrOCCConflict unless the subject's current last STREAM sequence equals expectedLastSubjSeq
+	// (0 = the subject is expected empty). dedupID makes the append idempotent: a retry with the
+	// same dedupID returns duplicate=true and writes no second fact.
+	Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (duplicate bool, err error)
 	// Replay MUST error (not return a short slice) if the log can't be fully read, so callers
-	// fail closed.
-	Replay(subject string) ([]*Event, error)
+	// fail closed. It also returns the subject's current last STREAM sequence (0 if empty) — the
+	// OCC token a subsequent Append must echo, distinct from the dense per-interaction sequence.
+	Replay(subject string) (events []*Event, lastSubjSeq uint64, err error)
 }
 
 type jetstreamStore struct{ js nats.JetStreamContext }
 
 func NewJetStreamStore(js nats.JetStreamContext) LogStore { return &jetstreamStore{js: js} }
 
-func (s *jetstreamStore) Append(subject string, data []byte, dedupID string) (bool, error) {
-	ack, err := s.js.Publish(subject, data, nats.MsgId(dedupID))
+func (s *jetstreamStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+	ack, err := s.js.Publish(subject, data,
+		nats.MsgId(dedupID), nats.ExpectLastSequencePerSubject(expectedLastSubjSeq))
 	if err != nil {
+		var apiErr *nats.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
+			return false, ErrOCCConflict
+		}
 		return false, err
 	}
 	return ack.Duplicate, nil
 }
 
-func (s *jetstreamStore) Replay(subject string) ([]*Event, error) {
+func (s *jetstreamStore) Replay(subject string) ([]*Event, uint64, error) {
 	// Empty durable name → an ephemeral consumer: a throwaway one-shot reader to drain the
 	// subject for this replay, leaving no durable consumer state on the server.
 	sub, err := s.js.PullSubscribe(subject, "", nats.DeliverAll(), nats.AckNone())
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer sub.Unsubscribe()
 	var out []*Event
+	var lastSubjSeq uint64
 	for {
 		msgs, ferr := sub.Fetch(128, nats.MaxWait(250*time.Millisecond))
 		if errors.Is(ferr, nats.ErrTimeout) || (ferr == nil && len(msgs) == 0) {
 			break
 		}
 		if ferr != nil {
-			return nil, ferr // fail closed — never return partial state
+			return nil, 0, ferr // fail closed — never return partial state
 		}
 		for _, m := range msgs {
+			meta, merr := m.Metadata()
+			if merr != nil {
+				return nil, 0, fmt.Errorf("replay %s: no stream metadata: %w", subject, merr)
+			}
+			lastSubjSeq = meta.Sequence.Stream
 			e := &Event{}
 			if err := proto.Unmarshal(m.Data, e); err != nil {
-				return nil, fmt.Errorf("replay %s: corrupt fact: %w", subject, err) // fail closed
+				return nil, 0, fmt.Errorf("replay %s: corrupt fact: %w", subject, err) // fail closed
 			}
 			out = append(out, e)
 		}
 	}
-	return out, nil
+	return out, lastSubjSeq, nil
 }
 
 func logStreamConfig() *nats.StreamConfig {

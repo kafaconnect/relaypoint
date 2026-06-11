@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,11 +33,12 @@ type Router struct {
 }
 
 type interactionState struct {
-	mu       sync.Mutex
-	seq      int64
-	status   string // "" | started | ended
-	results  map[string]storedResult
-	poisoned bool // seq untrustworthy → callers must rebuild, not reuse it
+	mu        sync.Mutex
+	seq       int64
+	streamSeq uint64 // subject's last STREAM sequence — the OCC token for the next append (≠ seq)
+	status    string // "" | started | ended
+	results   map[string]storedResult
+	poisoned  bool // seq untrustworthy → callers must rebuild, not reuse it
 }
 
 type storedResult struct {
@@ -153,10 +155,11 @@ func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 
 func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 	st := &interactionState{results: map[string]storedResult{}}
-	facts, err := r.store.Replay(logSubjectFor(tenant, iid))
+	facts, lastSubjSeq, err := r.store.Replay(logSubjectFor(tenant, iid))
 	if err != nil {
 		return nil, err
 	}
+	st.streamSeq = lastSubjSeq
 	for _, e := range facts {
 		if e.Sequence > st.seq {
 			st.seq = e.Sequence
@@ -234,54 +237,84 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return res
 	}
 
-	// A command_id is bound to its first payload.
-	if prev, seen := st.results[cmd.CommandId]; seen {
-		switch {
-		case prev.payloadHash == "": // legacy fact, hash unknown
-			return proto.Clone(prev.result).(*CommandResult)
-		case prev.payloadHash != hashPayload(cmd):
-			res.Status, res.Reason = statusRejected, "conflict: command_id reused with a different payload"
-			return res
-		case prev.result.Status == statusAccepted:
-			return proto.Clone(prev.result).(*CommandResult)
-			// a previously-rejected same payload falls through: a transient rejection
-			// (e.g. an illegal transition) may now be legal
-		}
-	}
-
-	if !legalTransition(st.status, cmd.Type) {
-		res.Status, res.Reason = statusRejected, fmt.Sprintf("illegal transition %q from state %q", cmd.Type, st.status)
-		st.results[cmd.CommandId] = storedResult{payloadHash: hashPayload(cmd), result: res}
-		return res
-	}
-
-	seq := st.seq + 1
 	ph := hashPayload(cmd)
-	ev := &Event{
-		Schema: SchemaV1, EventType: cmd.Type, EventId: r.id(), Sequence: seq,
-		OccurredAt: timestamppb.New(r.now().UTC()), TenantId: tenant, ActorId: cmd.ActorId,
-		Medium: orDefault(cmd.Medium, "chat"), CommandId: cmd.CommandId,
-		PayloadHash: ph, CausedBy: cmd.CommandId, RefId: cmd.RefId, Data: cmd.Data,
-	}
-	payload, _ := proto.Marshal(ev)
-	// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even
-	// if a prior append's ack was lost.
-	dup, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId)
-	if aerr != nil {
-		// The append may have committed before the ack was lost — reconcile from the log and
-		// accept if the fact is now present.
-		if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
-			if prev, committed := fresh.results[cmd.CommandId]; committed {
-				st.seq, st.status = fresh.seq, fresh.status
+
+	// Append under per-subject OCC (store rejects unless st.streamSeq is still the subject's last).
+	// A loser re-folds and retries ONCE: a concurrent writer may have advanced the subject, ended
+	// the interaction, or already committed THIS command_id. See openspec change router-occ.
+	var dup bool
+	for attempt := 0; ; attempt++ {
+		// A command_id is bound to its first payload (re-checked each attempt: a re-fold can reveal
+		// a concurrent writer committed it).
+		if prev, seen := st.results[cmd.CommandId]; seen {
+			switch {
+			case prev.payloadHash == "": // legacy fact, hash unknown
 				return proto.Clone(prev.result).(*CommandResult)
+			case prev.payloadHash != ph:
+				res.Status, res.Reason = statusRejected, "conflict: command_id reused with a different payload"
+				return res
+			case prev.result.Status == statusAccepted:
+				return proto.Clone(prev.result).(*CommandResult)
+				// a previously-rejected same payload falls through: a transient rejection
+				// (e.g. an illegal transition) may now be legal
 			}
 		}
-		st.poisoned = true // seq may be stale; force a rebuild rather than append behind it
-		r.mu.Lock()
-		delete(r.inter, tenant+"/"+iid)
-		r.mu.Unlock()
-		res.Status, res.Reason = statusRejected, "log append failed — retry"
-		return res
+
+		if !legalTransition(st.status, cmd.Type) {
+			res.Status, res.Reason = statusRejected, fmt.Sprintf("illegal transition %q from state %q", cmd.Type, st.status)
+			st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
+			return res
+		}
+
+		seq := st.seq + 1
+		ev := &Event{
+			Schema: SchemaV1, EventType: cmd.Type, EventId: r.id(), Sequence: seq,
+			OccurredAt: timestamppb.New(r.now().UTC()), TenantId: tenant, ActorId: cmd.ActorId,
+			Medium: orDefault(cmd.Medium, "chat"), CommandId: cmd.CommandId,
+			PayloadHash: ph, CausedBy: cmd.CommandId, RefId: cmd.RefId, Data: cmd.Data,
+		}
+		payload, _ := proto.Marshal(ev)
+		// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even
+		// if a prior append's ack was lost.
+		d, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
+		if errors.Is(aerr, ErrOCCConflict) {
+			// Lost the race: another writer advanced the subject. Re-fold once from the log and
+			// retry; if we still lose, surface a retryable rejection (never append behind a stale seq).
+			fresh, ferr := r.rebuild(tenant, iid)
+			if ferr != nil || attempt >= 1 {
+				st.poisoned = true
+				r.mu.Lock()
+				delete(r.inter, tenant+"/"+iid)
+				r.mu.Unlock()
+				res.Status, res.Reason = statusRejected, "lost concurrent append — retry"
+				return res
+			}
+			st.seq, st.streamSeq, st.status = fresh.seq, fresh.streamSeq, fresh.status
+			for k, v := range fresh.results {
+				if _, ok := st.results[k]; !ok {
+					st.results[k] = v
+				}
+			}
+			continue
+		}
+		if aerr != nil {
+			// The append may have committed before the ack was lost — reconcile from the log and
+			// accept if the fact is now present.
+			if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
+				if prev, committed := fresh.results[cmd.CommandId]; committed {
+					st.seq, st.streamSeq, st.status = fresh.seq, fresh.streamSeq, fresh.status
+					return proto.Clone(prev.result).(*CommandResult)
+				}
+			}
+			st.poisoned = true // seq may be stale; force a rebuild rather than append behind it
+			r.mu.Lock()
+			delete(r.inter, tenant+"/"+iid)
+			r.mu.Unlock()
+			res.Status, res.Reason = statusRejected, "log append failed — retry"
+			return res
+		}
+		dup = d
+		break
 	}
 	res.Status, res.CausedBy = statusAccepted, cmd.CommandId
 	if dup {
@@ -296,7 +329,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			r.mu.Unlock()
 			return res
 		}
-		st.seq, st.status = fresh.seq, fresh.status
+		st.seq, st.streamSeq, st.status = fresh.seq, fresh.streamSeq, fresh.status
 		for k, v := range fresh.results {
 			if _, ok := st.results[k]; !ok {
 				st.results[k] = v
@@ -311,7 +344,8 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
 		return res
 	}
-	st.seq = seq
+	st.seq++
+	st.streamSeq++ // we committed exactly one fact under OCC: the subject advanced by one
 	applyTransition(st, cmd.Type)
 	st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
 
