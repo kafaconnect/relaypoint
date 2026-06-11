@@ -2,21 +2,22 @@ package signaling
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeStore is an in-memory LogStore — proves the router core needs no NATS.
 type fakeStore struct {
 	mu    sync.Mutex
-	facts map[string][]Event
+	facts map[string][]*Event
 	dedup map[string]bool
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{facts: map[string][]Event{}, dedup: map[string]bool{}}
+	return &fakeStore{facts: map[string][]*Event{}, dedup: map[string]bool{}}
 }
 
 func (s *fakeStore) Append(subject string, data []byte, dedupID string) (bool, error) {
@@ -26,20 +27,29 @@ func (s *fakeStore) Append(subject string, data []byte, dedupID string) (bool, e
 		return true, nil
 	}
 	s.dedup[dedupID] = true
-	var e Event
-	_ = json.Unmarshal(data, &e)
+	e := &Event{}
+	_ = proto.Unmarshal(data, e)
 	s.facts[subject] = append(s.facts[subject], e)
 	return false, nil
 }
 
-func (s *fakeStore) Replay(subject string) ([]Event, error) {
+func (s *fakeStore) Replay(subject string) ([]*Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Event(nil), s.facts[subject]...), nil
+	return append([]*Event(nil), s.facts[subject]...), nil
 }
 
-func cmd(id, tenant, typ string, data map[string]any) []byte {
-	b, _ := json.Marshal(Command{CommandID: id, TenantID: tenant, ActorID: "u1", Type: typ, Medium: "chat", Data: data})
+// chatData marshals chat message text into the `data` payload (the registry: medium=chat).
+func chatData(text string) []byte {
+	if text == "" {
+		return nil
+	}
+	b, _ := proto.Marshal(&ChatMessage{Text: text})
+	return b
+}
+
+func cmd(id, tenant, typ, text string) []byte {
+	b, _ := proto.Marshal(&Command{CommandId: id, TenantId: tenant, ActorId: "u1", Type: typ, Medium: "chat", Data: chatData(text)})
 	return b
 }
 
@@ -49,10 +59,10 @@ func TestCore_NoNATS(t *testing.T) {
 	st := newFakeStore()
 	r := NewRouter(st)
 
-	if got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil)); got.Status != "accepted" || got.CausedBy != "c1" {
+	if got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", "")); got.Status != statusAccepted || got.CausedBy != "c1" {
 		t.Fatalf("start: %+v (want accepted, caused_by=c1)", got)
 	}
-	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", map[string]any{"t": "hi"})); got.Status != "accepted" {
+	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi")); got.Status != statusAccepted {
 		t.Fatalf("message: %+v", got)
 	}
 	facts, _ := st.Replay(logSubjectFor("t1", "iX"))
@@ -61,21 +71,21 @@ func TestCore_NoNATS(t *testing.T) {
 	}
 
 	// idempotency: same command replayed → no second fact
-	a := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", map[string]any{"t": "hi"}))
+	a := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi"))
 	facts, _ = st.Replay(logSubjectFor("t1", "iX"))
-	if a.Status != "accepted" || len(facts) != 2 {
+	if a.Status != statusAccepted || len(facts) != 2 {
 		t.Fatalf("retry double-appended: %+v / %d facts", a, len(facts))
 	}
 	// conflict: same id, different payload
-	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", map[string]any{"t": "DIFF"})); got.Status != "rejected" {
+	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "DIFF")); got.Status != statusRejected {
 		t.Fatalf("conflict not rejected: %+v", got)
 	}
 	// payload tenant mismatch
-	if got := r.HandleCommand(context.Background(), subj, cmd("c3", "OTHER", "message.created", nil)); got.Status != "rejected" {
+	if got := r.HandleCommand(context.Background(), subj, cmd("c3", "OTHER", "message.created", "")); got.Status != statusRejected {
 		t.Fatalf("tenant mismatch not rejected: %+v", got)
 	}
 	// illegal: message before start on a fresh interaction
-	if got := r.HandleCommand(context.Background(), "tenant.t1.interaction.iY.cmd", cmd("c4", "t1", "message.created", nil)); got.Status != "rejected" {
+	if got := r.HandleCommand(context.Background(), "tenant.t1.interaction.iY.cmd", cmd("c4", "t1", "message.created", "")); got.Status != statusRejected {
 		t.Fatalf("illegal not rejected: %+v", got)
 	}
 }
@@ -85,12 +95,12 @@ func TestCore_NoNATS(t *testing.T) {
 func TestCore_RestartRebuild(t *testing.T) {
 	st := newFakeStore()
 	r1 := NewRouter(st)
-	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil))
-	r1.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", map[string]any{"t": "a"}))
+	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
+	r1.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "a"))
 
 	r2 := NewRouter(st) // restart: empty in-memory state
-	got := r2.HandleCommand(context.Background(), subj, cmd("c3", "t1", "message.created", map[string]any{"t": "b"}))
-	if got.Status != "accepted" {
+	got := r2.HandleCommand(context.Background(), subj, cmd("c3", "t1", "message.created", "b"))
+	if got.Status != statusAccepted {
 		t.Fatalf("post-restart message rejected (state not rebuilt): %+v", got)
 	}
 	facts, _ := st.Replay(logSubjectFor("t1", "iX"))
@@ -98,9 +108,9 @@ func TestCore_RestartRebuild(t *testing.T) {
 		t.Fatalf("post-restart sequence wrong: %d facts, last seq %d (want 3,3)", n, facts[len(facts)-1].Sequence)
 	}
 	// a replayed command from before the restart is recognised (no double-append)
-	got = r2.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", map[string]any{"t": "a"}))
+	got = r2.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "a"))
 	facts, _ = st.Replay(logSubjectFor("t1", "iX"))
-	if got.Status != "accepted" || len(facts) != 3 {
+	if got.Status != statusAccepted || len(facts) != 3 {
 		t.Fatalf("post-restart replay double-appended: %+v / %d", got, len(facts))
 	}
 }
@@ -111,13 +121,13 @@ func TestCore_RestartRebuild(t *testing.T) {
 func TestCore_ForgedAuthor(t *testing.T) {
 	r := NewRouter(newFakeStore())
 	ctx := WithIdentity(context.Background(), Identity{TenantID: "t1", UserID: "u1"})
-	body, _ := json.Marshal(Command{CommandID: "f1", TenantID: "t1", ActorID: "u2", Type: "interaction.started", Medium: "chat"})
-	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd", body); got.Status != "rejected" {
+	body, _ := proto.Marshal(&Command{CommandId: "f1", TenantId: "t1", ActorId: "u2", Type: "interaction.started", Medium: "chat"})
+	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd", body); got.Status != statusRejected {
 		t.Fatalf("forged actor must be rejected, got %+v", got)
 	}
 	// the authenticated user's own command is accepted
-	ok, _ := json.Marshal(Command{CommandID: "f2", TenantID: "t1", ActorID: "u1", Type: "interaction.started", Medium: "chat"})
-	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd", ok); got.Status != "accepted" {
+	ok, _ := proto.Marshal(&Command{CommandId: "f2", TenantId: "t1", ActorId: "u1", Type: "interaction.started", Medium: "chat"})
+	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd", ok); got.Status != statusAccepted {
 		t.Fatalf("authenticated actor must be accepted, got %+v", got)
 	}
 }
@@ -126,33 +136,33 @@ func TestCore_ForgedAuthor(t *testing.T) {
 // Append: Replay omits it the first time (getState) then reveals it (the dup-path reconcile), and
 // Append always reports a duplicate.
 type concurrentWriterStore struct {
-	base    []Event
-	hidden  Event
+	base    []*Event
+	hidden  *Event
 	replays int
 }
 
 func (s *concurrentWriterStore) Append(string, []byte, string) (bool, error) { return true, nil }
-func (s *concurrentWriterStore) Replay(string) ([]Event, error) {
+func (s *concurrentWriterStore) Replay(string) ([]*Event, error) {
 	s.replays++
 	if s.replays == 1 {
-		return append([]Event(nil), s.base...), nil
+		return append([]*Event(nil), s.base...), nil
 	}
-	return append(append([]Event(nil), s.base...), s.hidden), nil
+	return append(append([]*Event(nil), s.base...), s.hidden), nil
 }
 
 // The dup-append path must compare the COMMITTED fact's payload_hash: a divergent reuse is a
 // conflict, a matching one replays — never a blind accepted.
 func TestCore_DupPathChecksPayloadHash(t *testing.T) {
-	started := Event{Schema: SchemaV1, EventType: "interaction.started", EventID: "e1", Sequence: 1, TenantID: "t1", ActorID: "u1", Medium: "chat", CommandID: "c1", CausedBy: "c1"}
-	origCmd := Command{CommandID: "m1", TenantID: "t1", ActorID: "u1", Type: "message.created", Medium: "chat", Data: map[string]any{"t": "A"}}
-	m1 := Event{Schema: SchemaV1, EventType: "message.created", EventID: "e2", Sequence: 2, TenantID: "t1", ActorID: "u1", Medium: "chat", CommandID: "m1", PayloadHash: hashPayload(origCmd), CausedBy: "m1"}
+	started := &Event{Schema: SchemaV1, EventType: "interaction.started", EventId: "e1", Sequence: 1, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "c1", CausedBy: "c1"}
+	origCmd := &Command{CommandId: "m1", TenantId: "t1", ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatData("A")}
+	m1 := &Event{Schema: SchemaV1, EventType: "message.created", EventId: "e2", Sequence: 2, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "m1", PayloadHash: hashPayload(origCmd), CausedBy: "m1"}
 
-	r1 := NewRouter(&concurrentWriterStore{base: []Event{started}, hidden: m1})
-	if got := r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "B"})); got.Status != "rejected" || got.Reason == "" {
+	r1 := NewRouter(&concurrentWriterStore{base: []*Event{started}, hidden: m1})
+	if got := r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "B")); got.Status != statusRejected || got.Reason == "" {
 		t.Fatalf("dup-path divergent reuse must conflict, got %+v", got)
 	}
-	r2 := NewRouter(&concurrentWriterStore{base: []Event{started}, hidden: m1})
-	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "accepted" {
+	r2 := NewRouter(&concurrentWriterStore{base: []*Event{started}, hidden: m1})
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A")); got.Status != statusAccepted {
 		t.Fatalf("dup-path matching reuse must replay accepted, got %+v", got)
 	}
 }
@@ -162,14 +172,14 @@ func TestCore_DupPathChecksPayloadHash(t *testing.T) {
 func TestCore_ConflictAcrossRestart(t *testing.T) {
 	st := newFakeStore()
 	r1 := NewRouter(st)
-	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil))
-	r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"}))
+	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
+	r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A"))
 
 	r2 := NewRouter(st) // restart: in-memory state gone, rebuilt from the log
-	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "DIFF"})); got.Status != "rejected" {
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "DIFF")); got.Status != statusRejected {
 		t.Fatalf("cross-restart divergent command_id reuse must conflict, got %+v", got)
 	}
-	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "accepted" {
+	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A")); got.Status != statusAccepted {
 		t.Fatalf("cross-restart same-payload retry must replay accepted, got %+v", got)
 	}
 }
@@ -177,13 +187,13 @@ func TestCore_ConflictAcrossRestart(t *testing.T) {
 // edit/delete must name the message they target (ref_id).
 func TestCore_RefIDRequired(t *testing.T) {
 	r := NewRouter(newFakeStore())
-	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", nil))
-	noRef, _ := json.Marshal(Command{CommandID: "u1", TenantID: "t1", ActorID: "u1", Type: "message.updated", Medium: "chat"})
-	if got := r.HandleCommand(context.Background(), subj, noRef); got.Status != "rejected" {
+	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
+	noRef, _ := proto.Marshal(&Command{CommandId: "u1", TenantId: "t1", ActorId: "u1", Type: "message.updated", Medium: "chat"})
+	if got := r.HandleCommand(context.Background(), subj, noRef); got.Status != statusRejected {
 		t.Fatalf("message.updated without ref_id must be rejected, got %+v", got)
 	}
-	withRef, _ := json.Marshal(Command{CommandID: "u2", TenantID: "t1", ActorID: "u1", Type: "message.updated", Medium: "chat", RefID: "m1"})
-	if got := r.HandleCommand(context.Background(), subj, withRef); got.Status != "accepted" {
+	withRef, _ := proto.Marshal(&Command{CommandId: "u2", TenantId: "t1", ActorId: "u1", Type: "message.updated", Medium: "chat", RefId: "m1"})
+	if got := r.HandleCommand(context.Background(), subj, withRef); got.Status != statusAccepted {
 		t.Fatalf("message.updated with ref_id should be accepted, got %+v", got)
 	}
 }
@@ -193,7 +203,7 @@ func TestCore_RefIDRequired(t *testing.T) {
 type dupRebuildFailStore struct{ calls int }
 
 func (s *dupRebuildFailStore) Append(string, []byte, string) (bool, error) { return true, nil }
-func (s *dupRebuildFailStore) Replay(string) ([]Event, error) {
+func (s *dupRebuildFailStore) Replay(string) ([]*Event, error) {
 	s.calls++
 	if s.calls == 1 {
 		return nil, nil
@@ -205,8 +215,8 @@ func (s *dupRebuildFailStore) Replay(string) ([]Event, error) {
 // command rebuilds from the log instead of appending behind an untrustworthy sequence.
 func TestCore_DupRebuildFailEvicts(t *testing.T) {
 	r := NewRouter(&dupRebuildFailStore{})
-	got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", nil))
-	if got.Status != "accepted" {
+	got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
+	if got.Status != statusAccepted {
 		t.Fatalf("dup append should still ack accepted, got %+v", got)
 	}
 	r.mu.Lock()
@@ -222,16 +232,16 @@ func TestCore_DupRebuildFailEvicts(t *testing.T) {
 func TestCore_RejectedReuseConflict(t *testing.T) {
 	r := NewRouter(newFakeStore())
 	// message before start → rejected (and memoised with its payload hash)
-	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "rejected" {
+	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "A")); got.Status != statusRejected {
 		t.Fatalf("setup: want rejected, got %+v", got)
 	}
 	// same id, DIFFERENT payload → conflict
-	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", map[string]any{"t": "B"})); got.Status != "rejected" || got.Reason == "" {
+	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "B")); got.Status != statusRejected || got.Reason == "" {
 		t.Fatalf("reuse with different payload must conflict, got %+v", got)
 	}
 	// same id, SAME payload, now legal (after start) → accepted (transient rejection retried)
-	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", nil))
-	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", map[string]any{"t": "A"})); got.Status != "accepted" {
+	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
+	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "A")); got.Status != statusAccepted {
 		t.Fatalf("same-payload retry once legal should be accepted, got %+v", got)
 	}
 }

@@ -3,13 +3,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/nats-io/nats.go"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
@@ -28,6 +28,13 @@ func main() {
 
 	js, err := nc.JetStream()
 	must("jetstream", err)
+	// ADR-0002 protobuf cutover: a one-shot, destructive reset of INTERACTION_LOGS that purges any
+	// JSON-era facts (a protobuf router fails closed on them). Opt-in so a normal restart never
+	// wipes the log.
+	if os.Getenv("RP_RESET_LOG_STREAM") == "1" {
+		must("reset-stream", signaling.ResetLogStream(js))
+		slog.Warn("router.log-stream-reset", "stream", "INTERACTION_LOGS")
+	}
 	must("stream", signaling.EnsureLogStream(js))
 
 	// core depends only on the LogStore port; NATS is the adapter (loose coupling).
@@ -43,7 +50,7 @@ func main() {
 		ctx = signaling.WithIdentity(ctx, signaling.Identity{})
 		res := r.HandleCommand(ctx, m.Subject, m.Data)
 		if m.Reply != "" {
-			b, _ := json.Marshal(res)
+			b, _ := proto.Marshal(res)
 			_ = m.Respond(b)
 		}
 	})
