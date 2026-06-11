@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+// RelayPoint interaction signaling wire contract — protobuf for ALL RP<->client traffic
+// (the .log facts, the .cmd commands + results, and the ephemeral .signal events).
+// Supersedes the JSON envelope (ADR-0002). The router never parses `data` (opaque per
+// event_type/medium); the media-negotiation descriptor and channel payloads ride in `data`.
+//
+// PAYLOAD REGISTRY (event_type/medium -> the proto message marshaled into `data`). Consumers
+// decode `data` by this registry; the envelope never changes when a payload type is added:
+//   medium=chat, event_type=message.created/updated   -> ChatMessage
+//   (typing / webrtc.ice / webrtc.offer / call.*       -> added with their slices: TypingSignal,
+//    IceCandidate, SessionDescription — NOT in the chat slice)
+//   intentionally-opaque blobs (e.g. SDP)              -> raw bytes, no decode
+package relaypoint.interaction.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Generated Go is PUBLIC (Desk is a Go consumer and must import it) — not under internal/.
+option go_package = "github.com/kafaconnect/relaypoint/gen/go/relaypoint/interaction/v1;interactionpb";
+
+// schema constant carried on every envelope: "relaypoint.interaction.v1".
+
+// Event is the authoritative `.log` fact (one envelope for chat AND call; `medium` is a
+// payload field, never a subject). Router-written only.
+message Event {
+  string schema = 1;
+  string event_type = 2;       // message.created, interaction.started/ended, webrtc.offer, ...
+  string event_id = 3;
+  int64 sequence = 4;          // dense per-interaction, router-assigned (NOT the stream seq)
+  google.protobuf.Timestamp occurred_at = 5; // display-only — never order/dedup/secure by this
+  string tenant_id = 6;
+  string actor_id = 7;
+  string medium = 8;           // 'chat' | 'call'
+  string media_profile = 9;    // 'webrtc-p2p' (call facts only); "" when absent
+  string command_id = 10;
+  string payload_hash = 11;    // cross-restart conflict detection (router-internal)
+  string caused_by = 12;       // = the producing command_id
+  string ref_id = 13;
+  bytes data = 14;             // opaque per event_type/medium (payload registry above); router never parses
+}
+
+// Command is a client intent published on `interaction.<id>.cmd` (request/reply, write-only).
+message Command {
+  string command_id = 1;       // reused across retries so the router dedups
+  string tenant_id = 2;
+  string actor_id = 3;
+  string type = 4;
+  string medium = 5;
+  string ref_id = 6;
+  bytes data = 7;              // opaque per type/medium (payload registry above)
+}
+
+// CommandResult is replied ONLY to the issuer's inbox (ephemeral, never persisted to JetStream).
+message CommandResult {
+  string command_id = 1;
+  Status status = 2;
+  string caused_by = 3;
+  string reason = 4;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_ACCEPTED = 1;
+    STATUS_REJECTED = 2;
+  }
+}
+
+// SignalEvent is the ephemeral per-publisher `.signal.<userId>` payload (ICE/typing) — core
+// NATS, never JetStream. `actor_id` is carried in the payload (in addition to the subject) so a
+// `.signal.*` subscriber identifies the publisher without parsing the subject.
+message SignalEvent {
+  string schema = 1;           // "relaypoint.interaction.v1"
+  string type = 2;             // webrtc.ice, typing, ...
+  string actor_id = 3;
+  bytes data = 4;              // opaque (IceCandidate / TypingSignal / ...)
+}
+
+// ChatMessage is the FIRST registry payload (medium='chat', event_type='message.created'):
+// protobuf-encoded into Event.data / Command.data. More typed payloads are added incrementally.
+message ChatMessage {
+  string text = 1;
+  repeated string attachment_refs = 2; // object refs (media off NATS)
+}
