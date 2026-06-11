@@ -12,19 +12,15 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-// Verifier turns a connection's presented token into a trusted Identity. It is the SECURE source
-// of the connection identity the responder pins the ACLs to — the same verify→identity seam the
-// router consumes. RelayPoint owns this port; the concrete token format is swappable (a real
-// deployment would back it with the issuer's JWKS / OIDC). NEVER trust the client-asserted subject
-// or payload — only what Verify returns.
+// Verifier is the SECURE source of the connection identity the responder pins ACLs to — an owned
+// port so the token format is swappable (a real deployment backs it with the issuer's JWKS/OIDC).
+// Never trust the client-asserted subject/payload, only what Verify returns.
 type Verifier interface {
 	Verify(token string) (signaling.Identity, error)
 }
 
-// claims is the dev token body: an HMAC-signed `<base64(json)>.<base64(hmac)>` bearer. It carries
-// the tenant/user/role the responder mints ACLs for and a relative expiry (server-validated, never
-// client wall-clock — signaling-core time-authority rule). A production deployment swaps this for
-// the issuer's verified JWT; the responder only depends on the Verifier port.
+// claims is the dev token body, an HMAC-signed `<base64(json)>.<base64(hmac)>` bearer. The expiry is
+// server-validated against Now, never a client wall-clock (signaling-core time-authority rule).
 type claims struct {
 	Tenant  string `json:"tenant"`
 	User    string `json:"user"`
@@ -32,8 +28,8 @@ type claims struct {
 	ExpUnix int64  `json:"exp"`
 }
 
-// HMACVerifier validates the dev bearer token with a shared secret. The secret is operator-supplied
-// (env, never committed) — it is the trust root that makes `<self>` airtight.
+// HMACVerifier validates the dev bearer with an operator-supplied shared secret (env, never
+// committed) — the trust root that makes `<self>` airtight.
 type HMACVerifier struct {
 	Secret []byte
 	Now    func() time.Time
@@ -75,6 +71,12 @@ func (v *HMACVerifier) Verify(token string) (signaling.Identity, error) {
 	if c.Tenant == "" || c.User == "" {
 		return signaling.Identity{}, fmt.Errorf("authcallout: token missing tenant/user")
 	}
+	if err := validSubjectToken(c.Tenant); err != nil {
+		return signaling.Identity{}, fmt.Errorf("authcallout: invalid tenant: %w", err)
+	}
+	if err := validSubjectToken(c.User); err != nil {
+		return signaling.Identity{}, fmt.Errorf("authcallout: invalid user: %w", err)
+	}
 	role := signaling.RoleAgent
 	if c.Role == string(signaling.RoleTrustedBackend) {
 		role = signaling.RoleTrustedBackend
@@ -82,8 +84,26 @@ func (v *HMACVerifier) Verify(token string) (signaling.Identity, error) {
 	return signaling.Identity{TenantID: c.Tenant, UserID: c.User, Role: role}, nil
 }
 
-// MintDevToken builds a dev bearer for tests/tooling. NOT for production token issuance (that is the
-// issuer's signed JWT). ttl is relative (server-validated), never a client wall-clock absolute.
+// validSubjectToken rejects a tenant/user that cannot safely be a single NATS subject token: the
+// claims are interpolated into ACL subjects, so a `.`/`*`/`>`/whitespace/control value would inject
+// extra tokens or wildcards and break the `<self>`-pinned grants (openspec change agent-feed-fanout, A6).
+func validSubjectToken(s string) error {
+	if s == "" {
+		return fmt.Errorf("empty")
+	}
+	for _, r := range s {
+		switch {
+		case r == '.' || r == '*' || r == '>':
+			return fmt.Errorf("contains NATS subject metacharacter %q", r)
+		case r <= ' ' || r == 0x7f:
+			return fmt.Errorf("contains control/whitespace")
+		}
+	}
+	return nil
+}
+
+// MintDevToken builds a dev bearer for tests/tooling, NOT production issuance (that is the issuer's
+// signed JWT).
 func MintDevToken(secret []byte, id signaling.Identity, ttl time.Duration) (string, error) {
 	c := claims{Tenant: id.TenantID, User: id.UserID, Role: string(signaling.RoleOf(id))}
 	if ttl > 0 {

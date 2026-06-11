@@ -265,6 +265,32 @@ func TestAuthCalloutMintsPinnedAgentACLs(t *testing.T) {
 	}
 }
 
+// @spec:signaling.feed.inbox-reads-own-feed-only (no JetStream API)
+// The agent holds NO $JS.API grant, so it cannot drive the JetStream consumer API to pull-read raw
+// .log or another agent's feed — the consumer-API path that would otherwise bypass the subject-level
+// denies. Its own feed is reachable only by a core subscribe (asserted above). (A4)
+func TestAuthCalloutAgentDeniedJetStreamConsumerAPI(t *testing.T) {
+	url, kp, pass := startNATS(t)
+	dialResponder(t, url, pass, kp)
+
+	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
+
+	// Creating/binding a pull consumer or fetching the next message goes over $JS.API.CONSUMER.*;
+	// every such publish must be denied.
+	for _, subj := range []string{
+		"$JS.API.CONSUMER.CREATE.INTERACTION_LOGS",
+		"$JS.API.CONSUMER.DURABLE.CREATE.INTERACTION_LOGS.snoop",
+		"$JS.API.CONSUMER.MSG.NEXT.INTERACTION_LOGS.snoop",
+		"$JS.API.CONSUMER.CREATE.AGENT_FEED",
+		"$JS.API.CONSUMER.MSG.NEXT.AGENT_FEED.snoop",
+		"$JS.API.STREAM.MSG.GET.INTERACTION_LOGS",
+	} {
+		if canPub(t, url, aliceTok, subj) {
+			t.Errorf("agent must NOT reach the JetStream API at %s (could pull-read raw .log / other feeds)", subj)
+		}
+	}
+}
+
 func TestAuthCalloutMintsTrustedBackendACLs(t *testing.T) {
 	url, kp, pass := startNATS(t)
 	dialResponder(t, url, pass, kp)

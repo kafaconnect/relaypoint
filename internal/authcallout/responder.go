@@ -11,25 +11,19 @@ import (
 // AuthRequestSubject is the NATS auth-callout request subject the server publishes to.
 const AuthRequestSubject = "$SYS.REQ.USER.AUTH"
 
-// Responder is the NATS adapter for the auth-callout: it answers $SYS.REQ.USER.AUTH by verifying
-// the connection's presented token (via the Verifier port — the SECURE identity source the router
-// also consumes) and minting a per-connection user JWT whose ACLs are pinned to THAT identity (via
-// the pure GrantsFor policy). It mints the connection's reply prefix `<conn>` itself, so the
-// `_INBOX_<conn>` grant is bound to this connection and not client-chosen.
-//
-// The NATS-specific signing/decoding lives ONLY here; the policy (grants.go) and the identity
-// source (token.go) carry no NATS/jwt types — loose-coupling HARD RULE.
+// Responder is the NATS adapter for the auth-callout: it answers $SYS.REQ.USER.AUTH by verifying the
+// token (Verifier port) and minting a per-connection user JWT whose ACLs are pinned to that identity
+// (GrantsFor policy). It mints the reply prefix `<conn>` itself, so `_INBOX_<conn>` is bound to this
+// connection and not client-chosen. The NATS signing/decoding lives ONLY here (loose-coupling HARD RULE).
 type Responder struct {
 	verify  Verifier
-	issuer  nkeys.KeyPair // account signing key (seed) — the auth-callout `issuer`/`account`
-	account string        // the account public key minted users are placed in (APP account)
-	connID  func() string // per-connection reply-prefix minter (high-entropy)
+	issuer  nkeys.KeyPair // account signing-key seed — the auth_callout issuer
+	account string        // named account minted users land in (user JWT aud)
+	connID  func() string
 }
 
-// NewResponder builds the responder. issuerSeed is the account signing-key SEED (starts `SA…`)
-// configured as the auth_callout `issuer`; it is the trust root and MUST come from a secret
-// (env/secret-store), NEVER committed. account is the NAME of the configured account minted users
-// are placed in (the user JWT `aud` — e.g. "RP"); the server resolves it to that named account.
+// NewResponder builds the responder. issuerSeed is the account signing-key SEED (the trust root; from
+// a secret, never committed); account is the NAME of the account minted users are placed in.
 func NewResponder(v Verifier, issuerSeed []byte, account string, opts ...ResponderOption) (*Responder, error) {
 	kp, err := nkeys.FromSeed(issuerSeed)
 	if err != nil {
@@ -66,9 +60,8 @@ func (r *Responder) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 	})
 }
 
-// handle verifies the request and returns the signed authorization-response JWT granting the minted
-// per-connection user. A verification/grant failure returns an error the caller turns into a signed
-// DENY (so the server gets a proper rejection rather than a timeout).
+// handle returns the signed authorization-response JWT for the minted per-connection user; a
+// verify/grant failure returns an error the caller turns into a signed DENY (not a timeout).
 func (r *Responder) handle(reqJWT []byte) (string, error) {
 	req, err := jwt.DecodeAuthorizationRequestClaims(string(reqJWT))
 	if err != nil {
@@ -91,8 +84,7 @@ func (r *Responder) handle(reqJWT []byte) (string, error) {
 	uc.Pub.Deny = grant.PubDeny
 	uc.Sub.Allow = grant.SubAllow
 	uc.Sub.Deny = grant.SubDeny
-	// Replies on the minted reply-prefix are request/reply: allow the user to answer requests it
-	// receives there without widening publish to broad subjects.
+	// answer requests on the minted reply-prefix without widening publish to broad subjects
 	uc.Resp = &jwt.ResponsePermission{MaxMsgs: 1}
 	userJWT, err := uc.Encode(r.issuer)
 	if err != nil {

@@ -140,6 +140,25 @@ func TestGrantsForTrustedBackend(t *testing.T) {
 	}
 }
 
+// @spec:signaling.feed.cmd-identity-pinned (ACL-subject injection guarded)
+// A tenant/user that is not a single safe NATS subject token (`.`/`*`/`>`/whitespace/empty) is
+// rejected at the grant boundary, so it can never be interpolated into the `<self>`-pinned ACLs (A6).
+func TestGrantsForRejectsUnsafeSubjectTokens(t *testing.T) {
+	bad := []signaling.Identity{
+		{TenantID: "a.b", UserID: "alice"},
+		{TenantID: "T", UserID: "al*ce"},
+		{TenantID: "T", UserID: "ali>e"},
+		{TenantID: "T", UserID: "ali ce"},
+		{TenantID: "T>", UserID: "alice"},
+		{TenantID: "T", UserID: "a\tb"},
+	}
+	for _, id := range bad {
+		if _, err := GrantsFor(id, "c1"); err == nil {
+			t.Errorf("GrantsFor must reject unsafe identity %+v", id)
+		}
+	}
+}
+
 func TestGrantsForRejectsIncompleteIdentity(t *testing.T) {
 	for _, id := range []signaling.Identity{
 		{UserID: "alice"},
