@@ -228,21 +228,31 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	case cmd.CommandId == "":
 		res.Status, res.Reason = statusRejected, "missing command_id"
 		return res
-	case cmd.ActorId == "":
-		res.Status, res.Reason = statusRejected, "missing actor_id"
-		return res
 	case tenant != authTenant:
 		res.Status, res.Reason = statusRejected, "subject tenant != authenticated tenant"
 		return res
 	case cmd.TenantId != authTenant:
 		res.Status, res.Reason = statusRejected, "payload tenant_id != authenticated tenant"
 		return res
-	case cmd.ActorId != suffix:
-		res.Status, res.Reason = statusRejected, "actor_mismatch"
-		return res
-	case id.UserID != "" && suffix != id.UserID:
-		res.Status, res.Reason = statusRejected, "actor_id != authenticated user"
-		return res
+	}
+
+	// Actor binding. The subject suffix is the authenticated author and the payload actor must equal
+	// it (forged-author rejected, A1) — EXCEPT a trusted backend acts on behalf of others, so it may
+	// carry an arbitrary actor_id and a missing one (interaction.started carries none). On the
+	// anonymous dev bus the suffix carries no minted identity, but an operator-listed service suffix
+	// is still folded as a trusted backend (see identityFromSubject / RP_TRUSTED_BACKENDS).
+	if RoleOf(id) != RoleTrustedBackend {
+		switch {
+		case cmd.ActorId == "":
+			res.Status, res.Reason = statusRejected, "missing actor_id"
+			return res
+		case cmd.ActorId != suffix:
+			res.Status, res.Reason = statusRejected, "actor_mismatch"
+			return res
+		case id.UserID != "" && suffix != id.UserID:
+			res.Status, res.Reason = statusRejected, "actor_id != authenticated user"
+			return res
+		}
 	}
 
 	if isParticipationCommand(cmd.Type) {
