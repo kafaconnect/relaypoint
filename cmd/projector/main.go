@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
 	"github.com/kafaconnect/relaypoint/internal/obs"
@@ -57,12 +57,9 @@ func main() {
 	}
 }
 
-// workerID is a per-process unique lease holder id so a standby and the active worker never collide.
 func workerID() string {
 	host, _ := os.Hostname()
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return fmt.Sprintf("%s-%x", host, b)
+	return fmt.Sprintf("%s-%s", host, uuid.Must(uuid.NewV7()))
 }
 
 func envOr(k, d string) string {
