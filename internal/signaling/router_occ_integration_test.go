@@ -38,7 +38,7 @@ func occRouters(t *testing.T) (*Router, *Router, nats.JetStreamContext) {
 
 func handle(r *Router, tenant, iid string, c *Command) *CommandResult {
 	b, _ := proto.Marshal(c)
-	return r.HandleCommand(context.Background(), fmt.Sprintf("tenant.%s.interaction.%s.cmd", tenant, iid), b)
+	return r.HandleCommand(context.Background(), fmt.Sprintf("tenant.%s.interaction.%s.cmd.%s", tenant, iid, c.ActorId), b)
 }
 
 // @spec:router.occ.expected-subject-seq

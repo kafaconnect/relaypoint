@@ -39,7 +39,9 @@ func main() {
 
 	// core depends only on the LogStore port; NATS is the adapter (loose coupling).
 	r := signaling.NewRouter(signaling.NewJetStreamStore(js))
-	_, err = nc.QueueSubscribe("tenant.*.interaction.*.cmd", "router", func(m *nats.Msg) {
+	// The .cmd subject now carries an identity suffix (tenant.*.interaction.*.cmd.<identity>); the
+	// router reads the publisher from the last token (openspec change agent-feed-fanout, Decision 1).
+	_, err = nc.QueueSubscribe("tenant.*.interaction.*.cmd.*", "router", func(m *nats.Msg) {
 		// Seed the per-message context from the publisher's `traceparent` (subscribe side of
 		// @spec:obs.nats-traceparent-propagated): the router's logs share the publisher's
 		// trace_id. A missing/malformed header mints a fresh trace — never a drop.

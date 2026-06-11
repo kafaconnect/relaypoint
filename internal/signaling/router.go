@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -78,7 +79,7 @@ func legalTransition(status, cmdType string) bool {
 	case "interaction.ended":
 		return status == "started"
 	case "message.created", "message.updated", "message.deleted",
-		"participant.joined", "participant.left", "interaction.context.updated":
+		"participant.joined", "participant.left", "interaction.assigned", "interaction.context.updated":
 		return status == "started"
 	default:
 		return false
@@ -186,7 +187,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	}()
 
 	id := IdentityFrom(ctx)
-	tenant, iid, ok := parseCmdSubject(subject)
+	tenant, iid, suffix, ok := parseCmdSubject(subject)
 	if !ok {
 		return &CommandResult{Status: statusRejected, Reason: "bad subject"}
 	}
@@ -214,12 +215,48 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	case cmd.TenantId != authTenant:
 		res.Status, res.Reason = statusRejected, "payload tenant_id != authenticated tenant"
 		return res
-	case id.UserID != "" && cmd.ActorId != id.UserID:
+	// The publisher identity is the subject suffix (ACL-pinned author), NEVER the payload. A
+	// payload actor_id that disagrees is a forgery attempt → actor_mismatch.
+	case cmd.ActorId != suffix:
+		res.Status, res.Reason = statusRejected, "actor_mismatch"
+		return res
+	// Once the auth-callout mints a per-connection identity, the suffix MUST equal it (the ACL
+	// pins <self>). Pre-auth-callout (empty UserID) the suffix is the dev identity source.
+	case id.UserID != "" && suffix != id.UserID:
 		res.Status, res.Reason = statusRejected, "actor_id != authenticated user"
 		return res
-	case requiresRefID(cmd.Type) && cmd.RefId == "":
+	}
+
+	// Privileged participation commands (participant.assign/unassign/transfer) are a separate path:
+	// role-gated to a trusted backend, they WRITE participant.* / interaction.assigned facts with
+	// audit fields. Agent-role connections are rejected here (Decision 2a).
+	if isParticipationCommand(cmd.Type) {
+		return r.handleParticipation(ctx, tenant, iid, suffix, roleOf(id), cmd)
+	}
+
+	if requiresRefID(cmd.Type) && cmd.RefId == "" {
 		res.Status, res.Reason = statusRejected, "missing ref_id"
 		return res
+	}
+
+	// Agent-role authz: the publishing agent must be a CURRENT participant of the target
+	// interaction (an OPEN membership interval), checked against the SAME .log-derived
+	// ParticipationView the fan-out projector uses (Decision 2b). Trusted-backend identities are
+	// exempt (they reach this path only for non-participation facts, e.g. message.created).
+	// Enforced only for an AUTHENTICATED identity: the shared-`client` dev posture leaves the
+	// suffix advisory (Decision 1 precondition), so it does not gate participation. Interaction
+	// lifecycle (started/ended) is not participant-gated — an interaction has no participants
+	// before it is started (chicken-and-egg).
+	if isAuthenticated(id) && roleOf(id) == RoleAgent && !isLifecycleCommand(cmd.Type) {
+		facts, _, ferr := r.store.Replay(logSubjectFor(tenant, iid))
+		if ferr != nil {
+			res.Status, res.Reason = statusRejected, "state unavailable (log replay failed) — retry"
+			return res
+		}
+		if !FoldParticipation(facts).IsParticipantNow(suffix) {
+			res.Status, res.Reason = statusRejected, "not_a_participant"
+			return res
+		}
 	}
 
 	st, err := r.getState(tenant, iid)
@@ -357,12 +394,193 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	return res
 }
 
-func parseCmdSubject(s string) (tenant, iid string, ok bool) {
-	p := strings.Split(s, ".")
-	if len(p) != 5 || p[0] != "tenant" || p[2] != "interaction" || p[4] != "cmd" {
-		return "", "", false
+// parseCmdSubject reads tenant.<tid>.interaction.<iid>.cmd.<identity>. The publisher identity is
+// the LAST subject token — the ACL-pinned author (mirrors .signal.<userId>), NEVER the payload.
+// Until the auth-callout mints a per-connection identity, this suffix is the dev identity source
+// (see openspec change agent-feed-fanout, Decision 1: write-identity precondition). The bare
+// 5-token .cmd subject is retired — the router subscribes tenant.*.interaction.*.cmd.* now.
+func roleOf(id Identity) Role {
+	if id.Role != "" {
+		return id.Role
 	}
-	return p[1], p[3], true
+	return RoleAgent
+}
+
+// isAuthenticated reports whether the transport bound a real identity (auth-callout minted). The
+// shared-`client` dev posture leaves both fields empty; in that posture the suffix is advisory and
+// the participant/role gates are not enforced (Decision 1 write-identity precondition).
+func isAuthenticated(id Identity) bool { return id.UserID != "" || id.Role != "" }
+
+func isLifecycleCommand(t string) bool {
+	return t == "interaction.started" || t == "interaction.ended"
+}
+
+func isParticipationCommand(t string) bool {
+	switch t {
+	case "participant.assign", "participant.unassign", "participant.transfer":
+		return true
+	}
+	return false
+}
+
+// participationData is the audit-carrying payload of a privileged participation command. Desk
+// sends it in Command.data; the router copies the audit fields onto each fact it writes.
+type participationData struct {
+	Agent     string `json:"agent"`      // assign/unassign target; transfer = the NEW agent
+	From      string `json:"from"`       // transfer only: the agent being transferred away
+	Reason    string `json:"reason"`     // audit
+	RequestID string `json:"request_id"` // audit
+}
+
+// handleParticipation lands participant.* / interaction.assigned facts from a privileged command,
+// role-gated to a trusted backend. participant.transfer writes participant.joined(new) BEFORE
+// participant.left(old) so the interaction is never absent from both agents' membership at once
+// (no-gap, Decision 2a / Decision 6). Audit fields (actor=suffix, reason, request_id) ride on each
+// fact via the Command payload.
+func (r *Router) handleParticipation(ctx context.Context, tenant, iid, actor string, role Role, cmd *Command) *CommandResult {
+	res := &CommandResult{CommandId: cmd.CommandId}
+	if role != RoleTrustedBackend {
+		res.Status, res.Reason = statusRejected, "privileged command requires trusted-backend actor"
+		return res
+	}
+	pd := participationData{}
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &pd); err != nil {
+			res.Status, res.Reason = statusRejected, "bad participation payload"
+			return res
+		}
+	}
+
+	type fact struct {
+		eventType string
+		agent     string
+	}
+	var facts []fact
+	switch cmd.Type {
+	case "participant.assign":
+		if pd.Agent == "" {
+			res.Status, res.Reason = statusRejected, "missing agent"
+			return res
+		}
+		facts = []fact{{"participant.joined", pd.Agent}}
+	case "participant.unassign":
+		if pd.Agent == "" {
+			res.Status, res.Reason = statusRejected, "missing agent"
+			return res
+		}
+		facts = []fact{{"participant.left", pd.Agent}}
+	case "participant.transfer":
+		if pd.Agent == "" || pd.From == "" {
+			res.Status, res.Reason = statusRejected, "missing from/agent"
+			return res
+		}
+		// joined(new) BEFORE left(old): new leg opens before the old is revoked (no-gap).
+		facts = []fact{{"participant.joined", pd.Agent}, {"participant.left", pd.From}}
+	}
+
+	for i, f := range facts {
+		// Each fact is its own command_id so dedup/OCC stay per-fact; the transfer's two facts must
+		// land in order (joined then left), so a partial failure on the second is surfaced.
+		fcmd := &Command{
+			CommandId: cmd.CommandId + ":" + f.eventType + ":" + f.agent,
+			TenantId:  tenant,
+			ActorId:   f.agent, // the fact's subject is the affected agent
+			Type:      f.eventType,
+			Medium:    cmd.Medium,
+		}
+		ev := r.appendParticipationFact(ctx, tenant, iid, actor, &pd, fcmd)
+		if ev.Status != statusAccepted {
+			if i > 0 {
+				ev.Reason = "transfer partially applied (" + ev.Reason + ")"
+			}
+			ev.CommandId = cmd.CommandId
+			return ev
+		}
+	}
+	res.Status, res.CausedBy = statusAccepted, cmd.CommandId
+	return res
+}
+
+// appendParticipationFact writes ONE participation fact (participant.joined/left,
+// interaction.assigned) under the same per-subject OCC + dedup discipline as ordinary commands,
+// carrying audit fields (commanded_by/reason/request_id). It re-folds and retries once on an OCC
+// conflict, then fails closed — never appends behind a stale sequence.
+func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, commandedBy string, pd *participationData, fcmd *Command) *CommandResult {
+	res := &CommandResult{CommandId: fcmd.CommandId}
+	st, err := r.getState(tenant, iid)
+	if err != nil {
+		res.Status, res.Reason = statusRejected, "state unavailable (log replay failed) — retry"
+		return res
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.poisoned {
+		res.Status, res.Reason = statusRejected, "state unavailable — retry"
+		return res
+	}
+
+	ph := hashPayload(fcmd)
+	for attempt := 0; ; attempt++ {
+		if prev, seen := st.results[fcmd.CommandId]; seen && prev.result.Status == statusAccepted {
+			return proto.Clone(prev.result).(*CommandResult)
+		}
+		if !legalTransition(st.status, fcmd.Type) {
+			res.Status, res.Reason = statusRejected, fmt.Sprintf("illegal transition %q from state %q", fcmd.Type, st.status)
+			return res
+		}
+		seq := st.seq + 1
+		ev := &Event{
+			Schema: SchemaV1, EventType: fcmd.Type, EventId: r.id(), Sequence: seq,
+			OccurredAt: timestamppb.New(r.now().UTC()), TenantId: tenant, ActorId: fcmd.ActorId,
+			Medium: orDefault(fcmd.Medium, "chat"), CommandId: fcmd.CommandId, PayloadHash: ph,
+			CausedBy: fcmd.CommandId, CommandedBy: commandedBy, Reason: pd.Reason, RequestId: pd.RequestID,
+		}
+		payload, _ := proto.Marshal(ev)
+		_, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
+		if errors.Is(aerr, ErrOCCConflict) {
+			fresh, ferr := r.rebuild(tenant, iid)
+			if ferr != nil || attempt >= 1 {
+				st.poisoned = true
+				r.mu.Lock()
+				delete(r.inter, tenant+"/"+iid)
+				r.mu.Unlock()
+				res.Status, res.Reason = statusRejected, "lost concurrent append — retry"
+				return res
+			}
+			st.seq, st.streamSeq, st.status = fresh.seq, fresh.streamSeq, fresh.status
+			for k, v := range fresh.results {
+				if _, ok := st.results[k]; !ok {
+					st.results[k] = v
+				}
+			}
+			continue
+		}
+		if aerr != nil {
+			st.poisoned = true
+			r.mu.Lock()
+			delete(r.inter, tenant+"/"+iid)
+			r.mu.Unlock()
+			res.Status, res.Reason = statusRejected, "log append failed — retry"
+			return res
+		}
+		st.seq++
+		st.streamSeq++
+		applyTransition(st, fcmd.Type)
+		res.Status, res.CausedBy = statusAccepted, fcmd.CommandId
+		st.results[fcmd.CommandId] = storedResult{payloadHash: ph, result: res}
+		return res
+	}
+}
+
+func parseCmdSubject(s string) (tenant, iid, identity string, ok bool) {
+	p := strings.Split(s, ".")
+	if len(p) != 6 || p[0] != "tenant" || p[2] != "interaction" || p[4] != "cmd" {
+		return "", "", "", false
+	}
+	if p[1] == "" || p[3] == "" || p[5] == "" {
+		return "", "", "", false
+	}
+	return p[1], p[3], p[5], true
 }
 
 func orDefault(v, d string) string {

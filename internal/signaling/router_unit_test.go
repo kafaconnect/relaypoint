@@ -59,7 +59,8 @@ func cmd(id, tenant, typ, text string) []byte {
 	return b
 }
 
-const subj = "tenant.t1.interaction.iX.cmd"
+// the .cmd subject carries the publisher identity suffix; cmd()'s actor is u1.
+const subj = "tenant.t1.interaction.iX.cmd.u1"
 
 func TestCore_NoNATS(t *testing.T) {
 	st := newFakeStore()
@@ -91,7 +92,7 @@ func TestCore_NoNATS(t *testing.T) {
 		t.Fatalf("tenant mismatch not rejected: %+v", got)
 	}
 	// illegal: message before start on a fresh interaction
-	if got := r.HandleCommand(context.Background(), "tenant.t1.interaction.iY.cmd", cmd("c4", "t1", "message.created", "")); got.Status != statusRejected {
+	if got := r.HandleCommand(context.Background(), "tenant.t1.interaction.iY.cmd.u1", cmd("c4", "t1", "message.created", "")); got.Status != statusRejected {
 		t.Fatalf("illegal not rejected: %+v", got)
 	}
 }
@@ -128,12 +129,12 @@ func TestCore_ForgedAuthor(t *testing.T) {
 	r := NewRouter(newFakeStore())
 	ctx := WithIdentity(context.Background(), Identity{TenantID: "t1", UserID: "u1"})
 	body, _ := proto.Marshal(&Command{CommandId: "f1", TenantId: "t1", ActorId: "u2", Type: "interaction.started", Medium: "chat"})
-	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd", body); got.Status != statusRejected {
+	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd.u1", body); got.Status != statusRejected {
 		t.Fatalf("forged actor must be rejected, got %+v", got)
 	}
 	// the authenticated user's own command is accepted
 	ok, _ := proto.Marshal(&Command{CommandId: "f2", TenantId: "t1", ActorId: "u1", Type: "interaction.started", Medium: "chat"})
-	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd", ok); got.Status != statusAccepted {
+	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd.u1", ok); got.Status != statusAccepted {
 		t.Fatalf("authenticated actor must be accepted, got %+v", got)
 	}
 }
