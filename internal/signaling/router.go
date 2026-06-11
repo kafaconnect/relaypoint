@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -95,12 +96,26 @@ func applyTransition(st *interactionState, cmdType string) {
 	}
 }
 
+// hashPayload is a canonical, length-delimited hash over the Command's fixed fields (command_id
+// excluded — it is bound to its first payload). It deliberately does NOT use proto.Marshal:
+// proto's deterministic marshal is not guaranteed stable across protobuf-library versions, and the
+// hash is persisted on the fact and recomputed after a router restart/upgrade — a marshal drift
+// would false-conflict an identical retry. This field-wise hash is stable forever.
 func hashPayload(c *Command) string {
-	c2 := proto.Clone(c).(*Command)
-	c2.CommandId = "" // the command_id is bound to its first payload, so it is excluded from the hash
-	b, _ := proto.MarshalOptions{Deterministic: true}.Marshal(c2)
-	s := sha256.Sum256(b)
-	return hex.EncodeToString(s[:])
+	h := sha256.New()
+	put := func(b []byte) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+		h.Write(n[:])
+		h.Write(b)
+	}
+	put([]byte(c.TenantId))
+	put([]byte(c.ActorId))
+	put([]byte(c.Type))
+	put([]byte(c.Medium))
+	put([]byte(c.RefId))
+	put(c.Data)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func logSubjectFor(tenant, iid string) string {
@@ -226,12 +241,12 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	if prev, seen := st.results[cmd.CommandId]; seen {
 		switch {
 		case prev.payloadHash == "": // legacy fact, hash unknown
-			return prev.result
+			return proto.Clone(prev.result).(*CommandResult) // cached — clone so a caller can't mutate st.results
 		case prev.payloadHash != hashPayload(cmd):
 			res.Status, res.Reason = statusRejected, "conflict: command_id reused with a different payload"
 			return res
 		case prev.result.Status == statusAccepted:
-			return prev.result
+			return proto.Clone(prev.result).(*CommandResult)
 			// a previously-rejected same payload falls through: a transient rejection
 			// (e.g. an illegal transition) may now be legal
 		}
@@ -261,7 +276,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
 			if prev, committed := fresh.results[cmd.CommandId]; committed {
 				st.seq, st.status = fresh.seq, fresh.status
-				return prev.result
+				return proto.Clone(prev.result).(*CommandResult)
 			}
 		}
 		st.poisoned = true // seq may be stale; force a rebuild rather than append behind it

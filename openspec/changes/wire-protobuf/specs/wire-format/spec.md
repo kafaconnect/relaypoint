@@ -25,14 +25,17 @@ NOT change as payload types are added.
 
 `occurred_at` MUST be a `google.protobuf.Timestamp` and `CommandResult.status` MUST be the
 `STATUS_ACCEPTED`/`STATUS_REJECTED` enum. The SDK's public surface MAY stay camelCase as a thin
-projection over the generated message, but the wire bytes MUST be protobuf.
+projection over the generated message, but the wire bytes MUST be protobuf. The router-internal
+envelope fields `command_id` and `payload_hash` on a `.log` `Event` are **intentionally NOT
+projected** onto the public `LogEvent`: `payload_hash` is router-internal dedup metadata, and on a
+fact `command_id == caused_by` (which IS projected), so `caused_by` carries the command correlation.
 
 #### Scenario: Every wire message round-trips through protobuf
 - **id:** `wire.protobuf.round-trip`
 - **GIVEN** an `Event`, `Command`, `CommandResult`, `SignalEvent`, and `ChatMessage` with populated fields
 - **WHEN** each is `proto.Marshal`'d and then `proto.Unmarshal`'d (Go) / encoded and decoded (SDK)
 - **THEN** the decoded message equals the original (fields, the chat `ChatMessage` payload, the timestamp, and the status enum all preserved)
-- **AND** the SDK's camelCase projection (`LogEvent`/`Command`/`CommandResult`) maps 1:1 onto the generated message and back
+- **AND** the SDK's camelCase projection (`LogEvent`/`Command`/`CommandResult`) maps onto the generated message and back, except the router-internal `command_id`/`payload_hash` fields on `Event`, which are intentionally not surfaced on the public `LogEvent` (`caused_by` carries the correlation)
 
 #### Scenario: Router speaks protobuf end-to-end and preserves authoritative semantics
 - **id:** `wire.protobuf.router-end-to-end`
