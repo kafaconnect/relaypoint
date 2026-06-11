@@ -9,34 +9,36 @@
 // (bindStream avoids the forbidden stream-discovery), an empty stream returns at once (no hang),
 // and close() aborts without leaking the consumer.
 
-import { connect, StringCodec, type NatsConnection } from "nats.ws";
+import { connect, type NatsConnection } from "nats.ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { EventSchema } from "../src/gen/relaypoint/interaction/v1/interaction_pb.js";
+import { decodeLogEvent } from "../src/codec.js";
 import { NatsWsTransport } from "../src/adapters/nats.js";
 import { logSubject } from "../src/subjects.js";
 
 declare const process: { env: Record<string, string | undefined> };
 const WS = process.env.RELAYPOINT_NATS_WS;
-const sc = StringCodec();
-const dec = new TextDecoder();
 
 async function seed(router: NatsConnection, interactionId: string, count: number): Promise<void> {
   const js = router.jetstream();
   const jsm = await router.jetstreamManager();
+  // ADR-0002 cutover: a clean stream so no JSON-era fact survives into the protobuf run.
   try {
-    await jsm.streams.add({ name: "INTERACTION_LOGS", subjects: ["tenant.*.interaction.*.log"] });
+    await jsm.streams.delete("INTERACTION_LOGS");
   } catch {
-    /* already exists */
+    /* not present */
   }
+  await jsm.streams.add({ name: "INTERACTION_LOGS", subjects: ["tenant.*.interaction.*.log"] });
   for (let n = 1; n <= count; n++) {
-    await js.publish(logSubject("t1", interactionId), sc.encode(JSON.stringify({ sequence: n, event_id: `e${n}` })), {
-      msgID: `t1.${interactionId}.c${n}`,
-    });
+    const fact = toBinary(EventSchema, create(EventSchema, { sequence: BigInt(n), eventId: `e${n}`, schema: "relaypoint.interaction.v1", medium: "chat" }));
+    await js.publish(logSubject("t1", interactionId), fact, { msgID: `t1.${interactionId}.c${n}` });
   }
 }
 
 async function collect(it: AsyncIterable<{ data: Uint8Array }>): Promise<number[]> {
   const out: number[] = [];
-  for await (const m of it) out.push((JSON.parse(dec.decode(m.data)) as { sequence: number }).sequence);
+  for await (const m of it) out.push(decodeLogEvent(m.data).sequence);
   return out;
 }
 
