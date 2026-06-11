@@ -8,9 +8,9 @@ service** that projects canonical `.log` facts into it. The canonical `interacti
 feed is a derived, read-only projection of the same facts. The feed message reuses the
 signaling-core event envelope verbatim (it is a copy of the source `.log` `Event`, same
 `sequence`/`event_id`). This is a PINNED, deterministic authorization boundary: participation is
-derived SOLELY from `.log` facts (source A); the inbox `.cmd` grant is a WILDCARD authorized
-server-side; the feed is ephemeral with the canonical `.log` + a history-read command as the
-audit source.
+derived SOLELY from `.log` facts (source A); the inbox `.cmd` grant is wildcard-interaction with an
+ACL-pinned `<self>` identity suffix authorized server-side; the feed is ephemeral with the
+canonical `.log` + a history-read command as the audit source.
 
 ## ADDED Requirements
 
@@ -59,57 +59,74 @@ MUST NOT be required for `.cmd` (the wildcard command grant below already covers
 - **WHEN** it attempts to publish `tenant.<tid>.agent.<aid>.feed.<iid>`
 - **THEN** NATS denies the publish (the feed is written only by the trusted Fan-out service)
 
-### Requirement: Inbox holds a wildcard command-publish grant authorized server-side (no write reconnect)
-The inbox connection MUST hold a SINGLE wildcard command-publish grant `publish
-tenant.<tid>.interaction.*.cmd` for its lifetime — NOT a per-accepted-interaction publish grant —
-so a newly-assigned agent can issue commands with NO token refresh and NO reconnect. Because the
-wildcard grant no longer scopes WHICH interaction an agent may command, the **router MUST enforce
-participation server-side on EVERY agent `.cmd`**: the publishing identity MUST be a CURRENT
-participant of the target interaction (an OPEN membership interval, per the revocation-epoch
-requirement), checked against the same `.log`-derived membership that drives the feed. A `.cmd`
-from a non-participant MUST be REJECTED with a `CommandResult{REJECTED}` and MUST NOT produce any
-`.log` fact. The router's participant check and the Fan-out service's projection check MUST use
-the SAME participation view so the WRITE and READ planes cannot disagree.
+### Requirement: Command publishes carry an ACL-pinned identity suffix; participation is authorized server-side (no write reconnect)
+The command subject MUST carry an identity suffix `tenant.<tid>.interaction.<iid>.cmd.<identity>`,
+mirroring the existing `.signal.<userId>` precedent: the publisher's id is in the subject and the
+NATS publish-ACL — NOT a payload field — binds each command to its author. The inbox connection
+MUST hold a SINGLE grant `publish tenant.<tid>.interaction.*.cmd.<self>` for its lifetime (wildcard
+INTERACTION, FIXED `<self>` suffix; `*.cmd.<other>` MUST be denied) — NOT a per-accepted-interaction
+grant — so a newly-assigned agent can issue commands with NO token refresh and NO reconnect, yet can
+only publish AS ITSELF. The router MUST subscribe `tenant.*.interaction.*.cmd.*` and MUST take the
+publisher identity from the LAST subject token, NEVER from the payload; a payload `actor_id` that
+does not equal that suffix identity MUST be REJECTED (`reason: actor_mismatch`). The actor ROLE
+(agent vs trusted-backend) MUST come from the identity the auth-callout authenticated, NEVER from
+the payload. Because the wildcard interaction no longer scopes WHICH interaction an agent may
+command, the **router MUST enforce participation server-side on EVERY agent-role `.cmd`**: the
+publishing identity MUST be a CURRENT participant of the target interaction (an OPEN membership
+interval, per the revocation-epoch requirement), checked against the same `.log`-derived
+membership (the same `ParticipationView` fold) that drives the feed. A `.cmd` from a non-participant
+agent MUST be REJECTED with a `CommandResult{REJECTED}` and MUST NOT produce any `.log` fact. The
+router's participant check and the Fan-out service's projection check MUST use the SAME participation
+view so the WRITE and READ planes cannot disagree.
 
 #### Scenario: Newly-assigned agent commands without reconnect
 - **id:** `signaling.feed.cmd-wildcard-no-reconnect`
-- **GIVEN** agent `alice` whose inbox connection was authorized once with `publish tenant.T.interaction.*.cmd`
-- **WHEN** she is newly assigned interaction `I` (a `participant.joined{agent: alice}` fact on `interaction.I.log`) and publishes a command to `tenant.T.interaction.I.cmd`
+- **GIVEN** agent `alice` whose inbox connection was authorized once with `publish tenant.T.interaction.*.cmd.alice`
+- **WHEN** she is newly assigned interaction `I` (a `participant.joined{agent: alice}` fact on `interaction.I.log`) and publishes a command to `tenant.T.interaction.I.cmd.alice`
 - **THEN** she does NOT refresh her token or reconnect to widen the publish grant
-- **AND** the router accepts the command because she is now a current participant of `I`
+- **AND** the router takes her identity from the `alice` subject suffix and accepts the command because she is now a current participant of `I`
 
 #### Scenario: Non-participant command is rejected server-side
 - **id:** `signaling.feed.cmd-nonparticipant-denied`
-- **GIVEN** agent `carol` who is NOT a participant of interaction `I` but holds the wildcard `publish tenant.T.interaction.*.cmd`
-- **WHEN** she publishes a command to `tenant.T.interaction.I.cmd`
+- **GIVEN** agent `carol` who is NOT a participant of interaction `I` but holds `publish tenant.T.interaction.*.cmd.carol`
+- **WHEN** she publishes a command to `tenant.T.interaction.I.cmd.carol`
 - **THEN** the router replies `CommandResult{REJECTED, reason: not_a_participant}` on her reply-inbox
 - **AND** no `.log` fact is written for `I`
+
+#### Scenario: A client cannot publish a command as another identity
+- **id:** `signaling.feed.cmd-identity-pinned`
+- **GIVEN** agent `carol` granted only `publish tenant.T.interaction.*.cmd.carol`
+- **WHEN** she attempts to publish to `tenant.T.interaction.I.cmd.alice` (another agent's suffix), or publishes to her own `…cmd.carol` with a payload `actor_id: alice`
+- **THEN** the NATS publish-ACL denies the cross-identity subject, and the router REJECTS the payload-mismatch case with `reason: actor_mismatch` — neither produces a `.log` fact
 
 ### Requirement: Participation is established by a privileged command the router writes as a fact
 Participation `(tenant, interaction, agent)` MUST be derived SOLELY from `.log` facts
 (`participant.joined`, `participant.left`, `interaction.assigned`); the system MUST NOT consume any
 second participation control plane. A trusted backend (Desk) MUST establish participation NOT by
 calling a participation API but by issuing a **privileged assignment/participation command** on the
-existing `.cmd` plane (`command_type` ∈ {`participant.assign`, `participant.unassign`,
-`participant.transfer`}). The router MUST: (1) validate the ACTOR (the command's identity MUST
-carry the trusted-backend role; an agent-role connection issuing a participation command MUST be
-rejected); (2) validate AUTHZ (the target tenant/interaction is in the actor's scope); and (3)
-write the resulting `participant.joined` / `interaction.assigned` / `participant.left` fact onto
-`interaction.<id>.log` with AUDIT fields (commanding `actor`, `reason`, `request_id`,
-`occurred_at`). The fact — not the command — is the single source of truth for participation.
+existing `.cmd` plane as `tenant.<tid>.interaction.<id>.cmd.<desk-svc-identity>` (`command_type` ∈
+{`participant.assign`, `participant.unassign`, `participant.transfer`}). The router MUST: (1)
+validate the ACTOR — the role MUST be derived from the authenticated suffix identity (the
+`<desk-svc-identity>` last subject token), NEVER from the payload, and MUST carry the
+trusted-backend role; an agent-role connection issuing a participation command MUST be rejected; (2)
+validate AUTHZ (the target tenant/interaction is in the actor's scope); and (3) write the resulting
+`participant.joined` / `interaction.assigned` / `participant.left` fact onto `interaction.<id>.log`
+with AUDIT fields (commanding `actor` taken from the suffix, `reason`, `request_id`, `occurred_at`).
+Trusted-backend identities MUST be EXEMPT from the agent participant check. The fact — not the
+command — is the single source of truth for participation.
 
 #### Scenario: Trusted backend assignment lands as an audited log fact
 - **id:** `signaling.feed.privileged-assign-to-fact`
-- **GIVEN** Desk (trusted-backend role) authorized for tenant `T`
-- **WHEN** it issues `participant.assign{interaction: I, agent: bob, reason: r, request_id: q}` on `tenant.T.interaction.I.cmd`
-- **THEN** the router validates the actor + authz and writes `participant.joined{agent: bob}` on `interaction.I.log` carrying audit fields `actor=desk`, `reason=r`, `request_id=q`
+- **GIVEN** Desk (trusted-backend identity `desk`) authorized for tenant `T`
+- **WHEN** it issues `participant.assign{interaction: I, agent: bob, reason: r, request_id: q}` on `tenant.T.interaction.I.cmd.desk`
+- **THEN** the router derives the trusted-backend role from the `desk` suffix, validates authz, and writes `participant.joined{agent: bob}` on `interaction.I.log` carrying audit fields `actor=desk`, `reason=r`, `request_id=q`
 - **AND** participation for `(T, I, bob)` is derived from that fact, not from any side channel
 
 #### Scenario: Agent-role connection cannot issue a participation command
 - **id:** `signaling.feed.privileged-actor-guarded`
-- **GIVEN** an ordinary agent connection (agent role, not trusted-backend)
-- **WHEN** it publishes `participant.assign{interaction: I, agent: self}` on `tenant.T.interaction.I.cmd`
-- **THEN** the router REJECTS it (actor validation fails) and writes no participation fact
+- **GIVEN** an ordinary agent connection (agent role `alice`, not trusted-backend)
+- **WHEN** it publishes `participant.assign{interaction: I, agent: self}` on `tenant.T.interaction.I.cmd.alice`
+- **THEN** the router derives the agent role from the `alice` suffix, REJECTS it (actor validation fails), and writes no participation fact
 
 ### Requirement: Fan-out service projects log facts by server-checked participation
 A trusted server-side **Participation/Fan-out service** MUST consume the canonical
@@ -159,38 +176,45 @@ not project a fact twice into an agent's feed. Cross-interaction global ordering
 - **WHEN** a sequence of `.log` facts is replayed through an in-memory fake
 - **THEN** the test asserts exactly which agent feeds receive which facts, with no NATS client imported into the core (loose-coupling HARD RULE)
 
-### Requirement: Fan-out is exactly-once across crash, restart, and horizontal scale
-The Participation/Fan-out service MUST be deployable as SHARDABLE stateless workers with NO single
-instance and NO SPOF: work MUST be partitioned by a hash of `(tenant, interaction)` so all facts of
-an interaction land on one shard (preserving per-interaction `sequence` order), and each shard MUST
-be owned by exactly one worker via a durable consumer group / lease. A source `.log` message MUST be
-acked ONLY after ALL intended per-agent feed publishes for that fact are acknowledged; if a worker
-crashes after some but not all publishes, the un-acked source fact MUST be redelivered and
-re-projected, and the deterministic dedup id MUST make the redelivery a no-op — yielding NO drop and
-NO duplicate. The per-shard durable cursor MUST be the recovery position; a failed publish MUST be
-retried with backoff WITHOUT advancing the cursor; a fact failing past `max_deliver` MUST be routed
-to a dead-letter subject (`tenant.<tid>.agent.dlq.feed`) with the failure reason and source
-`event_id`/`sequence` (never silently dropped). Shard ownership MUST rebalance on worker loss, and a
-transient double-ownership window MUST remain safe via the same dedup.
+### Requirement: Fan-out is effectively-once across crash and failover (leased single-active worker)
+The Participation/Fan-out service MUST run as a SINGLE active worker — ONE durable JetStream
+consumer on `tenant.*.interaction.*.log`, with standby replicas contending for a NATS KV leader
+lease (TTL ~5s, heartbeat-renewed) — NOT a sharded fleet; it MUST NOT use partition subject-mapping,
+per-shard durables, or a rebalance protocol (it is not engineered to higher availability than the
+single-node NATS + single router it derives from). Delivery MUST be **effectively-once
+(at-least-once delivery + idempotent feed publish)** — the service MUST NOT claim exactly-once. A
+source `.log` message MUST be acked ONLY after ALL intended per-agent feed publishes for that fact
+are acknowledged; if the worker crashes after some but not all publishes, the un-acked source fact
+MUST be redelivered and re-projected, and the deterministic dedup id MUST make the redelivery a
+no-op — yielding NO drop and at-most-once per `(agent, interaction, sequence)`. The service MUST
+**hydrate** by loading a KV snapshot of the participation view (keyed by stream sequence, written
+every N facts/seconds), doing a read-only fold of the tail up to the durable ack floor, then going
+live — NOT replaying the whole log from sequence 0. The durable consumer's ack floor MUST be the
+recovery cursor; a failed publish MUST be retried with backoff WITHOUT advancing the cursor; a fact
+failing past `max_deliver` MUST be routed to a dead-letter subject (`tenant.<tid>.agent.dlq.feed`)
+with the failure reason and source `event_id`/`sequence` (never silently dropped). A transient
+double-ownership window across lease failover MUST remain safe via the same dedup. A
+`{{partition(N,…)}}` sharded scale-out (one durable per shard, subjects/semantics unchanged) MAY be
+added later, triggered by measured single-consumer lag, but is NOT part of this requirement.
 
 #### Scenario: Partial publish then crash drops nothing and duplicates nothing
 - **id:** `signaling.feed.exactly-once-crash`
-- **GIVEN** a fact at `sequence` N to be fanned to agents `alice` and `bob`, where the worker publishes to `alice`'s feed then crashes BEFORE publishing to `bob` and BEFORE acking the source
-- **WHEN** the un-acked source fact is redelivered (to the same or a rebalanced worker)
+- **GIVEN** a fact at `sequence` N to be fanned to agents `alice` and `bob`, where the active worker publishes to `alice`'s feed then crashes BEFORE publishing to `bob` and BEFORE acking the source
+- **WHEN** the un-acked source fact is redelivered (to the same worker or the standby that wins the lease)
 - **THEN** the redelivery re-publishes to both feeds; `alice`'s feed dedups `sequence` N to one copy and `bob`'s feed now receives it
-- **AND** the source is acked only after BOTH publishes succeed (no drop, no duplicate)
+- **AND** the source is acked only after BOTH publishes succeed (no drop, at-most-once per feed)
 
-#### Scenario: Sharded workers preserve per-interaction order with no SPOF
+#### Scenario: Failover resumes from the lease, snapshot, and durable cursor with no SPOF on the data path
 - **id:** `signaling.feed.shard-ownership`
-- **GIVEN** the Fan-out service running as multiple workers partitioned by `(tenant, interaction)` hash
-- **WHEN** one worker dies and its shard is rebalanced to another worker
-- **THEN** all facts of any single interaction were handled by one shard (per-interaction `sequence` order preserved), and the new owner resumes from the durable per-shard cursor with no lost or duplicated projection
+- **GIVEN** the Fan-out service running as one active worker holding the KV leader lease plus standby replicas
+- **WHEN** the active worker dies and a standby acquires the expired lease
+- **THEN** the new active worker hydrates from the latest KV participation snapshot, read-only-folds the tail up to the durable ack floor, and resumes live projection from the durable cursor with per-interaction `sequence` order preserved and no lost or duplicated projection
 
 #### Scenario: Poison fact is dead-lettered, not wedged
 - **id:** `signaling.feed.poison-dlq`
 - **GIVEN** a fact whose projection fails repeatedly (e.g. malformed envelope) past `max_deliver`
 - **WHEN** the delivery limit is reached
-- **THEN** the service routes it to `tenant.<tid>.agent.dlq.feed` with the failure reason and source `event_id`/`sequence`, acks the source so the shard is not wedged, and an operator can drain the DLQ
+- **THEN** the service routes it to `tenant.<tid>.agent.dlq.feed` with the failure reason and source `event_id`/`sequence`, acks the source so the consumer is not wedged, and an operator can drain the DLQ
 
 ### Requirement: Reply-inbox is a per-connection minted prefix (no command-result snooping)
 The system MUST mint a per-connection reply prefix for the inbox connection and grant ONLY that

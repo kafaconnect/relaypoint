@@ -34,28 +34,47 @@ tenant-wide read.
 
 1. **Feed subject + read grant.** One personal feed `tenant.<tid>.agent.<aid>.feed.>`
    (sub-subject per interaction). The auth-callout grants the inbox connection ONLY: feed
-   subscribe (`<self>`-bound), a WILDCARD command publish, a per-connection minted reply prefix,
-   and the agent's own offer/notify/presence. NO direct `.log` subscribe, NO tenant-wide read.
+   subscribe (`<self>`-bound), a wildcard-interaction command publish with an ACL-pinned `<self>`
+   identity suffix (`publish tenant.<tid>.interaction.*.cmd.<self>`), a per-connection minted reply
+   prefix, and the agent's own offer/notify/presence. NO direct `.log` subscribe, NO tenant-wide
+   read.
 
 2. **Participation = `.log` facts (source A, confirmed).** Participation `(tenant, interaction,
    agent)` is derived SOLELY from `.log` facts (`participant.joined` / `participant.left` /
    `interaction.assigned`). There is no second control plane. Desk (a trusted backend) establishes
-   participation by issuing a **privileged participation command** on the existing `.cmd` plane,
-   which the router validates (actor role + authz) and writes as the fact with audit fields
+   participation by issuing a **privileged participation command** as
+   `tenant.<tid>.interaction.<id>.cmd.<desk-svc-identity>`, which the router validates (actor role
+   taken from the authenticated suffix identity + authz) and writes as the fact with audit fields
    (`actor`, `reason`, `request_id`). The fact — not the command — is the single source of truth.
 
-3. **Wildcard command publish + server-side authz (no write reconnect).** The inbox connection
-   holds ONE wildcard `publish tenant.<tid>.interaction.*.cmd` for its lifetime; the **router**
-   enforces participation on every agent `.cmd` against the SAME `.log`-derived membership that
-   drives the feed. A newly-assigned agent commands with no reconnect; a non-participant command is
-   rejected and writes no fact.
+3. **ACL-pinned command identity suffix + server-side authz (no write reconnect).** The `.cmd`
+   subject GAINS an identity suffix `tenant.<tid>.interaction.<iid>.cmd.<identity>`, mirroring the
+   existing `.signal.<userId>` precedent: the publisher's id is in the subject and the NATS
+   publish-ACL — not a payload field — binds the command to its author. (NATS **subject-mapping**
+   was considered to assert identity and REJECTED as unimplementable: mappings are subject-token
+   transforms, never the connection's authenticated identity.) The inbox connection holds ONE
+   `publish tenant.<tid>.interaction.*.cmd.<self>` grant for its lifetime (wildcard interaction,
+   fixed `<self>` suffix; `*.cmd.<other>` denied). The **router** subscribes
+   `tenant.*.interaction.*.cmd.*`, takes the publisher identity from the LAST subject token (never
+   the payload; payload `actor_id` must match it, else `actor_mismatch`), derives the role from the
+   authenticated identity, and enforces participation on every agent `.cmd` against the SAME
+   `.log`-derived membership (the same `ParticipationView`) that drives the feed. A newly-assigned
+   agent commands with no reconnect; a non-participant agent command is rejected and writes no fact;
+   trusted-backend identities are exempt from the participant check.
 
-4. **Fan-out service: sharded, exactly-once, HA.** The Participation/Fan-out service is SHARDABLE
-   stateless workers (partition by `(tenant, interaction)` hash; durable consumer groups / leases;
-   no SPOF). A source `.log` message is acked ONLY after all intended per-agent feed publishes
-   succeed; publishes carry a deterministic `Nats-Msg-Id = <tid>.<aid>.<iid>.<sequence>` for
-   idempotent replay. Partial-publish-then-crash yields no drop, no duplicate. Failures retry with
-   backoff; poison facts go to a DLQ (`tenant.<tid>.agent.dlq.feed`), never silently dropped.
+4. **Fan-out service: leased single-active worker, effectively-once.** The Participation/Fan-out
+   service is a SINGLE active worker (ONE durable consumer on `tenant.*.interaction.*.log`; standby
+   replicas behind a NATS KV leader lease, TTL ~5s) — NOT a sharded fleet, not engineered to higher
+   availability than the single-node NATS + single router it derives from; NO partition
+   subject-mapping, NO per-shard durables, NO rebalance protocol. It hydrates from a KV participation
+   snapshot (keyed by stream sequence) + a read-only fold of the tail to the ack floor, then goes
+   live. A source `.log` message is acked ONLY after all intended per-agent feed publishes succeed;
+   publishes carry a deterministic `Nats-Msg-Id = <tid>.<aid>.<iid>.<sequence>` for idempotent
+   replay, so delivery is **effectively-once (at-least-once delivery + idempotent feed publish)** —
+   NOT exactly-once. Partial-publish-then-crash and a lease-failover double-ownership window yield no
+   drop and at-most-once per feed. Failures retry with backoff; poison facts go to a DLQ
+   (`tenant.<tid>.agent.dlq.feed`), never silently dropped. A `{{partition(N,…)}}` sharded scale-out
+   (subjects/semantics unchanged) is a documented future option triggered by measured lag.
 
 5. **`_INBOX` isolation.** The reply-inbox is a per-connection minted prefix `_INBOX_<conn>.>`;
    broad `_INBOX.>` is denied. A feed-only read grant does not close command-result snooping
@@ -79,29 +98,36 @@ tenant-wide read.
 
 ## Consequences
 
-- **New container/service:** the RelayPoint Participation/Fan-out service — a sharded
+- **New container/service:** the RelayPoint Participation/Fan-out service — a leased single-active
   trusted-server JetStream consumer of `tenant.*.interaction.*.log`, the only new publisher of
   `tenant.<tid>.agent.<aid>.feed.>` and responder to `…feed.history`. Its core depends on owned
   ports (`ParticipationView`, `FeedSink`, `Cursor`, `HistoryReader`), not on
   `nats.JetStreamContext` (loose-coupling HARD RULE).
-- **Router gains** a server-side participant-authz check on every agent `.cmd` (reusing the
-  `ParticipationView` port) and a privileged participation-command path that lands `participant.*`
-  / `interaction.assigned` facts with audit fields.
-- **Auth-callout gains** a new inbox grant shape (feed-subscribe + wildcard `.cmd` + minted
-  `_INBOX_<conn>.>`; no `.log` subscribe, no broad `_INBOX.>`).
+- **Router gains** a server-side participant-authz check on every agent `.cmd.*` (taking the
+  publisher identity from the last subject token, reusing the `ParticipationView` port) and a
+  privileged participation-command path (`…cmd.<desk-svc-identity>`) that lands `participant.*` /
+  `interaction.assigned` facts with audit fields.
+- **Subject change:** the command subject GAINS an identity suffix
+  `tenant.<tid>.interaction.<iid>.cmd.<identity>` (publisher in subject, ACL-enforced — mirrors
+  `.signal.<self>`); the router subscribes `tenant.*.interaction.*.cmd.*`.
+- **Auth-callout gains** a new inbox grant shape (feed-subscribe + `publish
+  tenant.<tid>.interaction.*.cmd.<self>` (ACL-pinned suffix) + minted `_INBOX_<conn>.>`; no `.log`
+  subscribe, no broad `_INBOX.>`).
 - **New subjects:** `tenant.<tid>.agent.<aid>.feed.<interaction_id>` (server-write, agent-read-own),
   `tenant.<tid>.agent.<aid>.feed.history` (participation-checked request/reply),
   `tenant.<tid>.agent.dlq.feed` (operator-drained). `.log`/`.cmd`/`.signal`/offer are unchanged;
   the protobuf wire (ADR-0002) is reused verbatim (the feed copies the `Event`).
 - **Dependent desk rework:** `rp1-web-consumer-auth` MUST consume the per-agent feed (drop
   tenant-wide read + direct `.log`; history via `feed.history`; assignment via the privileged
-  participation command; wildcard `.cmd` + minted `_INBOX_<conn>`). Tracked on the desk repo; not
+  participation command as `…cmd.<desk-svc-identity>`; `publish …interaction.*.cmd.<self>` +
+  minted `_INBOX_<conn>`). Tracked on the desk repo; not
   edited here.
 
 Spec delta ids: `signaling.feed.inbox-reads-own-feed-only`, `signaling.feed.cross-agent-denied`,
 `signaling.feed.unified-medium`, `signaling.feed.write-server-only`,
 `signaling.feed.cmd-wildcard-no-reconnect`, `signaling.feed.cmd-nonparticipant-denied`,
-`signaling.feed.privileged-assign-to-fact`, `signaling.feed.privileged-actor-guarded`,
+`signaling.feed.cmd-identity-pinned`, `signaling.feed.privileged-assign-to-fact`,
+`signaling.feed.privileged-actor-guarded`,
 `signaling.feed.fanout-to-participants`, `signaling.feed.participation-from-facts`,
 `signaling.feed.fanout-dedup`, `signaling.feed.core-port-isolated`,
 `signaling.feed.exactly-once-crash`, `signaling.feed.shard-ownership`,
@@ -116,13 +142,18 @@ Spec delta ids: `signaling.feed.inbox-reads-own-feed-only`, `signaling.feed.cros
 - **Participation source B** (a separate `routing.participation.*` control plane) — a second source
   of truth that can diverge from `.log`; rejected (assignment is expressible as a `.log` fact).
 - **Per-accepted-interaction `.cmd` publish grant** — a write-plane reconnect storm; rejected for
-  the wildcard grant + server-side participant authz.
+  the wildcard-interaction grant + ACL-pinned `<self>` suffix + server-side participant authz.
+- **NATS subject-mapping to assert the publisher identity** — unimplementable: mappings are
+  subject-token transforms, never the connection's authenticated identity; rejected for the
+  ACL-pinned `.cmd.<self>` suffix (mirrors `.signal.<self>`).
 - **Broad `_INBOX.>` reply grant** — a command-result snooping hole a feed-only read does not
   close; rejected for the minted `_INBOX_<conn>.>`.
 - **Backfill by replaying `.log` from sequence 0 into the feed** — re-injects whole-thread history
   into the ephemeral stream and races live projection; rejected for the bounded history-read.
-- **Single fan-out instance** — a SPOF with no exactly-once guarantee; rejected for sharded workers
-  + ack-after-publish.
+- **Sharded fan-out fleet as the Phase-1 shape** — over-engineers the projector beyond the
+  single-node NATS + single router it derives from; rejected for a leased single-active worker + KV
+  snapshot hydration + ack-after-publish (effectively-once), with sharding demoted to a
+  lag-triggered scale-out path.
 - **Durable per-agent feed as the audit store** — duplicates `.log` N times under retention;
   rejected for ephemeral feed + canonical `.log`/history-read.
 - **Tenant-wide `.log` read grant** (desk's provisional choice) — breaks per-interaction isolation.

@@ -10,6 +10,7 @@ specs:
   - signaling.feed.write-server-only
   - signaling.feed.cmd-wildcard-no-reconnect
   - signaling.feed.cmd-nonparticipant-denied
+  - signaling.feed.cmd-identity-pinned
   - signaling.feed.privileged-assign-to-fact
   - signaling.feed.privileged-actor-guarded
   - signaling.feed.fanout-to-participants
@@ -46,3 +47,9 @@ agent-feed-fanout --strict` must pass.
   fan-out (crash, DLQ, shard rebalance), per-connection `_INBOX_<conn>` isolation, bounded
   history-read backfill, revocation-epoch intervals, ephemeral feed + tombstone. validate
   --strict green.
+- 2026-06-11 architect remediation (Fable 5, owner-approved): (1) write identity = ACL-pinned
+  `.cmd.<self>` subject suffix (replaces unimplementable subject-mapping; mirrors `.signal.<self>`)
+  — router takes identity from last subject token, `actor_mismatch` on payload disagreement; added
+  scenario `signaling.feed.cmd-identity-pinned`. (2) projector = leased single-active worker + KV
+  snapshot hydration (effectively-once, not exactly-once); sharding demoted to a scale-out
+  appendix; rewrote `exactly-once-crash` + `shard-ownership` scenarios. validate --strict green.

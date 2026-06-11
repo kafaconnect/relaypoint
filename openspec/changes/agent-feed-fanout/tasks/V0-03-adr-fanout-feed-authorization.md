@@ -21,3 +21,8 @@ spec delta ids.
   via privileged command→fact, wildcard `.cmd` + server-side authz, sharded exactly-once fan-out,
   `_INBOX_<conn>` isolation, bounded history-read, revocation-epoch intervals, ephemeral feed);
   references signaling-core + the 24 spec delta ids + the desk rework.
+- 2026-06-11 architect remediation (Fable 5, owner-approved): decision 3 → ACL-pinned
+  `.cmd.<self>` subject suffix (subject-mapping recorded REJECTED-unimplementable; identity from
+  last subject token); decision 4 → leased single-active worker + KV snapshot hydration,
+  effectively-once (renamed from exactly-once), sharding → scale-out appendix. Decisions 1, 2a, 5,
+  6, 7-feed, 8 stand. Updated consequences + alternatives.

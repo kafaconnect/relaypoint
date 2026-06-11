@@ -32,34 +32,51 @@ implementable authorization boundary.
 
 - **Feed subject + grant.** Each agent has ONE personal feed
   `tenant.<tid>.agent.<aid>.feed.>` (a sub-subject per interaction:
-  `tenant.<tid>.agent.<aid>.feed.<interaction_id>`). The auth-callout grants an inbox
-  connection ONLY: `subscribe tenant.<tid>.agent.<aid>.feed.>` + a **WILDCARD** command-publish
-  grant `publish tenant.<tid>.interaction.*.cmd` (NOT per-accepted-interaction) + a
+  `tenant.<tid>.agent.<aid>.feed.<interaction_id>`). The `.cmd` subject GAINS an **identity
+  suffix**: `tenant.<tid>.interaction.<iid>.cmd.<identity>`, mirroring the repo's EXISTING
+  `.signal.<userId>` authorship precedent — the author is in the subject and the NATS publish-ACL
+  (not a payload field) binds the command to its publisher. The auth-callout grants an inbox
+  connection ONLY: `subscribe tenant.<tid>.agent.<aid>.feed.>` + a command-publish grant
+  `publish tenant.<tid>.interaction.*.cmd.<self>` (wildcard interaction, **FIXED `<self>`
+  suffix** — a client can only publish as itself; `*.cmd.<other>` is denied) + a
   **per-connection minted reply-inbox** `subscribe _INBOX_<conn>.>` + the agent's own
   `routing.offer.user.<aid>(.control)`, `notify.<aid>`, `presence.<aid>` (read). It grants
   **NO** direct `tenant.<tid>.interaction.*.log` subscribe and **NO** broad `_INBOX.>`. `<aid>`
   MUST be the connection's authenticated user — an agent reads only its own feed. Because the
-  publish grant is a wildcard, a newly-assigned agent can issue commands with **no reconnect**;
-  the **router enforces participation server-side** on every `.cmd` (an agent may only act on
-  interactions it participates in, checked against the `.log`-derived membership).
+  interaction token is a wildcard, a newly-assigned agent can issue commands with **no
+  reconnect**; the **router** subscribes `tenant.*.interaction.*.cmd.*`, takes the publisher
+  identity from the LAST subject token (NEVER the payload), and enforces participation
+  server-side (an agent may only act on interactions it participates in, checked against the
+  `.log`-derived membership).
 
 - **Participation = `.log` facts (PINNED: source A).** Participation `(tenant, interaction,
   agent)` is derived **SOLELY** from `.log` facts (`participant.joined` / `participant.left` /
   `interaction.assigned`). There is no second control plane. Desk, a trusted backend, does NOT
-  call a participation API: it issues an **authorized assignment/participation command** that
-  the router **validates (actor + authz) and writes as the `participant.joined` /
-  `interaction.assigned` / `participant.left` fact** on the canonical `.log`, with audit fields
-  (commanding actor, reason, request id). Single source of truth, single ordering authority.
+  call a participation API: it issues an **authorized assignment/participation command** as
+  `…cmd.<desk-svc-identity>` (privileged `participant.assign` / `unassign` / `transfer`) that
+  the router **validates (actor role from the authenticated suffix identity + authz) and writes
+  as the `participant.joined` / `interaction.assigned` / `participant.left` fact** on the
+  canonical `.log`, with audit fields (commanding actor, reason, request id). The role gate
+  exempts trusted-backend identities from the participant check. Single source of truth, single
+  ordering authority.
 
-- **Participation/Fan-out service (sharded, exactly-once, HA).** A new server-side RelayPoint
-  service (a trusted-server JetStream consumer, NOT a client) tails the canonical
-  `tenant.*.interaction.*.log`, maintains participation from those facts, and **projects each
-  fact into the feed of every currently-participating agent**. It is **SHARDABLE stateless
-  workers** (partition by `(tenant, interaction)` hash; durable consumer groups; no single
-  instance, no SPOF). A source `.log` message is **acked ONLY after all intended per-agent feed
-  publishes succeed**; feed publishes carry a deterministic `Nats-Msg-Id` for idempotent
-  replay; cursor storage, retry/backoff, poison/DLQ, and shard ownership/rebalance are
-  specified. The canonical `.log` is **unchanged** and remains the sole source of truth.
+- **Participation/Fan-out service (leased single-active worker, effectively-once).** A new
+  server-side RelayPoint service (a trusted-server JetStream consumer, NOT a client) tails the
+  canonical `tenant.*.interaction.*.log` on ONE durable consumer, maintains participation from
+  those facts, and **projects each fact into the feed of every currently-participating agent**.
+  It runs as a **single ACTIVE worker** with standby replicas behind a **NATS KV leader lease**
+  (TTL ~5s) — NO partition subject-mapping, NO per-shard durables, NO rebalance protocol; it is
+  not engineered to higher availability than the single-node NATS + single router it derives
+  from (per signaling-core Phase-1). **Hydration** is one linear catch-up: the participation
+  view is snapshotted to KV every N facts/seconds keyed by stream sequence; on start/failover the
+  worker loads the snapshot, does a read-only fold of the tail up to the ack floor, then goes
+  live. A source `.log` message is **acked ONLY after all intended per-agent feed publishes
+  succeed**; feed publishes carry a deterministic `Nats-Msg-Id` for idempotent replay, so
+  delivery is **effectively-once (at-least-once delivery + idempotent feed publish)** — a
+  lease-failover double-ownership window is safe under the same dedup. Cursor storage,
+  retry/backoff with redelivery backstop, and poison/DLQ are specified. A `{{partition(N,…)}}`
+  sharded scale-out path is documented as an additive future option (subjects/semantics
+  unchanged). The canonical `.log` is **unchanged** and remains the sole source of truth.
 
 - **Unified chat + voice.** The feed carries facts for ANY medium (chat, voice, video) — medium
   stays a payload field, never a subject (signaling-core invariant). There is **no per-medium
@@ -86,20 +103,26 @@ implementable authorization boundary.
 
 ## Impact
 
-- New container/service: **RelayPoint Participation/Fan-out service** — a sharded, trusted-server
-  JetStream consumer of `tenant.*.interaction.*.log`; the only NEW publisher of
+- New container/service: **RelayPoint Participation/Fan-out service** — a leased single-active,
+  trusted-server JetStream consumer of `tenant.*.interaction.*.log`; the only NEW publisher of
   `tenant.<tid>.agent.<aid>.feed.>` and the responder to `…feed.history`. Loose-coupling rule:
   its core depends on owned ports (a `ParticipationView`, a `FeedSink`, a `Cursor`, a
   `HistoryReader`), not on `nats.JetStreamContext`.
 - New subjects: `tenant.<tid>.agent.<aid>.feed.<interaction_id>` (server-write, agent-read-own)
   and `tenant.<tid>.agent.<aid>.feed.history` (request/reply, participation-checked).
   `.log` / `.cmd` / `.signal` / offer subjects are UNCHANGED.
-- Auth-callout: a NEW grant shape for the inbox connection (feed-subscribe + WILDCARD
-  `.cmd`-publish + per-connection `_INBOX_<conn>.>` reply scope; NO `.log` subscribe, NO broad
-  `_INBOX.>`) — generalizes signaling-core's per-interaction grant.
-- Router: a NEW server-side participation authorization check on every `tenant.<tid>.interaction.*.cmd`
-  (already the `.cmd` writer); and a NEW privileged assignment/participation command path that
-  Desk uses to land `participant.*` / `interaction.assigned` facts with audit fields.
+- Auth-callout: a NEW grant shape for the inbox connection (feed-subscribe + ACL-pinned
+  `publish tenant.<tid>.interaction.*.cmd.<self>` (fixed `<self>` suffix) + per-connection
+  `_INBOX_<conn>.>` reply scope; NO `.log` subscribe, NO broad `_INBOX.>`) — generalizes
+  signaling-core's per-interaction grant and its `.signal.<self>` authorship precedent.
+- Subject change: the command subject GAINS an identity suffix
+  `tenant.<tid>.interaction.<iid>.cmd.<identity>` (publisher in subject, ACL-enforced); the
+  router subscribes `tenant.*.interaction.*.cmd.*`.
+- Router: a NEW server-side participation authorization check on every
+  `tenant.<tid>.interaction.*.cmd.*` (already the `.cmd` writer), taking the publisher identity
+  from the last subject token (never the payload) and requiring `actor_id` to match it; and a NEW
+  privileged assignment/participation command path that Desk uses (as `…cmd.<desk-svc-identity>`)
+  to land `participant.*` / `interaction.assigned` facts with audit fields.
 - ADR: a new ADR records the fan-out-feed authorization architecture change.
 - **Dependent DESK follow-up (not in this repo):** the desk change `rp1-web-consumer-auth` —
   which assumed a direct per-interaction subscribe + a desk-minted tenant-wide read grant — MUST
