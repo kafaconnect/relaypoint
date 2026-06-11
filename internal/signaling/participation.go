@@ -36,6 +36,42 @@ func FoldParticipation(facts []*Event) *ParticipationView {
 	return v
 }
 
+// NewParticipationView returns an empty view; the fan-out projector folds facts into it one at a
+// time via ApplyFact (a single in-flight fact at MaxAckPending=1) rather than re-folding a slice.
+func NewParticipationView() *ParticipationView {
+	return &ParticipationView{intervals: map[string][]Interval{}}
+}
+
+// ApplyFact folds ONE fact into the view (same rules as FoldParticipation): join/assign opens,
+// leave closes; any other type is ignored. Facts MUST arrive in sequence order.
+func (v *ParticipationView) ApplyFact(e *Event) {
+	switch e.EventType {
+	case "participant.joined", "interaction.assigned":
+		v.open(e.ActorId, e.Sequence)
+	case "participant.left":
+		v.close(e.ActorId, e.Sequence)
+	}
+}
+
+// Agents returns the agents that have ANY interval (open or closed), so the projector can iterate
+// the membership of an interaction. Order is unspecified.
+func (v *ParticipationView) Agents() []string {
+	out := make([]string, 0, len(v.intervals))
+	for a := range v.intervals {
+		out = append(out, a)
+	}
+	return out
+}
+
+// SetIntervals restores an agent's intervals from a snapshot (the projector serializes the view
+// keyed by stream sequence and rehydrates it on takeover). A nil/empty slice is a no-op.
+func (v *ParticipationView) SetIntervals(agent string, in []Interval) {
+	if len(in) == 0 {
+		return
+	}
+	v.intervals[agent] = append([]Interval(nil), in...)
+}
+
 func (v *ParticipationView) open(agent string, seq int64) {
 	cur := v.intervals[agent]
 	if n := len(cur); n > 0 && cur[n-1].LeftOpen {
