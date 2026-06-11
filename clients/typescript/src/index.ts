@@ -14,6 +14,7 @@ export type {
 export type {
   ConnectionState,
   DeliveryState,
+  ChatPayload,
   LogEvent,
   Command,
   CommandResult,

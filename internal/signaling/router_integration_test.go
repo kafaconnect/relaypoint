@@ -8,13 +8,13 @@ package signaling
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"google.golang.org/protobuf/proto"
 )
 
 func urlOr(k, d string) string {
@@ -35,12 +35,13 @@ func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if err := EnsureLogStream(rjs); err != nil {
+	// ADR-0002 cutover: start from a clean stream so no JSON-era fact survives into the protobuf run.
+	if err := ResetLogStream(rjs); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	r := NewRouter(NewJetStreamStore(rjs))
 	sub, err := rnc.QueueSubscribe("tenant.*.interaction.*.cmd", "router", func(m *nats.Msg) {
-		b, _ := json.Marshal(r.HandleCommand(context.Background(), m.Subject, m.Data))
+		b, _ := proto.Marshal(r.HandleCommand(context.Background(), m.Subject, m.Data))
 		if m.Reply != "" {
 			_ = m.Respond(b)
 		}
@@ -56,22 +57,28 @@ func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 	return cnc, rjs
 }
 
-func sendCmd(t *testing.T, cnc *nats.Conn, tenant, iid string, c Command) CommandResult {
+func sendCmd(t *testing.T, cnc *nats.Conn, tenant, iid string, c *Command) *CommandResult {
 	t.Helper()
-	b, _ := json.Marshal(c)
+	b, _ := proto.Marshal(c)
 	msg, err := cnc.Request(fmt.Sprintf("tenant.%s.interaction.%s.cmd", tenant, iid), b, 2*time.Second)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	var res CommandResult
-	if err := json.Unmarshal(msg.Data, &res); err != nil {
+	res := &CommandResult{}
+	if err := proto.Unmarshal(msg.Data, res); err != nil {
 		t.Fatalf("bad result: %v", err)
 	}
 	return res
 }
 
+// chatBytes marshals chat text into the `data` payload (registry: medium=chat).
+func chatBytes(text string) []byte {
+	b, _ := proto.Marshal(&ChatMessage{Text: text})
+	return b
+}
+
 // readLog replays the durable facts for an interaction in order.
-func readLog(t *testing.T, js nats.JetStreamContext, tenant, iid string) []Event {
+func readLog(t *testing.T, js nats.JetStreamContext, tenant, iid string) []*Event {
 	t.Helper()
 	subj := fmt.Sprintf("tenant.%s.interaction.%s.log", tenant, iid)
 	sub, err := js.PullSubscribe(subj, "", nats.DeliverAll())
@@ -79,15 +86,15 @@ func readLog(t *testing.T, js nats.JetStreamContext, tenant, iid string) []Event
 		t.Fatalf("pull: %v", err)
 	}
 	defer sub.Unsubscribe()
-	var out []Event
+	var out []*Event
 	for {
 		msgs, err := sub.Fetch(10, nats.MaxWait(500*time.Millisecond))
 		if err != nil || len(msgs) == 0 {
 			break
 		}
 		for _, m := range msgs {
-			var e Event
-			_ = json.Unmarshal(m.Data, &e)
+			e := &Event{}
+			_ = proto.Unmarshal(m.Data, e)
 			out = append(out, e)
 			m.Ack()
 		}
@@ -95,6 +102,7 @@ func readLog(t *testing.T, js nats.JetStreamContext, tenant, iid string) []Event
 	return out
 }
 
+// @spec:wire.protobuf.router-end-to-end
 func TestRouterChat(t *testing.T) {
 	cnc, js := startRouter(t)
 	iid := fmt.Sprintf("im%d", time.Now().UnixNano())
@@ -104,12 +112,12 @@ func TestRouterChat(t *testing.T) {
 	// @spec:signaling.cmd.result-transport
 	// @spec:signaling.unified-interaction
 	t.Run("sequence+result+envelope", func(t *testing.T) {
-		r1 := sendCmd(t, cnc, tn, iid, Command{CommandID: "c1", TenantID: tn, ActorID: "u1", Type: "interaction.started", Medium: "chat"})
-		if r1.Status != "accepted" || r1.CausedBy == "" {
+		r1 := sendCmd(t, cnc, tn, iid, &Command{CommandId: "c1", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"})
+		if r1.Status != statusAccepted || r1.CausedBy == "" {
 			t.Fatalf("start: %+v (want accepted + caused_by)", r1)
 		}
-		r2 := sendCmd(t, cnc, tn, iid, Command{CommandID: "c2", TenantID: tn, ActorID: "u1", Type: "message.created", Medium: "chat", RefID: "m1", Data: map[string]any{"text": "hi"}})
-		if r2.Status != "accepted" {
+		r2 := sendCmd(t, cnc, tn, iid, &Command{CommandId: "c2", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", RefId: "m1", Data: chatBytes("hi")})
+		if r2.Status != statusAccepted {
 			t.Fatalf("message: %+v", r2)
 		}
 		facts := readLog(t, js, tn, iid)
@@ -123,7 +131,7 @@ func TestRouterChat(t *testing.T) {
 
 	// @spec:signaling.cmd.idempotent-command-id
 	t.Run("idempotent-command-id", func(t *testing.T) {
-		cmd := Command{CommandID: "idem", TenantID: tn, ActorID: "u1", Type: "message.created", Medium: "chat", Data: map[string]any{"text": "once"}}
+		cmd := &Command{CommandId: "idem", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatBytes("once")}
 		a := sendCmd(t, cnc, tn, iid, cmd)
 		before := len(readLog(t, js, tn, iid))
 		b := sendCmd(t, cnc, tn, iid, cmd) // retry, identical
@@ -135,17 +143,17 @@ func TestRouterChat(t *testing.T) {
 
 	// @spec:signaling.cmd.command-id-conflict
 	t.Run("command-id-conflict", func(t *testing.T) {
-		_ = sendCmd(t, cnc, tn, iid, Command{CommandID: "conf", TenantID: tn, ActorID: "u1", Type: "message.created", Medium: "chat", Data: map[string]any{"text": "A"}})
-		r := sendCmd(t, cnc, tn, iid, Command{CommandID: "conf", TenantID: tn, ActorID: "u1", Type: "message.created", Medium: "chat", Data: map[string]any{"text": "B"}})
-		if r.Status != "rejected" || r.Reason == "" {
+		_ = sendCmd(t, cnc, tn, iid, &Command{CommandId: "conf", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatBytes("A")})
+		r := sendCmd(t, cnc, tn, iid, &Command{CommandId: "conf", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatBytes("B")})
+		if r.Status != statusRejected || r.Reason == "" {
 			t.Fatalf("reused id with different payload should be 'conflict' rejected, got %+v", r)
 		}
 	})
 
 	// @spec:signaling.security.payload-tenant-match
 	t.Run("payload-tenant-match", func(t *testing.T) {
-		r := sendCmd(t, cnc, tn, iid, Command{CommandID: "x1", TenantID: "OTHER", ActorID: "u1", Type: "message.created", Medium: "chat"})
-		if r.Status != "rejected" {
+		r := sendCmd(t, cnc, tn, iid, &Command{CommandId: "x1", TenantId: "OTHER", ActorId: "u1", Type: "message.created", Medium: "chat"})
+		if r.Status != statusRejected {
 			t.Fatalf("payload tenant mismatch must be rejected, got %+v", r)
 		}
 	})
@@ -154,15 +162,15 @@ func TestRouterChat(t *testing.T) {
 	t.Run("illegal-transition-rejected", func(t *testing.T) {
 		j2 := fmt.Sprintf("iz%d", time.Now().UnixNano())
 		// message.created before interaction.started → illegal
-		r := sendCmd(t, cnc, tn, j2, Command{CommandID: "z1", TenantID: tn, ActorID: "u1", Type: "message.created", Medium: "chat"})
-		if r.Status != "rejected" {
+		r := sendCmd(t, cnc, tn, j2, &Command{CommandId: "z1", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat"})
+		if r.Status != statusRejected {
 			t.Fatalf("message before start must be rejected, got %+v", r)
 		}
 		// start, end, then message → illegal (ended is terminal)
-		sendCmd(t, cnc, tn, j2, Command{CommandID: "z2", TenantID: tn, ActorID: "u1", Type: "interaction.started", Medium: "chat"})
-		sendCmd(t, cnc, tn, j2, Command{CommandID: "z3", TenantID: tn, ActorID: "u1", Type: "interaction.ended", Medium: "chat"})
-		r = sendCmd(t, cnc, tn, j2, Command{CommandID: "z4", TenantID: tn, ActorID: "u1", Type: "message.created", Medium: "chat"})
-		if r.Status != "rejected" {
+		sendCmd(t, cnc, tn, j2, &Command{CommandId: "z2", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"})
+		sendCmd(t, cnc, tn, j2, &Command{CommandId: "z3", TenantId: tn, ActorId: "u1", Type: "interaction.ended", Medium: "chat"})
+		r = sendCmd(t, cnc, tn, j2, &Command{CommandId: "z4", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat"})
+		if r.Status != statusRejected {
 			t.Fatalf("message after end must be rejected, got %+v", r)
 		}
 	})
@@ -203,5 +211,41 @@ func TestClientCannotWriteLog(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("client was allowed to publish to .log (ACL not enforced)")
+	}
+}
+
+// @spec:wire.protobuf.stream-reset
+// ResetLogStream deletes + recreates INTERACTION_LOGS so a protobuf router replays a clean log:
+// a pre-existing (JSON-era) fact does NOT survive the reset, and the recreated stream is empty.
+func TestResetLogStreamPurgesFacts(t *testing.T) {
+	rnc, err := nats.Connect(urlOr("NATS_URL_ROUTER", "nats://router:router-dev@localhost:14222"))
+	if err != nil {
+		t.Skipf("no NATS: %v", err)
+	}
+	defer rnc.Drain()
+	js, err := rnc.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := EnsureLogStream(js); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	iid := fmt.Sprintf("ir%d", time.Now().UnixNano())
+	subj := logSubjectFor("t1", iid)
+	if _, err := js.Publish(subj, []byte(`{"legacy":"json"}`)); err != nil { // a JSON-era fact
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := ResetLogStream(js); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	store := NewJetStreamStore(js)
+	facts, err := store.Replay(subj)
+	if err != nil {
+		t.Fatalf("replay after reset must succeed on a clean stream, got %v", err)
+	}
+	if len(facts) != 0 {
+		t.Fatalf("reset must purge facts, found %d", len(facts))
 	}
 }

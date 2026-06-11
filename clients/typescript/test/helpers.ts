@@ -1,9 +1,20 @@
-import type { LogEvent } from "../src/types.js";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import {
+  ChatMessageSchema,
+  CommandResultSchema,
+  CommandResult_Status,
+  CommandSchema,
+  EventSchema,
+} from "../src/gen/relaypoint/interaction/v1/interaction_pb.js";
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+import type { ChatPayload, LogEvent } from "../src/types.js";
 
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+// Encode a chat payload into the `data` bytes (registry: medium=chat, message.*).
+export function chatData(p: ChatPayload): Uint8Array {
+  return toBinary(ChatMessageSchema, create(ChatMessageSchema, p));
+}
 
-// Build a snake_case wire `.log` fact (as the router would write it).
+// Build a protobuf `.log` fact (as the router would write it).
 export function wireEvent(e: {
   sequence: number;
   eventType?: string;
@@ -11,21 +22,22 @@ export function wireEvent(e: {
   occurredAt?: string;
   causedBy?: string;
   mediaProfile?: string;
-  data?: unknown;
+  data?: Uint8Array; // already-encoded payload bytes (use chatData() for chat)
 }): Uint8Array {
-  return enc.encode(
-    JSON.stringify({
+  return toBinary(
+    EventSchema,
+    create(EventSchema, {
       schema: "relaypoint.interaction.v1",
-      event_type: e.eventType ?? "message.created",
-      event_id: e.eventId ?? `ev-${e.sequence}`,
-      sequence: e.sequence,
-      occurred_at: e.occurredAt ?? "2026-06-08T00:00:00Z",
-      tenant_id: "t1",
-      actor_id: "alice",
+      eventType: e.eventType ?? "message.created",
+      eventId: e.eventId ?? `ev-${e.sequence}`,
+      sequence: BigInt(e.sequence),
+      occurredAt: timestampFromDate(new Date(e.occurredAt ?? "2026-06-08T00:00:00Z")),
+      tenantId: "t1",
+      actorId: "alice",
       medium: "chat",
-      ...(e.mediaProfile !== undefined ? { media_profile: e.mediaProfile } : {}),
-      ...(e.causedBy !== undefined ? { caused_by: e.causedBy } : {}),
-      ...(e.data !== undefined ? { data: e.data } : {}),
+      mediaProfile: e.mediaProfile ?? "",
+      causedBy: e.causedBy ?? "",
+      data: e.data ?? new Uint8Array(),
     }),
   );
 }
@@ -36,18 +48,29 @@ export function wireResult(r: {
   causedBy?: string;
   reason?: string;
 }): Uint8Array {
-  return enc.encode(
-    JSON.stringify({
-      command_id: r.commandId,
-      status: r.status,
-      ...(r.causedBy !== undefined ? { caused_by: r.causedBy } : {}),
-      ...(r.reason !== undefined ? { reason: r.reason } : {}),
+  return toBinary(
+    CommandResultSchema,
+    create(CommandResultSchema, {
+      commandId: r.commandId,
+      status: r.status === "accepted" ? CommandResult_Status.ACCEPTED : CommandResult_Status.REJECTED,
+      causedBy: r.causedBy ?? "",
+      reason: r.reason ?? "",
     }),
   );
 }
 
-export function readJson(bytes: Uint8Array): Record<string, unknown> {
-  return JSON.parse(dec.decode(bytes)) as Record<string, unknown>;
+// Decode a wire Command back to a plain object (what the router would receive).
+export function readCommand(bytes: Uint8Array): Record<string, unknown> {
+  const c = fromBinary(CommandSchema, bytes);
+  return {
+    command_id: c.commandId,
+    tenant_id: c.tenantId,
+    actor_id: c.actorId,
+    type: c.type,
+    medium: c.medium,
+    ref_id: c.refId,
+    data: c.data,
+  };
 }
 
 // A plain LogEvent (for unit-testing the Delivery plane directly).

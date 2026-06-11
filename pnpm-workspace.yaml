@@ -6,4 +6,5 @@ packages:
 
 # vitest's esbuild fetches its platform binary in a postinstall; approve that one build script.
 allowBuilds:
+  '@bufbuild/buf': true
   esbuild: true

@@ -16,7 +16,10 @@
       "import": "./dist/testing/fake-transport.js"
     }
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -25,9 +28,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.12.0",
     "nats.ws": "^1.30.3"
   },
   "devDependencies": {
+    "@bufbuild/buf": "^1.70.0",
+    "@bufbuild/protoc-gen-es": "^2.12.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   },

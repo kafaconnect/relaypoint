@@ -1,9 +1,17 @@
-// camelCase(TS) <-> snake_case(wire) projection; mapping table in design.md.
+// Protobuf wire codec (ADR-0002). The SDK's public API stays camelCase (LogEvent/Command/
+// CommandResult); this module is the only place that touches the generated messages and the
+// payload registry — chat `data` is a ChatMessage, everything else is opaque bytes.
 
-import { SCHEMA_V1, type Command, type CommandResult, type LogEvent } from "./types.js";
-
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import {
+  ChatMessageSchema,
+  CommandResultSchema,
+  CommandResult_Status,
+  CommandSchema,
+  EventSchema,
+  SignalEventSchema,
+} from "./gen/relaypoint/interaction/v1/interaction_pb.js";
+import { SCHEMA_V1, type ChatPayload, type Command, type CommandResult, type LogEvent } from "./types.js";
 
 export interface CommandContext {
   readonly tenantId: string;
@@ -11,94 +19,82 @@ export interface CommandContext {
   readonly medium: string;
 }
 
-interface WireCommand {
-  command_id: string;
-  tenant_id: string;
-  actor_id: string;
-  type: string;
-  medium: string;
-  ref_id?: string;
-  data?: unknown;
+// chat message.* facts/commands carry a ChatMessage in `data`; other payloads stay opaque bytes.
+function isChatMessage(medium: string, eventOrType: string): boolean {
+  return medium === "chat" && eventOrType.startsWith("message.");
+}
+
+function encodePayload(medium: string, type: string, data: unknown): Uint8Array {
+  if (data === undefined || data === null) return new Uint8Array();
+  if (data instanceof Uint8Array) return data; // opaque blob (e.g. SDP) — pass through
+  if (isChatMessage(medium, type)) {
+    const p = data as Partial<ChatPayload>;
+    return toBinary(ChatMessageSchema, create(ChatMessageSchema, { text: p.text ?? "", attachmentRefs: p.attachmentRefs ?? [] }));
+  }
+  return data as Uint8Array; // non-registry typed payload: caller supplies the encoded bytes
+}
+
+function decodePayload(medium: string, eventType: string, data: Uint8Array): unknown {
+  if (isChatMessage(medium, eventType)) {
+    const m = fromBinary(ChatMessageSchema, data);
+    return { text: m.text, attachmentRefs: m.attachmentRefs } satisfies ChatPayload;
+  }
+  return data; // opaque per registry — surfaced as raw bytes
 }
 
 export function encodeCommand(cmd: Command, ctx: CommandContext): Uint8Array {
-  const wire: WireCommand = {
-    command_id: cmd.commandId,
-    tenant_id: ctx.tenantId,
-    actor_id: ctx.actorId,
+  const msg = create(CommandSchema, {
+    commandId: cmd.commandId,
+    tenantId: ctx.tenantId,
+    actorId: ctx.actorId,
     type: cmd.type,
     medium: ctx.medium,
-    ...(cmd.refId !== undefined ? { ref_id: cmd.refId } : {}),
-    ...(cmd.data !== undefined ? { data: cmd.data } : {}),
-  };
-  return enc.encode(JSON.stringify(wire));
-}
-
-interface WireCommandResult {
-  command_id: string;
-  status: "accepted" | "rejected";
-  caused_by?: string;
-  reason?: string;
+    refId: cmd.refId ?? "",
+    data: encodePayload(ctx.medium, cmd.type, cmd.data),
+  });
+  return toBinary(CommandSchema, msg);
 }
 
 export function decodeCommandResult(bytes: Uint8Array): CommandResult {
-  const w = JSON.parse(dec.decode(bytes)) as WireCommandResult;
+  const w = fromBinary(CommandResultSchema, bytes);
+  const status = w.status === CommandResult_Status.ACCEPTED ? "accepted" : "rejected";
   return {
-    commandId: w.command_id,
-    status: w.status,
-    ...(w.caused_by !== undefined ? { causedBy: w.caused_by } : {}),
-    ...(w.reason !== undefined ? { reason: w.reason } : {}),
+    commandId: w.commandId,
+    status,
+    ...(w.causedBy !== "" ? { causedBy: w.causedBy } : {}),
+    ...(w.reason !== "" ? { reason: w.reason } : {}),
   };
-}
-
-interface WireEvent {
-  schema: string;
-  event_type: string;
-  event_id: string;
-  sequence: number;
-  occurred_at: string;
-  tenant_id: string;
-  actor_id: string;
-  medium: string;
-  media_profile?: string;
-  command_id?: string; // router-internal; not projected onto LogEvent (caused_by is the public link)
-  payload_hash?: string; // router-internal idempotency metadata; clients ignore it
-  caused_by?: string;
-  ref_id?: string;
-  data?: unknown;
 }
 
 export function decodeLogEvent(bytes: Uint8Array): LogEvent {
-  const w = JSON.parse(dec.decode(bytes)) as WireEvent;
+  const w = fromBinary(EventSchema, bytes);
   return {
     schema: w.schema,
-    tenantId: w.tenant_id,
-    eventType: w.event_type,
-    eventId: w.event_id,
-    sequence: w.sequence,
-    occurredAt: w.occurred_at,
-    actorId: w.actor_id,
+    tenantId: w.tenantId,
+    eventType: w.eventType,
+    eventId: w.eventId,
+    sequence: Number(w.sequence),
+    occurredAt: w.occurredAt ? timestampToIso(w.occurredAt.seconds, w.occurredAt.nanos) : "",
+    actorId: w.actorId,
     medium: w.medium,
-    ...(w.media_profile !== undefined ? { mediaProfile: w.media_profile } : {}),
-    ...(w.caused_by !== undefined ? { causedBy: w.caused_by } : {}),
-    ...(w.ref_id !== undefined ? { refId: w.ref_id } : {}),
-    data: w.data ?? null,
+    ...(w.mediaProfile !== "" ? { mediaProfile: w.mediaProfile } : {}),
+    ...(w.causedBy !== "" ? { causedBy: w.causedBy } : {}),
+    ...(w.refId !== "" ? { refId: w.refId } : {}),
+    data: decodePayload(w.medium, w.eventType, w.data),
   };
-}
-
-interface WireSignal {
-  schema: string;
-  type: string;
-  actor_id: string;
-  data?: unknown;
 }
 
 export function encodeSignal(type: string, actorId: string, data: unknown): Uint8Array {
-  const wire: WireSignal = {
+  const msg = create(SignalEventSchema, {
     schema: SCHEMA_V1,
     type,
-    actor_id: actorId,
-    ...(data !== undefined ? { data } : {}),
-  };
-  return enc.encode(JSON.stringify(wire));
+    actorId,
+    data: data instanceof Uint8Array ? data : new Uint8Array(),
+  });
+  return toBinary(SignalEventSchema, msg);
+}
+
+function timestampToIso(seconds: bigint, nanos: number): string {
+  const ms = Number(seconds) * 1000 + Math.floor(nanos / 1e6);
+  return new Date(ms).toISOString();
 }

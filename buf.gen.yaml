@@ -1,0 +1,13 @@
+version: v2
+clean: true
+plugins:
+  # Go — PUBLIC package (Desk imports it): gen/go/relaypoint/interaction/v1 (package interactionpb).
+  - local: protoc-gen-go
+    out: gen/go
+    opt: paths=source_relative
+  # TypeScript — @bufbuild/protoc-gen-es into the SDK source tree.
+  - local: ["pnpm", "-C", "clients/typescript", "exec", "protoc-gen-es"]
+    out: clients/typescript/src/gen
+    opt:
+      - target=ts
+      - import_extension=js

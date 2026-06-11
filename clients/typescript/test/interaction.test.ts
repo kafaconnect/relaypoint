@@ -3,7 +3,7 @@ import { RelayPointClient } from "../src/client.js";
 import { CommandRejectedError } from "../src/errors.js";
 import { cmdSubject, logSubject, signalSubject } from "../src/subjects.js";
 import { FakeTransport } from "../src/testing/fake-transport.js";
-import { immediate, readJson, take, wireEvent, wireResult } from "./helpers.js";
+import { immediate, readCommand, take, wireEvent, wireResult } from "./helpers.js";
 
 function setup() {
   const transport = new FakeTransport();
@@ -52,8 +52,8 @@ describe("command plane", () => {
     const result = await handle.send({ type: "message.created", commandId: "K", data: { text: "hi" } });
     expect(result.status).toBe("accepted");
     expect(transport.requests).toHaveLength(2);
-    expect(readJson(transport.requests[0]!.data).command_id).toBe("K");
-    expect(readJson(transport.requests[1]!.data).command_id).toBe("K");
+    expect(readCommand(transport.requests[0]!.data).command_id).toBe("K");
+    expect(readCommand(transport.requests[1]!.data).command_id).toBe("K");
   });
 
   // @spec:clientsdk.handle.concurrent-command-guard
@@ -115,9 +115,12 @@ describe("interaction handle", () => {
     handle.on("metadata", (c) => seen.push(c));
     void handle.events(); // open the live subscription
     const subject = logSubject("t1", "im-1");
-    transport.appendDurable(subject, 1, wireEvent({ sequence: 1, eventType: "interaction.context.updated", data: { name: "Acme" } }), true);
-    transport.appendDurable(subject, 2, wireEvent({ sequence: 2, eventType: "interaction.context.updated", data: { name: "Acme Corp" } }), true);
-    await vi.waitFor(() => expect(handle.metadata).toEqual({ name: "Acme Corp" }));
-    expect(seen).toEqual([{ name: "Acme" }, { name: "Acme Corp" }]);
+    // interaction.context.updated has no registry payload yet → `data` is opaque bytes.
+    const ctx1 = new Uint8Array([1]);
+    const ctx2 = new Uint8Array([2]);
+    transport.appendDurable(subject, 1, wireEvent({ sequence: 1, eventType: "interaction.context.updated", data: ctx1 }), true);
+    transport.appendDurable(subject, 2, wireEvent({ sequence: 2, eventType: "interaction.context.updated", data: ctx2 }), true);
+    await vi.waitFor(() => expect(handle.metadata).toEqual(ctx2));
+    expect(seen).toEqual([ctx1, ctx2]);
   });
 });
