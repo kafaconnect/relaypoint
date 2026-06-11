@@ -196,7 +196,7 @@ func TestRouter_TransferJoinedBeforeLeft(t *testing.T) {
 // actor_id that disagrees with it is still actor_mismatch.
 func TestRouter_DevFallbackSuffixIsAdvisory(t *testing.T) {
 	st := newFakeStore()
-	r := NewRouter(st)
+	r := NewRouter(st, WithDevMode())
 	// no Identity in ctx → dev fallback. A non-participant may still start+message (not enforced).
 	if got := r.HandleCommand(context.Background(), cmdSubj("t1", "iD", "u1"), agentCmd("s1", "t1", "u1", "interaction.started")); got.Status != statusAccepted {
 		t.Fatalf("dev-fallback start: %+v", got)
@@ -209,4 +209,161 @@ func TestRouter_DevFallbackSuffixIsAdvisory(t *testing.T) {
 	if got := r.HandleCommand(context.Background(), cmdSubj("t1", "iD", "u1"), body); got.Status != statusRejected || got.Reason != "actor_mismatch" {
 		t.Fatalf("dev-fallback suffix/payload mismatch must still be actor_mismatch, got %+v", got)
 	}
+}
+
+// @spec:signaling.feed.cmd-nonparticipant-denied (prod fail-closed)
+// In production (no dev mode) an unauthenticated command is rejected outright, an authenticated
+// non-participant agent is rejected not_a_participant, and a trusted-backend identity is accepted —
+// the role/participation gates run on the real identity, never the dev fallback (A1).
+func TestRouter_ProdFailClosed(t *testing.T) {
+	st := newFakeStore()
+	r := NewRouter(st) // prod: no dev mode
+	startWithDesk(t, r, "t1", "iX", "desk")
+
+	if got := r.HandleCommand(context.Background(), cmdSubj("t1", "iX", "u1"), agentCmd("c0", "t1", "u1", "message.created")); got.Status != statusRejected || got.Reason != "unauthenticated" {
+		t.Fatalf("unauthenticated command must fail closed, got %+v", got)
+	}
+	if got := r.HandleCommand(agentCtx("t1", "carol"), cmdSubj("t1", "iX", "carol"), agentCmd("c1", "t1", "carol", "message.created")); got.Status != statusRejected || got.Reason != "not_a_participant" {
+		t.Fatalf("prod non-participant must be not_a_participant, got %+v", got)
+	}
+	if got := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iX", "desk"),
+		privCmd("a1", "t1", "desk", "participant.assign", participationData{Agent: "carol", Reason: "r", RequestID: "q"})); got.Status != statusAccepted {
+		t.Fatalf("trusted backend assign must be accepted, got %+v", got)
+	}
+	if got := r.HandleCommand(agentCtx("t1", "carol"), cmdSubj("t1", "iX", "carol"), agentCmd("c2", "t1", "carol", "message.created")); got.Status != statusAccepted {
+		t.Fatalf("now-participant carol must be accepted, got %+v", got)
+	}
+}
+
+// @spec:signaling.feed.cmd-nonparticipant-denied (lifecycle gated)
+// interaction.ended is participant-gated: a non-participant agent cannot end an interaction, but an
+// assigned participant can (A2a).
+func TestRouter_EndedIsParticipantGated(t *testing.T) {
+	st := newFakeStore()
+	r := NewRouter(st)
+	startWithDesk(t, r, "t1", "iE", "desk")
+
+	if got := r.HandleCommand(agentCtx("t1", "mallory"), cmdSubj("t1", "iE", "mallory"), agentCmd("e0", "t1", "mallory", "interaction.ended")); got.Status != statusRejected || got.Reason != "not_a_participant" {
+		t.Fatalf("non-participant ending must be not_a_participant, got %+v", got)
+	}
+	if got := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iE", "desk"),
+		privCmd("a1", "t1", "desk", "participant.assign", participationData{Agent: "bob", Reason: "r", RequestID: "q"})); got.Status != statusAccepted {
+		t.Fatalf("assign bob: %+v", got)
+	}
+	if got := r.HandleCommand(agentCtx("t1", "bob"), cmdSubj("t1", "iE", "bob"), agentCmd("e1", "t1", "bob", "interaction.ended")); got.Status != statusAccepted {
+		t.Fatalf("participant bob ending must be accepted, got %+v", got)
+	}
+}
+
+// @spec:signaling.feed.privileged-actor-guarded (direct fact rejected)
+// A participation FACT (participant.joined/left, interaction.assigned) sent as a DIRECT command —
+// not via the privileged assign/unassign/transfer path — is rejected and writes no fact (A2b).
+func TestRouter_DirectParticipationFactRejected(t *testing.T) {
+	st := newFakeStore()
+	r := NewRouter(st)
+	startWithDesk(t, r, "t1", "iJ", "desk")
+	// even the trusted backend may not forge a raw fact directly.
+	for _, typ := range []string{"participant.joined", "participant.left", "interaction.assigned"} {
+		got := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iJ", "desk"), agentCmd("d-"+typ, "t1", "desk", typ))
+		if got.Status != statusRejected {
+			t.Fatalf("direct %s must be rejected, got %+v", typ, got)
+		}
+		for _, f := range factsOf(st, "t1", "iJ") {
+			if f.EventType == typ {
+				t.Fatalf("direct %s must write no fact", typ)
+			}
+		}
+	}
+}
+
+// @spec:signaling.feed.cmd-nonparticipant-denied (post-revocation race)
+// Participation is re-evaluated against fresh state after an OCC rebuild: a participant.left that
+// commits between the first fold and the append makes the racing command fail not_a_participant
+// rather than slip through (A3). leftMidAppendStore injects the revoking fact on the first append.
+func TestRouter_ParticipationRecheckedAfterOCCRebuild(t *testing.T) {
+	st := newFakeStore()
+	seed := NewRouter(st)
+	startWithDesk(t, seed, "t1", "iR", "desk")
+	if got := seed.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iR", "desk"),
+		privCmd("a1", "t1", "desk", "participant.assign", participationData{Agent: "bob", Reason: "r", RequestID: "q"})); got.Status != statusAccepted {
+		t.Fatalf("assign bob: %+v", got)
+	}
+
+	// bob is a participant when the command's first fold runs, but a participant.left(bob) lands
+	// (forcing an OCC conflict + rebuild) before bob's append commits.
+	leftBob := &Event{Schema: SchemaV1, EventType: "participant.left", EventId: "x", TenantId: "t1", ActorId: "bob"}
+	racing := &occInjectStore{fakeStore: st, inject: leftBob, subject: logSubjectFor("t1", "iR")}
+	r := NewRouter(racing)
+
+	got := r.HandleCommand(agentCtx("t1", "bob"), cmdSubj("t1", "iR", "bob"), agentCmd("m1", "t1", "bob", "message.created"))
+	if got.Status != statusRejected || got.Reason != "not_a_participant" {
+		t.Fatalf("post-revocation racing command must be not_a_participant, got %+v", got)
+	}
+}
+
+// @spec:signaling.feed.privileged-assign-to-fact (parent idempotency)
+// A retry of a privileged command's parent command_id carrying a DIVERGENT payload is rejected
+// before any sub-fact is re-emitted; a same-payload retry replays idempotently with no extra fact (A5).
+func TestRouter_PrivilegedParentIdempotency(t *testing.T) {
+	st := newFakeStore()
+	r := NewRouter(st)
+	startWithDesk(t, r, "t1", "iI", "desk")
+
+	first := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iI", "desk"),
+		privCmd("p1", "t1", "desk", "participant.assign", participationData{Agent: "bob", Reason: "r", RequestID: "q"}))
+	if first.Status != statusAccepted {
+		t.Fatalf("first assign: %+v", first)
+	}
+	joinedAfterFirst := 0
+	for _, f := range factsOf(st, "t1", "iI") {
+		if f.EventType == "participant.joined" {
+			joinedAfterFirst++
+		}
+	}
+
+	// same parent id, divergent payload (different agent) → conflict, no new fact.
+	div := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iI", "desk"),
+		privCmd("p1", "t1", "desk", "participant.assign", participationData{Agent: "carol", Reason: "r", RequestID: "q"}))
+	if div.Status != statusRejected {
+		t.Fatalf("divergent parent retry must conflict, got %+v", div)
+	}
+	// same parent id, same payload → idempotent replay.
+	same := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iI", "desk"),
+		privCmd("p1", "t1", "desk", "participant.assign", participationData{Agent: "bob", Reason: "r", RequestID: "q"}))
+	if same.Status != statusAccepted {
+		t.Fatalf("same-payload retry must replay accepted, got %+v", same)
+	}
+	joinedAfter := 0
+	for _, f := range factsOf(st, "t1", "iI") {
+		if f.EventType == "participant.joined" {
+			joinedAfter++
+		}
+	}
+	if joinedAfter != joinedAfterFirst {
+		t.Fatalf("retries appended extra participation facts: %d -> %d", joinedAfterFirst, joinedAfter)
+	}
+	if !FoldParticipation(factsOf(st, "t1", "iI")).IsParticipantNow("bob") || FoldParticipation(factsOf(st, "t1", "iI")).IsParticipantNow("carol") {
+		t.Fatal("divergent retry must not have joined carol")
+	}
+}
+
+// occInjectStore appends `inject` to `subject` exactly once, on the FIRST Append, before delegating —
+// so the next Append sees a moved stream sequence (OCC conflict) and the router re-folds fresh state.
+type occInjectStore struct {
+	*fakeStore
+	inject   *Event
+	subject  string
+	injected bool
+}
+
+func (s *occInjectStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+	if !s.injected && subject == s.subject {
+		s.injected = true
+		s.inject.Sequence = int64(expectedLastSubjSeq) + 1
+		raw, _ := proto.Marshal(s.inject)
+		if _, err := s.fakeStore.Append(subject, raw, "inject-"+dedupID, expectedLastSubjSeq); err != nil {
+			return false, err
+		}
+	}
+	return s.fakeStore.Append(subject, data, dedupID, expectedLastSubjSeq)
 }

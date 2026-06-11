@@ -33,7 +33,7 @@ func occRouters(t *testing.T) (*Router, *Router, nats.JetStreamContext) {
 	t.Cleanup(func() { rnc.Drain() })
 	store := NewJetStreamStore(rjs)
 	// Two routers, one store: distinct in-memory state, the same durable log — an HA pair.
-	return NewRouter(store), NewRouter(store), rjs
+	return NewRouter(store, WithDevMode()), NewRouter(store, WithDevMode()), rjs
 }
 
 func handle(r *Router, tenant, iid string, c *Command) *CommandResult {

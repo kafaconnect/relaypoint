@@ -39,7 +39,7 @@ func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 	if err := ResetLogStream(rjs); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	r := NewRouter(NewJetStreamStore(rjs))
+	r := NewRouter(NewJetStreamStore(rjs), WithDevMode())
 	sub, err := rnc.QueueSubscribe("tenant.*.interaction.*.cmd.*", "router", func(m *nats.Msg) {
 		b, _ := proto.Marshal(r.HandleCommand(context.Background(), m.Subject, m.Data))
 		if m.Reply != "" {

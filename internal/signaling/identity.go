@@ -2,23 +2,21 @@ package signaling
 
 import "context"
 
-// Role distinguishes an ordinary agent connection from a trusted backend (Desk). Privileged
-// participation commands (participant.assign/unassign/transfer) require RoleTrustedBackend; the
-// role MUST come from the authenticated identity, NEVER from the payload. See openspec change
-// agent-feed-fanout (Decision 2).
+// Role MUST come from the authenticated identity, never the payload; RoleTrustedBackend gates the
+// privileged participation commands. See openspec change agent-feed-fanout (Decision 2).
 type Role string
 
 const (
-	RoleAgent          Role = "agent"           // default — an ordinary agent connection
-	RoleTrustedBackend Role = "trusted-backend" // Desk: may issue privileged participation commands
+	RoleAgent          Role = "agent"
+	RoleTrustedBackend Role = "trusted-backend"
 )
 
-// Identity is the trusted source of tenant/actor — the authenticated caller, NOT the
-// client-controlled subject or payload, which the router validates against it.
+// Identity is the trusted source of tenant/actor — the authenticated caller, not the client-controlled
+// subject or payload, which the router validates against it. Empty fields mean unauthenticated.
 type Identity struct {
-	TenantID string // "" if the transport authenticated no tenant
-	UserID   string // "" if not yet bound (pre auth-callout)
-	Role     Role   // "" defaults to RoleAgent; RoleTrustedBackend gates privileged commands
+	TenantID string
+	UserID   string
+	Role     Role
 }
 
 type identityKey struct{}

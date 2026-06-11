@@ -64,7 +64,7 @@ const subj = "tenant.t1.interaction.iX.cmd.u1"
 
 func TestCore_NoNATS(t *testing.T) {
 	st := newFakeStore()
-	r := NewRouter(st)
+	r := NewRouter(st, WithDevMode())
 
 	if got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", "")); got.Status != statusAccepted || got.CausedBy != "c1" {
 		t.Fatalf("start: %+v (want accepted, caused_by=c1)", got)
@@ -101,11 +101,11 @@ func TestCore_NoNATS(t *testing.T) {
 // sequence and respects state — proving state is rebuilt from the durable log.
 func TestCore_RestartRebuild(t *testing.T) {
 	st := newFakeStore()
-	r1 := NewRouter(st)
+	r1 := NewRouter(st, WithDevMode())
 	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
 	r1.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "a"))
 
-	r2 := NewRouter(st) // restart: empty in-memory state
+	r2 := NewRouter(st, WithDevMode()) // restart: empty in-memory state
 	got := r2.HandleCommand(context.Background(), subj, cmd("c3", "t1", "message.created", "b"))
 	if got.Status != statusAccepted {
 		t.Fatalf("post-restart message rejected (state not rebuilt): %+v", got)
@@ -126,7 +126,7 @@ func TestCore_RestartRebuild(t *testing.T) {
 // With an authenticated Identity in context, a command whose actor_id differs from
 // the authenticated user is rejected (the subject/payload cannot forge authorship).
 func TestCore_ForgedAuthor(t *testing.T) {
-	r := NewRouter(newFakeStore())
+	r := NewRouter(newFakeStore(), WithDevMode())
 	ctx := WithIdentity(context.Background(), Identity{TenantID: "t1", UserID: "u1"})
 	body, _ := proto.Marshal(&Command{CommandId: "f1", TenantId: "t1", ActorId: "u2", Type: "interaction.started", Medium: "chat"})
 	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd.u1", body); got.Status != statusRejected {
@@ -167,11 +167,11 @@ func TestCore_DupPathChecksPayloadHash(t *testing.T) {
 	origCmd := &Command{CommandId: "m1", TenantId: "t1", ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatData("A")}
 	m1 := &Event{Schema: SchemaV1, EventType: "message.created", EventId: "e2", Sequence: 2, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "m1", PayloadHash: hashPayload(origCmd), CausedBy: "m1"}
 
-	r1 := NewRouter(&concurrentWriterStore{base: []*Event{started}, hidden: m1})
+	r1 := NewRouter(&concurrentWriterStore{base: []*Event{started}, hidden: m1}, WithDevMode())
 	if got := r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "B")); got.Status != statusRejected || got.Reason == "" {
 		t.Fatalf("dup-path divergent reuse must conflict, got %+v", got)
 	}
-	r2 := NewRouter(&concurrentWriterStore{base: []*Event{started}, hidden: m1})
+	r2 := NewRouter(&concurrentWriterStore{base: []*Event{started}, hidden: m1}, WithDevMode())
 	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A")); got.Status != statusAccepted {
 		t.Fatalf("dup-path matching reuse must replay accepted, got %+v", got)
 	}
@@ -181,11 +181,11 @@ func TestCore_DupPathChecksPayloadHash(t *testing.T) {
 // a reused command_id with a DIFFERENT payload conflicts; the SAME payload replays accepted.
 func TestCore_ConflictAcrossRestart(t *testing.T) {
 	st := newFakeStore()
-	r1 := NewRouter(st)
+	r1 := NewRouter(st, WithDevMode())
 	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
 	r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A"))
 
-	r2 := NewRouter(st) // restart: in-memory state gone, rebuilt from the log
+	r2 := NewRouter(st, WithDevMode()) // restart: in-memory state gone, rebuilt from the log
 	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "DIFF")); got.Status != statusRejected {
 		t.Fatalf("cross-restart divergent command_id reuse must conflict, got %+v", got)
 	}
@@ -196,7 +196,7 @@ func TestCore_ConflictAcrossRestart(t *testing.T) {
 
 // edit/delete must name the message they target (ref_id).
 func TestCore_RefIDRequired(t *testing.T) {
-	r := NewRouter(newFakeStore())
+	r := NewRouter(newFakeStore(), WithDevMode())
 	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
 	noRef, _ := proto.Marshal(&Command{CommandId: "u1", TenantId: "t1", ActorId: "u1", Type: "message.updated", Medium: "chat"})
 	if got := r.HandleCommand(context.Background(), subj, noRef); got.Status != statusRejected {
@@ -226,7 +226,7 @@ func (s *dupRebuildFailStore) Replay(string) ([]*Event, uint64, error) {
 // On a duplicate append whose reconciling rebuild fails, the interaction is evicted so the next
 // command rebuilds from the log instead of appending behind an untrustworthy sequence.
 func TestCore_DupRebuildFailEvicts(t *testing.T) {
-	r := NewRouter(&dupRebuildFailStore{})
+	r := NewRouter(&dupRebuildFailStore{}, WithDevMode())
 	got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
 	if got.Status != statusAccepted {
 		t.Fatalf("dup append should still ack accepted, got %+v", got)
@@ -275,7 +275,7 @@ func TestCore_OCCBeforeDedupReplaysAccepted(t *testing.T) {
 	committed := &Event{Schema: SchemaV1, EventType: "message.created", EventId: "e2", Sequence: 2, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "m1", PayloadHash: hashPayload(origCmd), CausedBy: "m1"}
 
 	st := &occBeforeDedupStore{base: []*Event{started}, hidden: committed}
-	r := NewRouter(st)
+	r := NewRouter(st, WithDevMode())
 
 	got := r.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A"))
 	if got.Status != statusAccepted {
@@ -292,7 +292,7 @@ func TestCore_OCCBeforeDedupReplaysAccepted(t *testing.T) {
 // a rejected command_id reused with a DIFFERENT payload is a conflict (key bound to
 // its first request); the SAME payload may be retried once it becomes legal.
 func TestCore_RejectedReuseConflict(t *testing.T) {
-	r := NewRouter(newFakeStore())
+	r := NewRouter(newFakeStore(), WithDevMode())
 	// message before start → rejected (and memoised with its payload hash)
 	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "A")); got.Status != statusRejected {
 		t.Fatalf("setup: want rejected, got %+v", got)
