@@ -88,3 +88,16 @@ message ChatMessage {
   string text = 1;
   repeated string attachment_refs = 2; // object refs (media off NATS)
 }
+
+// FeedControl is the ONE agent-feed message that is NOT a copied .log Event: a small
+// feed-control marker the Fan-out service writes into tenant.<tid>.agent.<aid>.feed.<iid>.
+// A feed consumer distinguishes it from a projected Event by the `control` type marker.
+// `feed.revoked` is the only control type this change defines (agent-feed-fanout, Decision 8):
+// it is the terminal tombstone for a revoked interaction, carrying the .log `sequence` at which
+// the membership interval closed, so a reconnecting client drops the interaction deterministically.
+message FeedControl {
+  string schema = 1;          // "relaypoint.interaction.v1"
+  string control = 2;         // "feed.revoked"
+  string interaction_id = 3;
+  int64 at_sequence = 4;      // the .log sequence at which membership closed
+}

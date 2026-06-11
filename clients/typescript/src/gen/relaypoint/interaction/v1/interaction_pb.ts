@@ -24,7 +24,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file relaypoint/interaction/v1/interaction.proto.
  */
 export const file_relaypoint_interaction_v1_interaction: GenFile = /*@__PURE__*/
-  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIuECCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDBIUCgxjb21tYW5kZWRfYnkYDyABKAkSDgoGcmVhc29uGBAgASgJEhIKCnJlcXVlc3RfaWQYESABKAkifgoHQ29tbWFuZBISCgpjb21tYW5kX2lkGAEgASgJEhEKCXRlbmFudF9pZBgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgR0eXBlGAQgASgJEg4KBm1lZGl1bRgFIAEoCRIOCgZyZWZfaWQYBiABKAkSDAoEZGF0YRgHIAEoDCLTAQoNQ29tbWFuZFJlc3VsdBISCgpjb21tYW5kX2lkGAEgASgJEj8KBnN0YXR1cxgCIAEoDjIvLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuQ29tbWFuZFJlc3VsdC5TdGF0dXMSEQoJY2F1c2VkX2J5GAMgASgJEg4KBnJlYXNvbhgEIAEoCSJKCgZTdGF0dXMSFgoSU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPU1RBVFVTX0FDQ0VQVEVEEAESEwoPU1RBVFVTX1JFSkVDVEVEEAIiSwoLU2lnbmFsRXZlbnQSDgoGc2NoZW1hGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIYWN0b3JfaWQYAyABKAkSDAoEZGF0YRgEIAEoDCI0CgtDaGF0TWVzc2FnZRIMCgR0ZXh0GAEgASgJEhcKD2F0dGFjaG1lbnRfcmVmcxgCIAMoCUJSWlBnaXRodWIuY29tL2thZmFjb25uZWN0L3JlbGF5cG9pbnQvZ2VuL2dvL3JlbGF5cG9pbnQvaW50ZXJhY3Rpb24vdjE7aW50ZXJhY3Rpb25wYmIGcHJvdG8z", [file_google_protobuf_timestamp]);
+  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIuECCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDBIUCgxjb21tYW5kZWRfYnkYDyABKAkSDgoGcmVhc29uGBAgASgJEhIKCnJlcXVlc3RfaWQYESABKAkifgoHQ29tbWFuZBISCgpjb21tYW5kX2lkGAEgASgJEhEKCXRlbmFudF9pZBgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgR0eXBlGAQgASgJEg4KBm1lZGl1bRgFIAEoCRIOCgZyZWZfaWQYBiABKAkSDAoEZGF0YRgHIAEoDCLTAQoNQ29tbWFuZFJlc3VsdBISCgpjb21tYW5kX2lkGAEgASgJEj8KBnN0YXR1cxgCIAEoDjIvLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuQ29tbWFuZFJlc3VsdC5TdGF0dXMSEQoJY2F1c2VkX2J5GAMgASgJEg4KBnJlYXNvbhgEIAEoCSJKCgZTdGF0dXMSFgoSU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPU1RBVFVTX0FDQ0VQVEVEEAESEwoPU1RBVFVTX1JFSkVDVEVEEAIiSwoLU2lnbmFsRXZlbnQSDgoGc2NoZW1hGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIYWN0b3JfaWQYAyABKAkSDAoEZGF0YRgEIAEoDCI0CgtDaGF0TWVzc2FnZRIMCgR0ZXh0GAEgASgJEhcKD2F0dGFjaG1lbnRfcmVmcxgCIAMoCSJbCgtGZWVkQ29udHJvbBIOCgZzY2hlbWEYASABKAkSDwoHY29udHJvbBgCIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgDIAEoCRITCgthdF9zZXF1ZW5jZRgEIAEoA0JSWlBnaXRodWIuY29tL2thZmFjb25uZWN0L3JlbGF5cG9pbnQvZ2VuL2dvL3JlbGF5cG9pbnQvaW50ZXJhY3Rpb24vdjE7aW50ZXJhY3Rpb25wYmIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * Event is the authoritative `.log` fact (one envelope for chat AND call; `medium` is a
@@ -334,4 +334,49 @@ export type ChatMessage = Message<"relaypoint.interaction.v1.ChatMessage"> & {
  */
 export const ChatMessageSchema: GenMessage<ChatMessage> = /*@__PURE__*/
   messageDesc(file_relaypoint_interaction_v1_interaction, 4);
+
+/**
+ * FeedControl is the ONE agent-feed message that is NOT a copied .log Event: a small
+ * feed-control marker the Fan-out service writes into tenant.<tid>.agent.<aid>.feed.<iid>.
+ * A feed consumer distinguishes it from a projected Event by the `control` type marker.
+ * `feed.revoked` is the only control type this change defines (agent-feed-fanout, Decision 8):
+ * it is the terminal tombstone for a revoked interaction, carrying the .log `sequence` at which
+ * the membership interval closed, so a reconnecting client drops the interaction deterministically.
+ *
+ * @generated from message relaypoint.interaction.v1.FeedControl
+ */
+export type FeedControl = Message<"relaypoint.interaction.v1.FeedControl"> & {
+  /**
+   * "relaypoint.interaction.v1"
+   *
+   * @generated from field: string schema = 1;
+   */
+  schema: string;
+
+  /**
+   * "feed.revoked"
+   *
+   * @generated from field: string control = 2;
+   */
+  control: string;
+
+  /**
+   * @generated from field: string interaction_id = 3;
+   */
+  interactionId: string;
+
+  /**
+   * the .log sequence at which membership closed
+   *
+   * @generated from field: int64 at_sequence = 4;
+   */
+  atSequence: bigint;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.FeedControl.
+ * Use `create(FeedControlSchema)` to create a new message.
+ */
+export const FeedControlSchema: GenMessage<FeedControl> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 5);
 

@@ -11,6 +11,7 @@ type (
 	CommandResult = interactionpb.CommandResult
 	SignalEvent   = interactionpb.SignalEvent
 	ChatMessage   = interactionpb.ChatMessage
+	FeedControl   = interactionpb.FeedControl
 )
 
 const SchemaV1 = "relaypoint.interaction.v1"

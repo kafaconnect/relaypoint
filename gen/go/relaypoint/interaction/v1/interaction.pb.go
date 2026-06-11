@@ -548,6 +548,80 @@ func (x *ChatMessage) GetAttachmentRefs() []string {
 	return nil
 }
 
+// FeedControl is the ONE agent-feed message that is NOT a copied .log Event: a small
+// feed-control marker the Fan-out service writes into tenant.<tid>.agent.<aid>.feed.<iid>.
+// A feed consumer distinguishes it from a projected Event by the `control` type marker.
+// `feed.revoked` is the only control type this change defines (agent-feed-fanout, Decision 8):
+// it is the terminal tombstone for a revoked interaction, carrying the .log `sequence` at which
+// the membership interval closed, so a reconnecting client drops the interaction deterministically.
+type FeedControl struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Schema        string                 `protobuf:"bytes,1,opt,name=schema,proto3" json:"schema,omitempty"`   // "relaypoint.interaction.v1"
+	Control       string                 `protobuf:"bytes,2,opt,name=control,proto3" json:"control,omitempty"` // "feed.revoked"
+	InteractionId string                 `protobuf:"bytes,3,opt,name=interaction_id,json=interactionId,proto3" json:"interaction_id,omitempty"`
+	AtSequence    int64                  `protobuf:"varint,4,opt,name=at_sequence,json=atSequence,proto3" json:"at_sequence,omitempty"` // the .log sequence at which membership closed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FeedControl) Reset() {
+	*x = FeedControl{}
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FeedControl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FeedControl) ProtoMessage() {}
+
+func (x *FeedControl) ProtoReflect() protoreflect.Message {
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FeedControl.ProtoReflect.Descriptor instead.
+func (*FeedControl) Descriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *FeedControl) GetSchema() string {
+	if x != nil {
+		return x.Schema
+	}
+	return ""
+}
+
+func (x *FeedControl) GetControl() string {
+	if x != nil {
+		return x.Control
+	}
+	return ""
+}
+
+func (x *FeedControl) GetInteractionId() string {
+	if x != nil {
+		return x.InteractionId
+	}
+	return ""
+}
+
+func (x *FeedControl) GetAtSequence() int64 {
+	if x != nil {
+		return x.AtSequence
+	}
+	return 0
+}
+
 var File_relaypoint_interaction_v1_interaction_proto protoreflect.FileDescriptor
 
 const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
@@ -602,7 +676,13 @@ const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\x04data\x18\x04 \x01(\fR\x04data\"J\n" +
 	"\vChatMessage\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12'\n" +
-	"\x0fattachment_refs\x18\x02 \x03(\tR\x0eattachmentRefsBRZPgithub.com/kafaconnect/relaypoint/gen/go/relaypoint/interaction/v1;interactionpbb\x06proto3"
+	"\x0fattachment_refs\x18\x02 \x03(\tR\x0eattachmentRefs\"\x87\x01\n" +
+	"\vFeedControl\x12\x16\n" +
+	"\x06schema\x18\x01 \x01(\tR\x06schema\x12\x18\n" +
+	"\acontrol\x18\x02 \x01(\tR\acontrol\x12%\n" +
+	"\x0einteraction_id\x18\x03 \x01(\tR\rinteractionId\x12\x1f\n" +
+	"\vat_sequence\x18\x04 \x01(\x03R\n" +
+	"atSequenceBRZPgithub.com/kafaconnect/relaypoint/gen/go/relaypoint/interaction/v1;interactionpbb\x06proto3"
 
 var (
 	file_relaypoint_interaction_v1_interaction_proto_rawDescOnce sync.Once
@@ -617,7 +697,7 @@ func file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP() []byte {
 }
 
 var file_relaypoint_interaction_v1_interaction_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_relaypoint_interaction_v1_interaction_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_relaypoint_interaction_v1_interaction_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_relaypoint_interaction_v1_interaction_proto_goTypes = []any{
 	(CommandResult_Status)(0),     // 0: relaypoint.interaction.v1.CommandResult.Status
 	(*Event)(nil),                 // 1: relaypoint.interaction.v1.Event
@@ -625,10 +705,11 @@ var file_relaypoint_interaction_v1_interaction_proto_goTypes = []any{
 	(*CommandResult)(nil),         // 3: relaypoint.interaction.v1.CommandResult
 	(*SignalEvent)(nil),           // 4: relaypoint.interaction.v1.SignalEvent
 	(*ChatMessage)(nil),           // 5: relaypoint.interaction.v1.ChatMessage
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(*FeedControl)(nil),           // 6: relaypoint.interaction.v1.FeedControl
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
 }
 var file_relaypoint_interaction_v1_interaction_proto_depIdxs = []int32{
-	6, // 0: relaypoint.interaction.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
+	7, // 0: relaypoint.interaction.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
 	0, // 1: relaypoint.interaction.v1.CommandResult.status:type_name -> relaypoint.interaction.v1.CommandResult.Status
 	2, // [2:2] is the sub-list for method output_type
 	2, // [2:2] is the sub-list for method input_type
@@ -648,7 +729,7 @@ func file_relaypoint_interaction_v1_interaction_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_relaypoint_interaction_v1_interaction_proto_rawDesc), len(file_relaypoint_interaction_v1_interaction_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
