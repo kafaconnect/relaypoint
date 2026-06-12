@@ -251,6 +251,8 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 			return p.src.Nak(f)
 		}
 		recipients = agents
+		log.Info("projector.roster-fanout", "tenant", e.TenantId, "subject_iid", iid,
+			"sequence", e.Sequence, "agents", agents)
 	case len(p.cfg.TenantWideAgents[e.TenantId]) > 0:
 		recipients = p.cfg.TenantWideAgents[e.TenantId] // dev/test shortcut, no participation gate
 	}

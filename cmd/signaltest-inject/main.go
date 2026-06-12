@@ -23,7 +23,26 @@ func main() {
 	text := env("TEXT", "inbound via RP")
 	cmdID := env("CMD_ID", fmt.Sprintf("inject-%d", time.Now().UnixNano()))
 
-	nc, err := nats.Connect(url, nats.Name("signaltest-inject"))
+	opts := []nats.Option{
+		nats.Name("signaltest-inject"),
+		nats.Timeout(5 * time.Second),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(10),
+		nats.ReconnectWait(time.Second),
+	}
+	if u := os.Getenv("NATS_USER"); u != "" {
+		opts = append(opts, nats.UserInfo(u, os.Getenv("NATS_PASSWORD")))
+	}
+	var nc *nats.Conn
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		nc, err = nats.Connect(url, opts...)
+		if err == nil {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "connect attempt %d: %v\n", attempt, err)
+		time.Sleep(time.Second)
+	}
 	must(err)
 	defer nc.Drain()
 
