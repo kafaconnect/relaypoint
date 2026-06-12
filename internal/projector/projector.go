@@ -85,6 +85,14 @@ type Config struct {
 	// leaves every feed empty. Participation is still folded (snapshots stay correct); only the
 	// recipient set is overridden. Production leaves this nil → strict per-participation fan-out.
 	TenantWideAgents map[string][]string
+
+	// Roster is the PRODUCTION tenant-shared fan-out source (off by default, nil): when set, every
+	// fact of a tenant fans out to ALL agents the roster reports for that tenant (sourced from desk's
+	// real Zitadel roster, no hardcode). It is the authoritative successor to TenantWideAgents and
+	// takes precedence over it. Participation is still folded (snapshots stay correct); only the
+	// recipient set is overridden, exactly like TenantWideAgents. Future per-participation mode leaves
+	// this nil. A roster lookup error Naks the fact (redelivery), never drops it.
+	Roster Roster
 }
 
 func (c Config) withDefaults() Config {
@@ -232,8 +240,19 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	// their agent but no fact at S > L reaches an already-left agent.
 	view.ApplyFact(e)
 	recipients := coveredBy(view, e.Sequence)
-	if agents := p.cfg.TenantWideAgents[e.TenantId]; len(agents) > 0 {
-		recipients = agents // dev/test shortcut: fan to the configured tenant agents, no participation gate
+	switch {
+	case p.cfg.Roster != nil:
+		// Production tenant-shared fan-out: ALL agents of the tenant per desk's real roster. A
+		// roster outage Naks (redelivery) rather than dropping the fact or fanning to a stale set.
+		agents, rerr := p.cfg.Roster.Agents(ctx, e.TenantId)
+		if rerr != nil {
+			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
+				"sequence", e.Sequence, "err", rerr.Error())
+			return p.src.Nak(f)
+		}
+		recipients = agents
+	case len(p.cfg.TenantWideAgents[e.TenantId]) > 0:
+		recipients = p.cfg.TenantWideAgents[e.TenantId] // dev/test shortcut, no participation gate
 	}
 
 	payload, err := proto.Marshal(e)
