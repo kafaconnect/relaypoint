@@ -9,6 +9,10 @@ type Role string
 const (
 	RoleAgent          Role = "agent"
 	RoleTrustedBackend Role = "trusted-backend"
+	// RoleVisitor is an end-user widget session (F1): NOT an agent. Its grant is a single
+	// conversation, subscribe-only (no feed, no cmd, no .log, no other conversation). The
+	// ConversationID field carries the one conversation it is bound to at mint time.
+	RoleVisitor Role = "visitor"
 )
 
 // Identity is the trusted source of tenant/actor — the authenticated caller, not the client-controlled
@@ -17,6 +21,10 @@ type Identity struct {
 	TenantID string
 	UserID   string
 	Role     Role
+	// ConversationID is set ONLY for RoleVisitor: the one conversation a `vis_` token is bound to
+	// (the token's server-resolved `cid`). It scopes the visitor's subscribe-only grant; agents and
+	// trusted backends leave it empty.
+	ConversationID string
 }
 
 type identityKey struct{}

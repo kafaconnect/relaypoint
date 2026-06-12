@@ -1,0 +1,1070 @@
+diff --git a/cmd/authcallout/main.go b/cmd/authcallout/main.go
+index 7f7684e..b1926dc 100644
+--- a/cmd/authcallout/main.go
++++ b/cmd/authcallout/main.go
+@@ -8,9 +8,11 @@ package main
+ import (
+ 	"encoding/base64"
+ 	"log/slog"
++	"net/http"
+ 	"os"
+ 	"os/signal"
+ 	"syscall"
++	"time"
+ 
+ 	"github.com/nats-io/nats.go"
+ 
+@@ -28,7 +30,18 @@ func main() {
+ 	issuerSeed := decodeSeed(mustEnv("AUTH_CALLOUT_ISSUER_SEED"))
+ 	tokenSecret := []byte(mustEnv("AUTH_TOKEN_SECRET"))
+ 
+-	verifier := authcallout.NewHMACVerifier(tokenSecret)
++	// F1: RP is the SOLE responder. The verify ladder is agent/trusted-backend (HMAC dev token) →
++	// desk visitor `vis_` (EdDSA, verified against desk's published JWKS). When DESK_INGRESS_JWKS_URL
++	// is unset the visitor link is omitted — a `vis_` then simply has no accepting verifier and is denied
++	// (fail closed), so RP never mints a visitor grant without an explicit desk JWKS source configured.
++	var verifier authcallout.Verifier = authcallout.NewHMACVerifier(tokenSecret)
++	if jwksURL := os.Getenv("DESK_INGRESS_JWKS_URL"); jwksURL != "" {
++		ttl := envDuration("DESK_INGRESS_JWKS_TTL", 5*time.Minute)
++		src := authcallout.NewHTTPJWKSSource(jwksURL, &http.Client{Timeout: 5 * time.Second})
++		visitor := authcallout.NewVisitorVerifier(src, ttl, authcallout.WithVisitorFetchTimeout(5*time.Second))
++		verifier = authcallout.NewChainVerifier(verifier, visitor)
++		slog.Info("authcallout.visitor.enabled", "jwks_ttl", ttl.String())
++	}
+ 	resp, err := authcallout.NewResponder(verifier, issuerSeed, account)
+ 	must("responder", err)
+ 
+@@ -64,6 +77,16 @@ func envOr(k, d string) string {
+ 	return d
+ }
+ 
++func envDuration(k string, d time.Duration) time.Duration {
++	if v := os.Getenv(k); v != "" {
++		if parsed, err := time.ParseDuration(v); err == nil {
++			return parsed
++		}
++		slog.Warn("authcallout.env.bad-duration", "key", k, "fallback", d.String())
++	}
++	return d
++}
++
+ func mustEnv(k string) string {
+ 	v := os.Getenv(k)
+ 	if v == "" {
+diff --git a/go.mod b/go.mod
+index 4e4a9af..d0893e3 100644
+--- a/go.mod
++++ b/go.mod
+@@ -4,6 +4,7 @@ go 1.26
+ 
+ require (
+ 	github.com/google/uuid v1.6.0
++	github.com/lestrrat-go/jwx/v2 v2.1.6
+ 	github.com/nats-io/jwt/v2 v2.8.2
+ 	github.com/nats-io/nats.go v1.37.0
+ 	github.com/nats-io/nkeys v0.4.16
+@@ -12,8 +13,16 @@ require (
+ )
+ 
+ require (
++	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
++	github.com/goccy/go-json v0.10.3 // indirect
+ 	github.com/klauspost/compress v1.17.2 // indirect
++	github.com/lestrrat-go/blackmagic v1.0.3 // indirect
++	github.com/lestrrat-go/httpcc v1.0.1 // indirect
++	github.com/lestrrat-go/httprc v1.0.6 // indirect
++	github.com/lestrrat-go/iter v1.0.2 // indirect
++	github.com/lestrrat-go/option v1.0.1 // indirect
+ 	github.com/nats-io/nuid v1.0.1 // indirect
++	github.com/segmentio/asm v1.2.0 // indirect
+ 	golang.org/x/crypto v0.52.0 // indirect
+ 	golang.org/x/sys v0.45.0 // indirect
+ )
+diff --git a/go.sum b/go.sum
+index 5a01981..bee3af7 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,9 +1,28 @@
++github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
++github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
++github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
++github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 h1:NMZiJj8QnKe1LgsbDayM4UoHwbvwDRwnI3hwNaAHRnc=
++github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0/go.mod h1:ZXNYxsqcloTdSy/rNShjYzMhyjf0LaoftYK0p+A3h40=
++github.com/goccy/go-json v0.10.3 h1:KZ5WoDbxAIgm2HNbYckL0se1fHD6rz5j4ywS6ebzDqA=
++github.com/goccy/go-json v0.10.3/go.mod h1:oq7eo15ShAhp70Anwd5lgX2pLfOS3QCiwU/PULtXL6M=
+ github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
+ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
+ github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+ github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+ github.com/klauspost/compress v1.17.2 h1:RlWWUY/Dr4fL8qk9YG7DTZ7PDgME2V4csBXA8L/ixi4=
+ github.com/klauspost/compress v1.17.2/go.mod h1:ntbaceVETuRiXiv4DpjP66DpAtAGkEQskQzEyD//IeE=
++github.com/lestrrat-go/blackmagic v1.0.3 h1:94HXkVLxkZO9vJI/w2u1T0DAoprShFd13xtnSINtDWs=
++github.com/lestrrat-go/blackmagic v1.0.3/go.mod h1:6AWFyKNNj0zEXQYfTMPfZrAXUWUfTIZ5ECEUEJaijtw=
++github.com/lestrrat-go/httpcc v1.0.1 h1:ydWCStUeJLkpYyjLDHihupbn2tYmZ7m22BGkcvZZrIE=
++github.com/lestrrat-go/httpcc v1.0.1/go.mod h1:qiltp3Mt56+55GPVCbTdM9MlqhvzyuL6W/NMDA8vA5E=
++github.com/lestrrat-go/httprc v1.0.6 h1:qgmgIRhpvBqexMJjA/PmwSvhNk679oqD1RbovdCGW8k=
++github.com/lestrrat-go/httprc v1.0.6/go.mod h1:mwwz3JMTPBjHUkkDv/IGJ39aALInZLrhBp0X7KGUZlo=
++github.com/lestrrat-go/iter v1.0.2 h1:gMXo1q4c2pHmC3dn8LzRhJfP1ceCbgSiT9lUydIzltI=
++github.com/lestrrat-go/iter v1.0.2/go.mod h1:Momfcq3AnRlRjI5b5O8/G5/BvpzrhoFTZcn06fEOPt4=
++github.com/lestrrat-go/jwx/v2 v2.1.6 h1:hxM1gfDILk/l5ylers6BX/Eq1m/pnxe9NBwW6lVfecA=
++github.com/lestrrat-go/jwx/v2 v2.1.6/go.mod h1:Y722kU5r/8mV7fYDifjug0r8FK8mZdw0K0GpJw/l8pU=
++github.com/lestrrat-go/option v1.0.1 h1:oAzP2fvZGQKWkvHa1/SAcFolBEca1oN+mQ7eooNBEYU=
++github.com/lestrrat-go/option v1.0.1/go.mod h1:5ZHFbivi4xwXxhxY9XHDe2FHo6/Z7WWmtT7T5nBBp3I=
+ github.com/nats-io/jwt/v2 v2.8.2 h1:XXRgB60MSTnqsRwejQurVDs/hcv2dkt+86GjI+I/bMc=
+ github.com/nats-io/jwt/v2 v2.8.2/go.mod h1:Ag/56sq9OblL4JgdYufDd16Egb17Kr/8WwwuO/forVc=
+ github.com/nats-io/nats.go v1.37.0 h1:07rauXbVnnJvv1gfIyghFEo6lUcYRY0WXc3x7x0vUxE=
+@@ -12,6 +31,15 @@ github.com/nats-io/nkeys v0.4.16 h1:rd5oAuLOb8mnAycB0xleuEBNS1pVVnN0fv/FF34Eypg=
+ github.com/nats-io/nkeys v0.4.16/go.mod h1:llLgWoI0o4z/Q57q2R1kHfmocyhGV6VG/U18Glg1Afs=
+ github.com/nats-io/nuid v1.0.1 h1:5iA8DT8V7q8WK2EScv2padNa/rTESc1KdnPw4TC2paw=
+ github.com/nats-io/nuid v1.0.1/go.mod h1:19wcPz3Ph3q0Jbyiqsd0kePYG7A95tJPxeL+1OSON2c=
++github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
++github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
++github.com/segmentio/asm v1.2.0 h1:9BQrFxC+YOHJlTlHGkTrFWf59nbL3XnCoFLTwDCI7ys=
++github.com/segmentio/asm v1.2.0/go.mod h1:BqMnlJP91P8d+4ibuonYZw9mfnzI9HfxselHZr5aAcs=
++github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
++github.com/stretchr/testify v1.6.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
++github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
++github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
++github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+ golang.org/x/crypto v0.52.0 h1:RMs7fP2rXdep0CftQlK8Uf+kibLm7qkCcradZWYz988=
+ golang.org/x/crypto v0.52.0/go.mod h1:1QgfPxDqh0T2M/elOJtp9RvuR95kVjir0e6/BvEmGbc=
+ golang.org/x/sync v0.8.0 h1:3NFvSEYkUoMifnESzZl15y791HH1qU2xm6eCJU5ZPXQ=
+@@ -20,3 +48,7 @@ golang.org/x/sys v0.45.0 h1:dO4czNzziLiiXplLQgBCEpCvXQ3dnkn0SdaZSYdQ+FY=
+ golang.org/x/sys v0.45.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
+ google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
+ google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
++gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
++gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
++gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
++gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+diff --git a/internal/authcallout/grants.go b/internal/authcallout/grants.go
+index c02f6d2..606f3a6 100644
+--- a/internal/authcallout/grants.go
++++ b/internal/authcallout/grants.go
+@@ -37,6 +37,33 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
+ 	inbox := "_INBOX_" + conn + ".>"
+ 
+ 	switch signaling.RoleOf(id) {
++	case signaling.RoleVisitor:
++		// F1 (design §3 / §3d): a desk widget visitor reads exactly ONE conversation's events plane and
++		// nothing else. The conversation is bound at mint time (the `vis_` cid, server-resolved), so a
++		// visitor CANNOT subscribe another conversation, the agent feed, .log, or publish anything. This
++		// mirrors verbatim the subscribe-only one-conversation grant desk's responder used to mint — only
++		// the host moved to RP. The kept desk-published data plane is `tenant.<t>.conversation.<cid>.events`.
++		cid := id.ConversationID
++		if err := validSubjectToken(cid); err != nil {
++			return Grant{}, fmt.Errorf("authcallout: invalid conversation: %w", err)
++		}
++		return Grant{
++			PubAllow: nil, // a visitor publishes NOTHING — it only consumes its conversation's events
++			PubDeny:  []string{">"},
++			SubAllow: []string{
++				// The ONLY positive subscribe: this one conversation's events. Every other conversation,
++				// the agent feed, and .log are simply absent from the allow-list ⇒ denied by default. We do
++				// NOT add a `tenant.*.conversation.*.events` SubDeny because NATS deny outranks allow on
++				// overlap — a wildcard events-deny would also shadow this literal and break the visitor's own read.
++				"tenant." + t + ".conversation." + cid + ".events",
++				inbox,
++			},
++			SubDeny: []string{
++				"_INBOX.>",                   // the broad shared inbox (only the minted _INBOX_<conn> is allowed)
++				"tenant.*.interaction.*.log", // never the raw log plane
++				"tenant.*.agent.*.feed.>",    // never any agent feed
++			},
++		}, nil
+ 	case signaling.RoleTrustedBackend:
+ 		return Grant{
+ 			PubAllow: []string{
+diff --git a/internal/authcallout/jwks_http.go b/internal/authcallout/jwks_http.go
+new file mode 100644
+index 0000000..89e7798
+--- /dev/null
++++ b/internal/authcallout/jwks_http.go
+@@ -0,0 +1,45 @@
++package authcallout
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++)
++
++// HTTPJWKSSource fetches desk's published visitor JWKS over HTTP (the in-cluster desk-api Service's
++// GET /ingress/rp-jwks endpoint, design §3 / desk visitor_exchange.go JWKS()). It is the only network
++// adapter behind the JWKSSource port; the verifier's caching/rotation policy never touches the wire, so
++// unit tests inject a fake source and stay offline (loose-coupling HARD RULE).
++type HTTPJWKSSource struct {
++	url    string
++	client *http.Client
++}
++
++// NewHTTPJWKSSource builds the source for the configured URL (DESK_INGRESS_JWKS_URL). A nil client uses
++// http.DefaultClient; callers pass a timeout-bounded client in production.
++func NewHTTPJWKSSource(url string, client *http.Client) *HTTPJWKSSource {
++	if client == nil {
++		client = http.DefaultClient
++	}
++	return &HTTPJWKSSource{url: url, client: client}
++}
++
++// Fetch GETs the JWKS bytes. Any non-2xx, transport error, or read error returns a non-nil error so the
++// verifier fails the token closed. The body is NOT logged (it is public key material, but the no-material
++// logging rule applies regardless).
++func (s *HTTPJWKSSource) Fetch(ctx context.Context) ([]byte, error) {
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
++	if err != nil {
++		return nil, err
++	}
++	resp, err := s.client.Do(req)
++	if err != nil {
++		return nil, err
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode/100 != 2 {
++		return nil, fmt.Errorf("authcallout: jwks fetch status %d", resp.StatusCode)
++	}
++	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
++}
+diff --git a/internal/authcallout/responder_integration_test.go b/internal/authcallout/responder_integration_test.go
+index 843f205..2d69104 100644
+--- a/internal/authcallout/responder_integration_test.go
++++ b/internal/authcallout/responder_integration_test.go
+@@ -147,6 +147,87 @@ func dialResponder(t *testing.T, url, pass string, kp nkeys.KeyPair) {
+ 	t.Cleanup(func() { nc.Drain() })
+ }
+ 
++// dialResponderChain wires the responder with the F1 verify ladder (HMAC → visitor over the supplied
++// JWKSSource), so the embedded NATS enforces the minted VISITOR ACL end-to-end — the authoritative proof
++// the one-conversation scoping holds, not just the pure policy.
++func dialResponderChain(t *testing.T, url, pass string, kp nkeys.KeyPair, vis Verifier) {
++	t.Helper()
++	seed, _ := kp.Seed()
++	chain := NewChainVerifier(NewHMACVerifier([]byte(tokenSecret)), vis)
++	r, err := NewResponder(chain, seed, "APP")
++	if err != nil {
++		t.Fatal(err)
++	}
++	nc, err := connectWithRetry(t, url, nats.UserInfo("authsvc", pass))
++	if err != nil {
++		t.Fatalf("responder connect: %v", err)
++	}
++	if _, err := r.Subscribe(nc); err != nil {
++		t.Fatalf("responder subscribe: %v", err)
++	}
++	t.Cleanup(func() { nc.Drain() })
++}
++
++// @spec:authcallout.visitor.grant-scoped-one-conversation (enforced by real NATS)
++// A desk `vis_` for conversation C1 mints a credential that subscribes ONLY tenant.T.conversation.C1.events,
++// is denied C2 / the agent feed / .log / publish — the embedded server, not the policy unit test, enforces it.
++func TestAuthCalloutMintsVisitorACL(t *testing.T) {
++	url, kp, pass := startNATS(t)
++
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(m.jwks(t), nil)
++	vis := NewVisitorVerifier(src, time.Minute)
++	dialResponderChain(t, url, pass, kp, vis)
++
++	visTok := m.mint(t, mintOpts{sub: "sess1", tid: "T", cid: "C1"})
++
++	if !canSub(t, url, visTok, "tenant.T.conversation.C1.events") {
++		t.Error("visitor must subscribe its own conversation events")
++	}
++	if canSub(t, url, visTok, "tenant.T.conversation.C2.events") {
++		t.Error("visitor must NOT subscribe another conversation (cid-bound)")
++	}
++	if canSub(t, url, visTok, "tenant.T.agent.alice.feed.i1") {
++		t.Error("visitor must NOT subscribe an agent feed")
++	}
++	if canSub(t, url, visTok, "tenant.T.interaction.i1.log") {
++		t.Error("visitor must NOT subscribe raw .log")
++	}
++	if canSub(t, url, visTok, "_INBOX.>") {
++		t.Error("visitor must NOT subscribe broad _INBOX.>")
++	}
++	if canPub(t, url, visTok, "tenant.T.conversation.C1.events") {
++		t.Error("visitor must NOT publish its conversation (read-only)")
++	}
++	if canPub(t, url, visTok, "tenant.T.interaction.i1.cmd.sess1") {
++		t.Error("visitor must NOT publish any cmd")
++	}
++}
++
++// @spec:authcallout.responder.chain-no-regression (enforced by real NATS)
++// With the visitor link wired, an AGENT token still mints exactly its existing feed grant — the ladder
++// does not regress the agent path.
++func TestAuthCalloutChainAgentUnregressed(t *testing.T) {
++	url, kp, pass := startNATS(t)
++
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(m.jwks(t), nil)
++	dialResponderChain(t, url, pass, kp, NewVisitorVerifier(src, time.Minute))
++
++	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
++	if !canSub(t, url, aliceTok, "tenant.T.agent.alice.feed.>") {
++		t.Error("agent feed read regressed under the chain")
++	}
++	if canSub(t, url, aliceTok, "tenant.T.conversation.C1.events") {
++		t.Error("agent must NOT gain the visitor conversation plane")
++	}
++	if !canPub(t, url, aliceTok, "tenant.T.interaction.i1.cmd.alice") {
++		t.Error("agent cmd publish regressed under the chain")
++	}
++}
++
+ func connectWithRetry(t *testing.T, url string, opts ...nats.Option) (*nats.Conn, error) {
+ 	t.Helper()
+ 	var last error
+diff --git a/internal/authcallout/token.go b/internal/authcallout/token.go
+index fae20ce..626cc02 100644
+--- a/internal/authcallout/token.go
++++ b/internal/authcallout/token.go
+@@ -19,6 +19,32 @@ type Verifier interface {
+ 	Verify(token string) (signaling.Identity, error)
+ }
+ 
++// ChainVerifier is the F1 verify ladder: RP is the SOLE responder, so one connection token may be an
++// agent/trusted-backend token OR a desk visitor `vis_` token. It tries each Verifier in order and returns
++// the first success; if every link rejects, the LAST error is returned (the responder turns it into a
++// signed DENY). The order is fixed at construction — put the cheapest/most-common first. No link's failure
++// short-circuits the others, but a success is final (fail closed only when ALL reject).
++type ChainVerifier struct {
++	links []Verifier
++}
++
++// NewChainVerifier builds the ladder. With zero links every Verify denies (fail closed).
++func NewChainVerifier(links ...Verifier) *ChainVerifier {
++	return &ChainVerifier{links: links}
++}
++
++func (c *ChainVerifier) Verify(token string) (signaling.Identity, error) {
++	var lastErr error = fmt.Errorf("authcallout: no verifier accepted the token")
++	for _, l := range c.links {
++		id, err := l.Verify(token)
++		if err == nil {
++			return id, nil
++		}
++		lastErr = err
++	}
++	return signaling.Identity{}, lastErr
++}
++
+ // claims is the dev token body, an HMAC-signed `<base64(json)>.<base64(hmac)>` bearer. The expiry is
+ // server-validated against Now, never a client wall-clock (signaling-core time-authority rule).
+ type claims struct {
+diff --git a/internal/authcallout/visitor_grant_test.go b/internal/authcallout/visitor_grant_test.go
+new file mode 100644
+index 0000000..5f6f97a
+--- /dev/null
++++ b/internal/authcallout/visitor_grant_test.go
+@@ -0,0 +1,107 @@
++package authcallout
++
++import (
++	"testing"
++
++	"github.com/kafaconnect/relaypoint/internal/signaling"
++)
++
++// @spec:authcallout.visitor.grant-scoped-one-conversation
++// A visitor grant subscribes EXACTLY its one conversation's events plane plus its minted inbox, publishes
++// nothing, and is denied every other conversation, the agent feed, and .log.
++func TestGrantsForVisitor(t *testing.T) {
++	id := signaling.Identity{TenantID: "T", UserID: "sess9", Role: signaling.RoleVisitor, ConversationID: "C1"}
++	g, err := GrantsFor(id, "v1")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	cases := []struct {
++		name  string
++		kind  string
++		subj  string
++		allow bool
++	}{
++		{"sub own conversation events", "sub", "tenant.T.conversation.C1.events", true},
++		{"deny other conversation events", "sub", "tenant.T.conversation.C2.events", false},
++		{"deny agent feed", "sub", "tenant.T.agent.alice.feed.i1", false},
++		{"deny raw log", "sub", "tenant.T.interaction.i1.log", false},
++		{"deny tenant-wide", "sub", "tenant.T.routing.offer.user.alice", false},
++		{"sub own inbox", "sub", "_INBOX_v1.reply", true},
++		{"deny broad inbox", "sub", "_INBOX.reply", false},
++		{"deny other conn inbox", "sub", "_INBOX_v2.reply", false},
++		{"deny publish own conversation", "pub", "tenant.T.conversation.C1.events", false},
++		{"deny publish cmd", "pub", "tenant.T.interaction.i1.cmd.sess9", false},
++		{"deny publish anything", "pub", "tenant.T.whatever", false},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			var got bool
++			if c.kind == "pub" {
++				got = allowsPublish(g, c.subj)
++			} else {
++				got = allowsSubscribe(g, c.subj)
++			}
++			if got != c.allow {
++				t.Fatalf("%s %s: allow=%v want %v", c.kind, c.subj, got, c.allow)
++			}
++		})
++	}
++}
++
++// @spec:authcallout.visitor.grant-binds-cid
++// A visitor for conversation A cannot subscribe conversation B: the grant binds the cid, so swapping the
++// Identity's ConversationID changes ONLY which conversation literal is permitted.
++func TestVisitorGrantBindsConversation(t *testing.T) {
++	a, err := GrantsFor(signaling.Identity{TenantID: "T", UserID: "s", Role: signaling.RoleVisitor, ConversationID: "A"}, "v1")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !allowsSubscribe(a, "tenant.T.conversation.A.events") {
++		t.Fatal("visitor A must read conversation A")
++	}
++	if allowsSubscribe(a, "tenant.T.conversation.B.events") {
++		t.Fatal("visitor A must NOT read conversation B")
++	}
++}
++
++// @spec:authcallout.visitor.grant-binds-cid
++// An unsafe/empty conversation id is rejected at the grant boundary (it is interpolated into ACL subjects).
++func TestVisitorGrantRejectsUnsafeConversation(t *testing.T) {
++	for _, cid := range []string{"", "A.B", "A*", "A>"} {
++		id := signaling.Identity{TenantID: "T", UserID: "s", Role: signaling.RoleVisitor, ConversationID: cid}
++		if _, err := GrantsFor(id, "v1"); err == nil {
++			t.Errorf("GrantsFor must reject unsafe/empty conversation %q", cid)
++		}
++	}
++}
++
++// @spec:authcallout.responder.chain-no-regression
++// The verify ladder (agent/backend HMAC → visitor) leaves the agent and trusted-backend paths unchanged.
++func TestChainVerifierUnregressedAndVisitor(t *testing.T) {
++	secret := []byte("s")
++	hmac := NewHMACVerifier(secret)
++
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(m.jwks(t), nil)
++	vis := NewVisitorVerifier(src, 0) // ttl 0 ⇒ always refetch; irrelevant to identity here
++
++	chain := NewChainVerifier(hmac, vis)
++
++	agentTok, _ := MintDevToken(secret, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, 0)
++	if id, err := chain.Verify(agentTok); err != nil || id.Role != signaling.RoleAgent || id.UserID != "alice" {
++		t.Fatalf("agent path regressed: id=%+v err=%v", id, err)
++	}
++	beTok, _ := MintDevToken(secret, signaling.Identity{TenantID: "T", UserID: "desk", Role: signaling.RoleTrustedBackend}, 0)
++	if id, err := chain.Verify(beTok); err != nil || id.Role != signaling.RoleTrustedBackend {
++		t.Fatalf("trusted-backend path regressed: id=%+v err=%v", id, err)
++	}
++	visTok := m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})
++	if id, err := chain.Verify(visTok); err != nil || id.Role != signaling.RoleVisitor || id.ConversationID != cidA {
++		t.Fatalf("visitor path via chain failed: id=%+v err=%v", id, err)
++	}
++	if _, err := chain.Verify("garbage"); err == nil {
++		t.Fatal("a token no link accepts must be denied")
++	}
++}
+diff --git a/internal/authcallout/visitor_token.go b/internal/authcallout/visitor_token.go
+new file mode 100644
+index 0000000..2543389
+--- /dev/null
++++ b/internal/authcallout/visitor_token.go
+@@ -0,0 +1,229 @@
++package authcallout
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"sync"
++	"time"
++
++	"github.com/lestrrat-go/jwx/v2/jwa"
++	"github.com/lestrrat-go/jwx/v2/jwk"
++	"github.com/lestrrat-go/jwx/v2/jws"
++	"github.com/lestrrat-go/jwx/v2/jwt"
++
++	"github.com/kafaconnect/relaypoint/internal/signaling"
++)
++
++// F1 (desk design §3): RP is the SOLE auth-callout responder. A widget end-user presents a desk-minted
++// `vis_` token — an EdDSA JWT (iss=desk-ingress, aud=relaypoint) RP verifies against desk's PUBLISHED
++// public keys (JWKS) only. RP can verify a visitor but can NEVER mint one (the owner-required asymmetry);
++// the symmetric `wk_` HMAC stays inside desk. Verification fails CLOSED: JWKS unreachable, bad signature,
++// wrong iss/aud, expired, or unknown kid that the (refetched) JWKS still lacks → reject, no grant.
++
++const (
++	// visitorIssuer / visitorAudience are the fixed iss/aud the desk ingress stamps on every `vis_`
++	// (desk internal/ingress/visitor_exchange.go: VisitorIssuer / VisitorAudience). A token missing or
++	// differing on either is not a visitor token and is rejected.
++	visitorIssuer   = "desk-ingress"
++	visitorAudience = "relaypoint"
++)
++
++// ErrVisitorToken is the sentinel a visitor verify failure wraps so the chain can distinguish a "not a
++// visitor token / rejected" outcome. It never carries key/token material.
++var ErrVisitorToken = errors.New("authcallout: visitor token rejected")
++
++// JWKSSource is the owned port the visitor verifier resolves desk's public key set through (loose-coupling
++// HARD RULE): unit tests inject a fake and NEVER hit the network. Fetch returns the current JWKS bytes; a
++// non-nil error MUST fail the verify closed (no grant). The implementation is responsible only for I/O —
++// caching/rotation policy lives in VisitorVerifier so it is identically tested against the fake.
++type JWKSSource interface {
++	Fetch(ctx context.Context) ([]byte, error)
++}
++
++// VisitorVerifier verifies a desk `vis_` token against desk's JWKS and derives a RoleVisitor Identity bound
++// to the token's tid/cid. It caches the parsed key set with a TTL and refetches on an unknown kid (rotation):
++// a `vis_` signed by a freshly rotated desk key triggers exactly one refetch, then verifies. It implements
++// the Verifier port so it slots into the responder's verify ladder.
++type VisitorVerifier struct {
++	src      JWKSSource
++	ttl      time.Duration
++	now      func() time.Time
++	fetchCtx func() (context.Context, context.CancelFunc)
++
++	mu        sync.Mutex
++	cached    jwk.Set
++	fetchedAt time.Time
++}
++
++// VisitorOption configures the verifier (tests inject a clock / fetch timeout).
++type VisitorOption func(*VisitorVerifier)
++
++// WithVisitorClock overrides the verifier clock (tests assert expiry without sleeping).
++func WithVisitorClock(now func() time.Time) VisitorOption {
++	return func(v *VisitorVerifier) { v.now = now }
++}
++
++// WithVisitorFetchTimeout bounds each JWKS fetch so a hung desk endpoint cannot stall the responder; a
++// timed-out fetch is a fetch error and fails the verify closed.
++func WithVisitorFetchTimeout(d time.Duration) VisitorOption {
++	return func(v *VisitorVerifier) {
++		v.fetchCtx = func() (context.Context, context.CancelFunc) {
++			return context.WithTimeout(context.Background(), d)
++		}
++	}
++}
++
++// NewVisitorVerifier builds the verifier over a JWKS source. ttl bounds how long a cached key set is reused
++// before a time-based refetch; an unknown kid forces a refetch regardless of ttl (rotation safety).
++func NewVisitorVerifier(src JWKSSource, ttl time.Duration, opts ...VisitorOption) *VisitorVerifier {
++	v := &VisitorVerifier{
++		src:      src,
++		ttl:      ttl,
++		now:      time.Now,
++		fetchCtx: func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
++	}
++	for _, o := range opts {
++		o(v)
++	}
++	return v
++}
++
++// Verify validates the `vis_` token and returns a RoleVisitor Identity bound to tid/cid. Every failure path
++// (parse, signature, iss/aud, expiry, unsafe claims, JWKS fetch) returns an error wrapping ErrVisitorToken so
++// no partial/unverified identity ever escapes — fail closed.
++func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
++	if token == "" {
++		return signaling.Identity{}, fmt.Errorf("%w: empty token", ErrVisitorToken)
++	}
++
++	// Resolve the signing kid from the JWS header WITHOUT trusting the body, so an unknown kid can drive a
++	// rotation refetch before any signature work.
++	kid, err := headerKID(token)
++	if err != nil {
++		return signaling.Identity{}, fmt.Errorf("%w: %v", ErrVisitorToken, err)
++	}
++
++	set, err := v.keySet(kid)
++	if err != nil {
++		return signaling.Identity{}, fmt.Errorf("%w: jwks: %v", ErrVisitorToken, err)
++	}
++
++	// Verify the signature (EdDSA only — pin the alg so an `alg:none`/HMAC-confusion token is rejected),
++	// require iss/aud, and validate exp against the verifier clock (server time authority, never the client).
++	parsed, err := jwt.Parse([]byte(token),
++		jwt.WithKeySet(set, jws.WithRequireKid(true), jws.WithInferAlgorithmFromKey(false)),
++		jwt.WithValidate(true),
++		jwt.WithIssuer(visitorIssuer),
++		jwt.WithAudience(visitorAudience),
++		jwt.WithClock(clockFunc(v.clock)),
++	)
++	if err != nil {
++		return signaling.Identity{}, fmt.Errorf("%w: %v", ErrVisitorToken, err)
++	}
++
++	tid, _ := claimString(parsed, "tid")
++	cid, _ := claimString(parsed, "cid")
++	sub := parsed.Subject()
++	if tid == "" || cid == "" || sub == "" {
++		return signaling.Identity{}, fmt.Errorf("%w: missing tid/cid/sub", ErrVisitorToken)
++	}
++	// tid/cid/sub are interpolated into the visitor's ACL subjects — reject any value that is not a single
++	// safe NATS subject token (the same A6 injection guard the grant boundary enforces) before it reaches a grant.
++	for _, c := range []struct{ k, s string }{{"tid", tid}, {"cid", cid}, {"sub", sub}} {
++		if err := validSubjectToken(c.s); err != nil {
++			return signaling.Identity{}, fmt.Errorf("%w: unsafe %s: %v", ErrVisitorToken, c.k, err)
++		}
++	}
++
++	return signaling.Identity{
++		TenantID:       tid,
++		UserID:         sub,
++		Role:           signaling.RoleVisitor,
++		ConversationID: cid,
++	}, nil
++}
++
++// keySet returns a cached key set that contains kid; it refetches when the cache is empty, stale (past ttl),
++// or missing kid (rotation). A refetch error fails closed — the caller rejects the token.
++func (v *VisitorVerifier) keySet(kid string) (jwk.Set, error) {
++	v.mu.Lock()
++	defer v.mu.Unlock()
++
++	fresh := v.cached != nil && v.clock().Sub(v.fetchedAt) < v.ttl
++	if fresh {
++		if _, ok := v.cached.LookupKeyID(kid); ok {
++			return v.cached, nil
++		}
++		// kid unknown despite a fresh cache ⇒ a rotation since the last fetch: refetch once below.
++	}
++	set, err := v.refetch()
++	if err != nil {
++		// Refetch failed: fail closed even if a stale cache exists — never verify against a key set we could
++		// not re-confirm. (A stale key the token still matches would otherwise outlive a desk revocation.)
++		return nil, err
++	}
++	if _, ok := set.LookupKeyID(kid); !ok {
++		return nil, fmt.Errorf("unknown kid")
++	}
++	return set, nil
++}
++
++func (v *VisitorVerifier) refetch() (jwk.Set, error) {
++	ctx, cancel := v.fetchCtx()
++	defer cancel()
++	raw, err := v.src.Fetch(ctx)
++	if err != nil {
++		return nil, err
++	}
++	set, err := jwk.Parse(raw)
++	if err != nil {
++		return nil, err
++	}
++	v.cached = set
++	v.fetchedAt = v.clock()
++	return set, nil
++}
++
++func (v *VisitorVerifier) clock() time.Time {
++	if v.now != nil {
++		return v.now()
++	}
++	return time.Now()
++}
++
++// clockFunc adapts a now-func to the jwx jwt.Clock interface so expiry is validated against the verifier
++// clock (deterministic in tests), not the process wall-clock.
++type clockFunc func() time.Time
++
++func (f clockFunc) Now() time.Time { return f() }
++
++// headerKID extracts the `kid` from the token's first (protected) JWS header without verifying the
++// signature, so an unknown kid can drive a rotation refetch.
++func headerKID(token string) (string, error) {
++	msg, err := jws.Parse([]byte(token))
++	if err != nil {
++		return "", fmt.Errorf("parse jws: %v", err)
++	}
++	sigs := msg.Signatures()
++	if len(sigs) == 0 {
++		return "", fmt.Errorf("no signature")
++	}
++	kid := sigs[0].ProtectedHeaders().KeyID()
++	if kid == "" {
++		return "", fmt.Errorf("no kid header")
++	}
++	if alg := sigs[0].ProtectedHeaders().Algorithm(); alg != jwa.EdDSA {
++		return "", fmt.Errorf("unexpected alg")
++	}
++	return kid, nil
++}
++
++func claimString(t jwt.Token, key string) (string, bool) {
++	raw, ok := t.Get(key)
++	if !ok {
++		return "", false
++	}
++	s, ok := raw.(string)
++	return s, ok
++}
+diff --git a/internal/authcallout/visitor_token_test.go b/internal/authcallout/visitor_token_test.go
+new file mode 100644
+index 0000000..1495872
+--- /dev/null
++++ b/internal/authcallout/visitor_token_test.go
+@@ -0,0 +1,333 @@
++package authcallout
++
++import (
++	"context"
++	"crypto/ed25519"
++	"encoding/json"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/lestrrat-go/jwx/v2/jwa"
++	"github.com/lestrrat-go/jwx/v2/jwk"
++	"github.com/lestrrat-go/jwx/v2/jwt"
++
++	"github.com/kafaconnect/relaypoint/internal/signaling"
++)
++
++// deskMinter mirrors desk's internal/ingress Ed25519Issuer ENOUGH to mint a real `vis_` for these tests:
++// EdDSA, iss=desk-ingress, aud=relaypoint, kid header, claims tid/cid + subject. It also exposes its public
++// key(s) as a JWKS so the verifier's JWKS path is exercised end-to-end against a real signature.
++type deskMinter struct {
++	kid  string
++	priv ed25519.PrivateKey
++}
++
++func newDeskMinter(t *testing.T, kid string) *deskMinter {
++	t.Helper()
++	_, priv, err := ed25519.GenerateKey(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return &deskMinter{kid: kid, priv: priv}
++}
++
++func (m *deskMinter) jwks(t *testing.T) []byte {
++	t.Helper()
++	k, err := jwk.FromRaw(m.priv.Public())
++	if err != nil {
++		t.Fatal(err)
++	}
++	_ = k.Set(jwk.KeyIDKey, m.kid)
++	_ = k.Set(jwk.AlgorithmKey, jwa.EdDSA)
++	_ = k.Set(jwk.KeyUsageKey, "sig")
++	set := jwk.NewSet()
++	if err := set.AddKey(k); err != nil {
++		t.Fatal(err)
++	}
++	raw, err := json.Marshal(set)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return raw
++}
++
++type mintOpts struct {
++	iss, aud, sub, tid, cid string
++	exp                     time.Time
++	kid                     string
++}
++
++func (m *deskMinter) mint(t *testing.T, o mintOpts) string {
++	t.Helper()
++	if o.iss == "" {
++		o.iss = visitorIssuer
++	}
++	if o.aud == "" {
++		o.aud = visitorAudience
++	}
++	if o.kid == "" {
++		o.kid = m.kid
++	}
++	if o.exp.IsZero() {
++		o.exp = time.Now().Add(5 * time.Minute)
++	}
++	signKey, err := jwk.FromRaw(m.priv)
++	if err != nil {
++		t.Fatal(err)
++	}
++	_ = signKey.Set(jwk.KeyIDKey, o.kid)
++	_ = signKey.Set(jwk.AlgorithmKey, jwa.EdDSA)
++
++	tok, err := jwt.NewBuilder().
++		Issuer(o.iss).
++		Audience([]string{o.aud}).
++		Subject(o.sub).
++		IssuedAt(time.Now()).
++		Expiration(o.exp).
++		Claim("tid", o.tid).
++		Claim("cid", o.cid).
++		Build()
++	if err != nil {
++		t.Fatal(err)
++	}
++	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.EdDSA, signKey))
++	if err != nil {
++		t.Fatal(err)
++	}
++	return string(signed)
++}
++
++// fakeJWKS is the in-memory JWKSSource: it serves bytes, counts fetches (to assert caching/refetch), and can
++// be made to fail (unreachable) to prove fail-closed. NO network is touched in these unit tests.
++type fakeJWKS struct {
++	mu      sync.Mutex
++	body    []byte
++	err     error
++	fetches int
++}
++
++func (f *fakeJWKS) Fetch(context.Context) ([]byte, error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.fetches++
++	if f.err != nil {
++		return nil, f.err
++	}
++	return f.body, nil
++}
++
++func (f *fakeJWKS) set(body []byte, err error) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.body, f.err = body, err
++}
++
++func (f *fakeJWKS) count() int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return f.fetches
++}
++
++const (
++	tidOK = "T1"
++	cidA  = "C1"
++	subOK = "visitorsess7"
++)
++
++// @spec:authcallout.visitor.valid-mints-scoped-grant
++func TestVisitorValidVerifies(t *testing.T) {
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(m.jwks(t), nil)
++	v := NewVisitorVerifier(src, time.Minute)
++
++	id, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA}))
++	if err != nil {
++		t.Fatalf("valid vis_ must verify: %v", err)
++	}
++	if id.Role != signaling.RoleVisitor || id.TenantID != tidOK || id.ConversationID != cidA || id.UserID != subOK {
++		t.Fatalf("unexpected identity: %+v", id)
++	}
++}
++
++// @spec:authcallout.visitor.rejects-forged-or-stale
++func TestVisitorRejects(t *testing.T) {
++	m := newDeskMinter(t, "k1")
++	other := newDeskMinter(t, "k1") // same kid, different key ⇒ signature won't match the served JWKS
++
++	cases := []struct {
++		name string
++		tok  func() string
++	}{
++		{"expired", func() string {
++			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, exp: time.Now().Add(-time.Second)})
++		}},
++		{"wrong aud", func() string {
++			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, aud: "someone-else"})
++		}},
++		{"wrong iss", func() string {
++			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, iss: "evil"})
++		}},
++		{"bad signature", func() string {
++			return other.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})
++		}},
++		{"missing cid", func() string {
++			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: ""})
++		}},
++		{"unsafe cid", func() string {
++			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: "C1.evil"})
++		}},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			src := &fakeJWKS{}
++			src.set(m.jwks(t), nil) // served JWKS is ALWAYS m's key
++			v := NewVisitorVerifier(src, time.Minute)
++			if _, err := v.Verify(c.tok()); err == nil {
++				t.Fatalf("%s must be rejected", c.name)
++			} else if !errors.Is(err, ErrVisitorToken) {
++				t.Fatalf("%s: error must wrap ErrVisitorToken, got %v", c.name, err)
++			}
++		})
++	}
++}
++
++// @spec:authcallout.visitor.unknown-kid-no-jwks-match
++func TestVisitorUnknownKidNoMatch(t *testing.T) {
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(m.jwks(t), nil)
++	v := NewVisitorVerifier(src, time.Minute)
++
++	tok := m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, kid: "k-unknown"})
++	if _, err := v.Verify(tok); err == nil {
++		t.Fatal("a kid absent from the JWKS (even after refetch) must be rejected")
++	}
++}
++
++// @spec:authcallout.visitor.jwks-unreachable-fail-closed
++func TestVisitorJWKSUnreachableFailsClosed(t *testing.T) {
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(nil, errors.New("dial tcp: connection refused"))
++	v := NewVisitorVerifier(src, time.Minute)
++
++	if _, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err == nil {
++		t.Fatal("JWKS unreachable must fail closed (reject), never mint")
++	}
++}
++
++// @spec:authcallout.visitor.jwks-unreachable-fail-closed
++// Even with a previously-cached good key set, a refetch triggered by an unknown kid that then FAILS must
++// reject — we never fall back to a stale set we could not re-confirm.
++func TestVisitorStaleCacheNotTrustedOnRefetchFailure(t *testing.T) {
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(m.jwks(t), nil)
++	clk := &fakeClock{now: time.Now()}
++	v := NewVisitorVerifier(src, time.Minute, WithVisitorClock(clk.Now))
++
++	// Prime the cache with a good verify.
++	if _, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
++		t.Fatalf("prime: %v", err)
++	}
++	// Rotate desk to a new kid the cache lacks, but make the JWKS endpoint fail: refetch fails ⇒ reject.
++	src.set(nil, errors.New("unreachable"))
++	tok := m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, kid: "k2"})
++	if _, err := v.Verify(tok); err == nil {
++		t.Fatal("refetch failure must reject even with a stale cache")
++	}
++}
++
++// @spec:authcallout.visitor.rotation-refetch
++// A `vis_` signed by a freshly rotated desk key (new kid) triggers exactly one refetch and then verifies.
++func TestVisitorRotationRefetch(t *testing.T) {
++	old := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(old.jwks(t), nil)
++	clk := &fakeClock{now: time.Now()}
++	v := NewVisitorVerifier(src, time.Hour, WithVisitorClock(clk.Now)) // long ttl: only an unknown kid forces refetch
++
++	// Verify against the old key, caching it.
++	if _, err := v.Verify(old.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
++		t.Fatalf("old key verify: %v", err)
++	}
++	fetchesAfterPrime := src.count()
++
++	// Desk rotates: a new kid signs. The endpoint now serves BOTH keys (publish-before-sign overlap).
++	rotated := newDeskMinter(t, "k2") // a distinct key + kid
++	src.set(twoKeyJWKS(t, old, rotated), nil)
++
++	id, err := v.Verify(rotated.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA}))
++	if err != nil {
++		t.Fatalf("rotated key must verify after refetch: %v", err)
++	}
++	if id.ConversationID != cidA {
++		t.Fatalf("bad identity after rotation: %+v", id)
++	}
++	if got := src.count() - fetchesAfterPrime; got != 1 {
++		t.Fatalf("rotation should trigger exactly one refetch, got %d", got)
++	}
++}
++
++// twoKeyJWKS serves both minters' public keys (rotation overlap).
++func twoKeyJWKS(t *testing.T, a, b *deskMinter) []byte {
++	t.Helper()
++	set := jwk.NewSet()
++	for _, m := range []*deskMinter{a, b} {
++		k, err := jwk.FromRaw(m.priv.Public())
++		if err != nil {
++			t.Fatal(err)
++		}
++		_ = k.Set(jwk.KeyIDKey, m.kid)
++		_ = k.Set(jwk.AlgorithmKey, jwa.EdDSA)
++		_ = k.Set(jwk.KeyUsageKey, "sig")
++		if err := set.AddKey(k); err != nil {
++			t.Fatal(err)
++		}
++	}
++	raw, err := json.Marshal(set)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return raw
++}
++
++// @spec:authcallout.visitor.cache-ttl
++// Within the TTL a known kid is served from cache (no refetch); past the TTL the next verify refetches.
++func TestVisitorCacheTTL(t *testing.T) {
++	m := newDeskMinter(t, "k1")
++	src := &fakeJWKS{}
++	src.set(m.jwks(t), nil)
++	clk := &fakeClock{now: time.Now()}
++	v := NewVisitorVerifier(src, time.Minute, WithVisitorClock(clk.Now))
++
++	tok := func() string { return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA}) }
++
++	if _, err := v.Verify(tok()); err != nil {
++		t.Fatal(err)
++	}
++	if src.count() != 1 {
++		t.Fatalf("first verify should fetch once, got %d", src.count())
++	}
++	clk.now = clk.now.Add(30 * time.Second) // within ttl
++	if _, err := v.Verify(tok()); err != nil {
++		t.Fatal(err)
++	}
++	if src.count() != 1 {
++		t.Fatalf("within ttl should serve from cache, got %d fetches", src.count())
++	}
++	clk.now = clk.now.Add(2 * time.Minute) // past ttl
++	if _, err := v.Verify(tok()); err != nil {
++		t.Fatal(err)
++	}
++	if src.count() != 2 {
++		t.Fatalf("past ttl should refetch, got %d fetches", src.count())
++	}
++}
++
++type fakeClock struct{ now time.Time }
++
++func (c *fakeClock) Now() time.Time { return c.now }
+diff --git a/internal/signaling/identity.go b/internal/signaling/identity.go
+index 2fd9eac..fdfac39 100644
+--- a/internal/signaling/identity.go
++++ b/internal/signaling/identity.go
+@@ -9,6 +9,10 @@ type Role string
+ const (
+ 	RoleAgent          Role = "agent"
+ 	RoleTrustedBackend Role = "trusted-backend"
++	// RoleVisitor is an end-user widget session (F1): NOT an agent. Its grant is a single
++	// conversation, subscribe-only (no feed, no cmd, no .log, no other conversation). The
++	// ConversationID field carries the one conversation it is bound to at mint time.
++	RoleVisitor Role = "visitor"
+ )
+ 
+ // Identity is the trusted source of tenant/actor — the authenticated caller, not the client-controlled
+@@ -17,6 +21,10 @@ type Identity struct {
+ 	TenantID string
+ 	UserID   string
+ 	Role     Role
++	// ConversationID is set ONLY for RoleVisitor: the one conversation a `vis_` token is bound to
++	// (the token's server-resolved `cid`). It scopes the visitor's subscribe-only grant; agents and
++	// trusted backends leave it empty.
++	ConversationID string
+ }
+ 
+ type identityKey struct{}

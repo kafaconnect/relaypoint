@@ -16,6 +16,11 @@ type Grant struct {
 	PubDeny  []string
 	SubAllow []string
 	SubDeny  []string
+	// AllowResponses, when true, grants a NATS dynamic response permission (publish once to a received
+	// message's reply subject). Agent/trusted-backend connections do request/reply, so they keep it; a
+	// VISITOR is strictly subscribe-only — without it the static PubDeny `>` cannot be bypassed by an
+	// inbound message carrying a `reply` (cross-review: response perms otherwise re-open a publish path).
+	AllowResponses bool
 }
 
 // GrantsFor mints the per-connection permissions for an authenticated Identity; self is the ACL-pinned
@@ -37,6 +42,33 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 	inbox := "_INBOX_" + conn + ".>"
 
 	switch signaling.RoleOf(id) {
+	case signaling.RoleVisitor:
+		// F1 (design §3 / §3d): a desk widget visitor reads exactly ONE conversation's events plane and
+		// nothing else. The conversation is bound at mint time (the `vis_` cid, server-resolved), so a
+		// visitor CANNOT subscribe another conversation, the agent feed, .log, or publish anything. This
+		// mirrors verbatim the subscribe-only one-conversation grant desk's responder used to mint — only
+		// the host moved to RP. The kept desk-published data plane is `tenant.<t>.conversation.<cid>.events`.
+		cid := id.ConversationID
+		if err := validSubjectToken(cid); err != nil {
+			return Grant{}, fmt.Errorf("authcallout: invalid conversation: %w", err)
+		}
+		return Grant{
+			PubAllow: nil, // a visitor publishes NOTHING — it only consumes its conversation's events
+			PubDeny:  []string{">"},
+			SubAllow: []string{
+				// The ONLY positive subscribe: this one conversation's events. Every other conversation,
+				// the agent feed, and .log are simply absent from the allow-list ⇒ denied by default. We do
+				// NOT add a `tenant.*.conversation.*.events` SubDeny because NATS deny outranks allow on
+				// overlap — a wildcard events-deny would also shadow this literal and break the visitor's own read.
+				"tenant." + t + ".conversation." + cid + ".events",
+				inbox,
+			},
+			SubDeny: []string{
+				"_INBOX.>",                   // the broad shared inbox (only the minted _INBOX_<conn> is allowed)
+				"tenant.*.interaction.*.log", // never the raw log plane
+				"tenant.*.agent.*.feed.>",    // never any agent feed
+			},
+		}, nil
 	case signaling.RoleTrustedBackend:
 		return Grant{
 			PubAllow: []string{
@@ -51,7 +83,8 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"tenant." + t + ".routing.>",
 				inbox,
 			},
-			SubDeny: []string{"_INBOX.>"},
+			SubDeny:        []string{"_INBOX.>"},
+			AllowResponses: true,
 		}, nil
 	default: // RoleAgent
 		// No $JS.API grant: a broad $JS.API.CONSUMER.> would let the agent pull-read raw .log or
@@ -78,6 +111,7 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"_INBOX.>",
 				"tenant.*.interaction.*.log",
 			},
+			AllowResponses: true,
 		}, nil
 	}
 }

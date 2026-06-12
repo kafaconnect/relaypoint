@@ -8,9 +8,11 @@ package main
 import (
 	"encoding/base64"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -28,7 +30,18 @@ func main() {
 	issuerSeed := decodeSeed(mustEnv("AUTH_CALLOUT_ISSUER_SEED"))
 	tokenSecret := []byte(mustEnv("AUTH_TOKEN_SECRET"))
 
-	verifier := authcallout.NewHMACVerifier(tokenSecret)
+	// F1: RP is the SOLE responder. The verify ladder is agent/trusted-backend (HMAC dev token) →
+	// desk visitor `vis_` (EdDSA, verified against desk's published JWKS). When DESK_INGRESS_JWKS_URL
+	// is unset the visitor link is omitted — a `vis_` then simply has no accepting verifier and is denied
+	// (fail closed), so RP never mints a visitor grant without an explicit desk JWKS source configured.
+	var verifier authcallout.Verifier = authcallout.NewHMACVerifier(tokenSecret)
+	if jwksURL := os.Getenv("DESK_INGRESS_JWKS_URL"); jwksURL != "" {
+		ttl := envDuration("DESK_INGRESS_JWKS_TTL", 5*time.Minute)
+		src := authcallout.NewHTTPJWKSSource(jwksURL, &http.Client{Timeout: 5 * time.Second})
+		visitor := authcallout.NewVisitorVerifier(src, ttl, authcallout.WithVisitorFetchTimeout(5*time.Second))
+		verifier = authcallout.NewChainVerifier(verifier, visitor)
+		slog.Info("authcallout.visitor.enabled", "jwks_ttl", ttl.String())
+	}
 	resp, err := authcallout.NewResponder(verifier, issuerSeed, account)
 	must("responder", err)
 
@@ -60,6 +73,16 @@ func decodeSeed(v string) []byte {
 func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return d
+}
+
+func envDuration(k string, d time.Duration) time.Duration {
+	if v := os.Getenv(k); v != "" {
+		if parsed, err := time.ParseDuration(v); err == nil {
+			return parsed
+		}
+		slog.Warn("authcallout.env.bad-duration", "key", k, "fallback", d.String())
 	}
 	return d
 }
