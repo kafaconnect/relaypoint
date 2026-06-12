@@ -19,6 +19,32 @@ type Verifier interface {
 	Verify(token string) (signaling.Identity, error)
 }
 
+// ChainVerifier is the F1 verify ladder: RP is the SOLE responder, so one connection token may be an
+// agent/trusted-backend token OR a desk visitor `vis_` token. It tries each Verifier in order and returns
+// the first success; if every link rejects, the LAST error is returned (the responder turns it into a
+// signed DENY). The order is fixed at construction — put the cheapest/most-common first. No link's failure
+// short-circuits the others, but a success is final (fail closed only when ALL reject).
+type ChainVerifier struct {
+	links []Verifier
+}
+
+// NewChainVerifier builds the ladder. With zero links every Verify denies (fail closed).
+func NewChainVerifier(links ...Verifier) *ChainVerifier {
+	return &ChainVerifier{links: links}
+}
+
+func (c *ChainVerifier) Verify(token string) (signaling.Identity, error) {
+	var lastErr error = fmt.Errorf("authcallout: no verifier accepted the token")
+	for _, l := range c.links {
+		id, err := l.Verify(token)
+		if err == nil {
+			return id, nil
+		}
+		lastErr = err
+	}
+	return signaling.Identity{}, lastErr
+}
+
 // claims is the dev token body, an HMAC-signed `<base64(json)>.<base64(hmac)>` bearer. The expiry is
 // server-validated against Now, never a client wall-clock (signaling-core time-authority rule).
 type claims struct {

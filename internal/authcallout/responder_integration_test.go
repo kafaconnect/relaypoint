@@ -147,6 +147,87 @@ func dialResponder(t *testing.T, url, pass string, kp nkeys.KeyPair) {
 	t.Cleanup(func() { nc.Drain() })
 }
 
+// dialResponderChain wires the responder with the F1 verify ladder (HMAC → visitor over the supplied
+// JWKSSource), so the embedded NATS enforces the minted VISITOR ACL end-to-end — the authoritative proof
+// the one-conversation scoping holds, not just the pure policy.
+func dialResponderChain(t *testing.T, url, pass string, kp nkeys.KeyPair, vis Verifier) {
+	t.Helper()
+	seed, _ := kp.Seed()
+	chain := NewChainVerifier(NewHMACVerifier([]byte(tokenSecret)), vis)
+	r, err := NewResponder(chain, seed, "APP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc, err := connectWithRetry(t, url, nats.UserInfo("authsvc", pass))
+	if err != nil {
+		t.Fatalf("responder connect: %v", err)
+	}
+	if _, err := r.Subscribe(nc); err != nil {
+		t.Fatalf("responder subscribe: %v", err)
+	}
+	t.Cleanup(func() { nc.Drain() })
+}
+
+// @spec:authcallout.visitor.grant-scoped-one-conversation (enforced by real NATS)
+// A desk `vis_` for conversation C1 mints a credential that subscribes ONLY tenant.T.conversation.C1.events,
+// is denied C2 / the agent feed / .log / publish — the embedded server, not the policy unit test, enforces it.
+func TestAuthCalloutMintsVisitorACL(t *testing.T) {
+	url, kp, pass := startNATS(t)
+
+	m := newDeskMinter(t, "k1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	vis := NewVisitorVerifier(src, time.Minute)
+	dialResponderChain(t, url, pass, kp, vis)
+
+	visTok := m.mint(t, mintOpts{sub: "sess1", tid: "T", cid: "C1"})
+
+	if !canSub(t, url, visTok, "tenant.T.conversation.C1.events") {
+		t.Error("visitor must subscribe its own conversation events")
+	}
+	if canSub(t, url, visTok, "tenant.T.conversation.C2.events") {
+		t.Error("visitor must NOT subscribe another conversation (cid-bound)")
+	}
+	if canSub(t, url, visTok, "tenant.T.agent.alice.feed.i1") {
+		t.Error("visitor must NOT subscribe an agent feed")
+	}
+	if canSub(t, url, visTok, "tenant.T.interaction.i1.log") {
+		t.Error("visitor must NOT subscribe raw .log")
+	}
+	if canSub(t, url, visTok, "_INBOX.>") {
+		t.Error("visitor must NOT subscribe broad _INBOX.>")
+	}
+	if canPub(t, url, visTok, "tenant.T.conversation.C1.events") {
+		t.Error("visitor must NOT publish its conversation (read-only)")
+	}
+	if canPub(t, url, visTok, "tenant.T.interaction.i1.cmd.sess1") {
+		t.Error("visitor must NOT publish any cmd")
+	}
+}
+
+// @spec:authcallout.responder.chain-no-regression (enforced by real NATS)
+// With the visitor link wired, an AGENT token still mints exactly its existing feed grant — the ladder
+// does not regress the agent path.
+func TestAuthCalloutChainAgentUnregressed(t *testing.T) {
+	url, kp, pass := startNATS(t)
+
+	m := newDeskMinter(t, "k1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	dialResponderChain(t, url, pass, kp, NewVisitorVerifier(src, time.Minute))
+
+	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
+	if !canSub(t, url, aliceTok, "tenant.T.agent.alice.feed.>") {
+		t.Error("agent feed read regressed under the chain")
+	}
+	if canSub(t, url, aliceTok, "tenant.T.conversation.C1.events") {
+		t.Error("agent must NOT gain the visitor conversation plane")
+	}
+	if !canPub(t, url, aliceTok, "tenant.T.interaction.i1.cmd.alice") {
+		t.Error("agent cmd publish regressed under the chain")
+	}
+}
+
 func connectWithRetry(t *testing.T, url string, opts ...nats.Option) (*nats.Conn, error) {
 	t.Helper()
 	var last error
