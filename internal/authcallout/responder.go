@@ -84,8 +84,12 @@ func (r *Responder) handle(reqJWT []byte) (string, error) {
 	uc.Pub.Deny = grant.PubDeny
 	uc.Sub.Allow = grant.SubAllow
 	uc.Sub.Deny = grant.SubDeny
-	// answer requests on the minted reply-prefix without widening publish to broad subjects
-	uc.Resp = &jwt.ResponsePermission{MaxMsgs: 1}
+	// answer requests on the minted reply-prefix without widening publish to broad subjects — ONLY for
+	// roles that do request/reply. A visitor is strictly subscribe-only: a response permission would let
+	// an inbound event's `reply` subject become a one-shot publish path past the static PubDeny (cross-review).
+	if grant.AllowResponses {
+		uc.Resp = &jwt.ResponsePermission{MaxMsgs: 1}
+	}
 	userJWT, err := uc.Encode(r.issuer)
 	if err != nil {
 		return "", fmt.Errorf("encode user jwt: %w", err)

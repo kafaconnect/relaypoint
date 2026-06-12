@@ -11,6 +11,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
@@ -45,15 +46,23 @@ type JWKSSource interface {
 // to the token's tid/cid. It caches the parsed key set with a TTL and refetches on an unknown kid (rotation):
 // a `vis_` signed by a freshly rotated desk key triggers exactly one refetch, then verifies. It implements
 // the Verifier port so it slots into the responder's verify ladder.
+//
+// Refetch is DoS-hardened (cross-review BLOCKER): the global lock is NEVER held across the HTTP fetch, a
+// singleflight collapses concurrent refetches into one upstream call, and a per-kid cooldown throttles
+// unknown-kid floods — an attacker spamming forged tokens with random kids cannot stall verification or
+// hammer desk's JWKS endpoint.
 type VisitorVerifier struct {
-	src      JWKSSource
-	ttl      time.Duration
-	now      func() time.Time
-	fetchCtx func() (context.Context, context.CancelFunc)
+	src        JWKSSource
+	ttl        time.Duration
+	refetchMin time.Duration // min interval between refetches driven by an UNKNOWN kid (negative throttle)
+	now        func() time.Time
+	fetchCtx   func() (context.Context, context.CancelFunc)
+	group      singleflight.Group
 
-	mu        sync.Mutex
-	cached    jwk.Set
-	fetchedAt time.Time
+	mu              sync.Mutex
+	cached          jwk.Set
+	fetchedAt       time.Time
+	lastUnknownPoll time.Time // last time an unknown kid triggered a refetch (cooldown anchor)
 }
 
 // VisitorOption configures the verifier (tests inject a clock / fetch timeout).
@@ -78,15 +87,22 @@ func WithVisitorFetchTimeout(d time.Duration) VisitorOption {
 // before a time-based refetch; an unknown kid forces a refetch regardless of ttl (rotation safety).
 func NewVisitorVerifier(src JWKSSource, ttl time.Duration, opts ...VisitorOption) *VisitorVerifier {
 	v := &VisitorVerifier{
-		src:      src,
-		ttl:      ttl,
-		now:      time.Now,
-		fetchCtx: func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+		src:        src,
+		ttl:        ttl,
+		refetchMin: 5 * time.Second, // an unknown kid can drive at most one refetch per this window
+		now:        time.Now,
+		fetchCtx:   func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
 	}
 	for _, o := range opts {
 		o(v)
 	}
 	return v
+}
+
+// WithVisitorRefetchCooldown sets the minimum interval between unknown-kid-driven refetches (the negative
+// throttle that absorbs a forged-kid flood). A new known kid still verifies on the next allowed refetch.
+func WithVisitorRefetchCooldown(d time.Duration) VisitorOption {
+	return func(v *VisitorVerifier) { v.refetchMin = d }
 }
 
 // Verify validates the `vis_` token and returns a RoleVisitor Identity bound to tid/cid. Every failure path
@@ -116,6 +132,7 @@ func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
 		jwt.WithValidate(true),
 		jwt.WithIssuer(visitorIssuer),
 		jwt.WithAudience(visitorAudience),
+		jwt.WithRequiredClaim(jwt.ExpirationKey), // a `vis_` is always time-bounded (desk caps exp ≤ wk_.exp); a missing exp is anomalous → reject
 		jwt.WithClock(clockFunc(v.clock)),
 	)
 	if err != nil {
@@ -145,18 +162,26 @@ func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
 }
 
 // keySet returns a cached key set that contains kid; it refetches when the cache is empty, stale (past ttl),
-// or missing kid (rotation). A refetch error fails closed — the caller rejects the token.
+// or missing kid (rotation). A refetch error fails closed — the caller rejects the token. The lock is held
+// only for the in-memory cache reads/writes, NEVER across the HTTP fetch (DoS-hardening, cross-review).
 func (v *VisitorVerifier) keySet(kid string) (jwk.Set, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	fresh := v.cached != nil && v.clock().Sub(v.fetchedAt) < v.ttl
-	if fresh {
-		if _, ok := v.cached.LookupKeyID(kid); ok {
-			return v.cached, nil
+	cached, fresh := v.cached, v.cached != nil && v.clock().Sub(v.fetchedAt) < v.ttl
+	if fresh && cached != nil {
+		if _, ok := cached.LookupKeyID(kid); ok {
+			v.mu.Unlock()
+			return cached, nil
 		}
-		// kid unknown despite a fresh cache ⇒ a rotation since the last fetch: refetch once below.
+		// kid unknown despite a fresh cache ⇒ either a rotation since the last fetch OR a forged kid. Refetch
+		// at most once per cooldown so a forged-kid flood cannot hammer the JWKS endpoint (negative throttle).
+		if v.clock().Sub(v.lastUnknownPoll) < v.refetchMin {
+			v.mu.Unlock()
+			return nil, fmt.Errorf("unknown kid (refetch throttled)")
+		}
+		v.lastUnknownPoll = v.clock()
 	}
+	v.mu.Unlock()
+
 	set, err := v.refetch()
 	if err != nil {
 		// Refetch failed: fail closed even if a stale cache exists — never verify against a key set we could
@@ -169,20 +194,31 @@ func (v *VisitorVerifier) keySet(kid string) (jwk.Set, error) {
 	return set, nil
 }
 
+// refetch fetches + parses the JWKS and updates the cache. Concurrent refetches collapse into ONE upstream
+// call via singleflight, so a burst of misses (rotation or flood) cannot fan out into many HTTP requests.
+// The HTTP fetch runs WITHOUT the verifier lock; only the cache write re-acquires it briefly.
 func (v *VisitorVerifier) refetch() (jwk.Set, error) {
-	ctx, cancel := v.fetchCtx()
-	defer cancel()
-	raw, err := v.src.Fetch(ctx)
+	res, err, _ := v.group.Do("jwks", func() (interface{}, error) {
+		ctx, cancel := v.fetchCtx()
+		defer cancel()
+		raw, err := v.src.Fetch(ctx)
+		if err != nil {
+			return nil, err
+		}
+		set, err := jwk.Parse(raw)
+		if err != nil {
+			return nil, err
+		}
+		v.mu.Lock()
+		v.cached = set
+		v.fetchedAt = v.clock()
+		v.mu.Unlock()
+		return set, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	set, err := jwk.Parse(raw)
-	if err != nil {
-		return nil, err
-	}
-	v.cached = set
-	v.fetchedAt = v.clock()
-	return set, nil
+	return res.(jwk.Set), nil
 }
 
 func (v *VisitorVerifier) clock() time.Time {

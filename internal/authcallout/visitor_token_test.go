@@ -56,6 +56,7 @@ func (m *deskMinter) jwks(t *testing.T) []byte {
 type mintOpts struct {
 	iss, aud, sub, tid, cid string
 	exp                     time.Time
+	noExp                   bool // omit the exp claim entirely (an anomalous token the verifier must reject)
 	kid                     string
 }
 
@@ -80,15 +81,17 @@ func (m *deskMinter) mint(t *testing.T, o mintOpts) string {
 	_ = signKey.Set(jwk.KeyIDKey, o.kid)
 	_ = signKey.Set(jwk.AlgorithmKey, jwa.EdDSA)
 
-	tok, err := jwt.NewBuilder().
+	b := jwt.NewBuilder().
 		Issuer(o.iss).
 		Audience([]string{o.aud}).
 		Subject(o.sub).
 		IssuedAt(time.Now()).
-		Expiration(o.exp).
 		Claim("tid", o.tid).
-		Claim("cid", o.cid).
-		Build()
+		Claim("cid", o.cid)
+	if !o.noExp {
+		b = b.Expiration(o.exp)
+	}
+	tok, err := b.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +178,9 @@ func TestVisitorRejects(t *testing.T) {
 		}},
 		{"missing cid", func() string {
 			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: ""})
+		}},
+		{"missing exp", func() string {
+			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, noExp: true})
 		}},
 		{"unsafe cid", func() string {
 			return m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: "C1.evil"})
@@ -325,6 +331,41 @@ func TestVisitorCacheTTL(t *testing.T) {
 	}
 	if src.count() != 2 {
 		t.Fatalf("past ttl should refetch, got %d fetches", src.count())
+	}
+}
+
+// @spec:authcallout.visitor.unknown-kid-flood-throttled
+// A flood of forged tokens carrying ever-changing unknown kids must NOT fan out into one JWKS fetch each:
+// the per-kid refetch cooldown caps unknown-kid-driven refetches to one per window, so an attacker cannot
+// hammer desk's endpoint or stall verification (cross-review BLOCKER).
+func TestVisitorUnknownKidFloodThrottled(t *testing.T) {
+	m := newDeskMinter(t, "k1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	clk := &fakeClock{now: time.Now()}
+	v := NewVisitorVerifier(src, time.Hour, WithVisitorClock(clk.Now), WithVisitorRefetchCooldown(5*time.Second))
+
+	// Prime a fresh cache (1 fetch).
+	if _, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+	base := src.count()
+
+	// Spam 100 forged unknown-kid tokens with the clock frozen inside the cooldown window: at most ONE
+	// extra refetch may occur (the first unknown kid), the rest are throttled.
+	for i := 0; i < 100; i++ {
+		_, _ = v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, kid: "forged"}))
+	}
+	if extra := src.count() - base; extra > 1 {
+		t.Fatalf("unknown-kid flood must trigger at most one refetch in the cooldown, got %d", extra)
+	}
+
+	// After the cooldown elapses, a genuine new kid (rotation) still verifies — the throttle is not a permanent block.
+	clk.now = clk.now.Add(6 * time.Second)
+	rotated := newDeskMinter(t, "k2")
+	src.set(twoKeyJWKS(t, m, rotated), nil)
+	if _, err := v.Verify(rotated.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
+		t.Fatalf("rotation after cooldown must verify: %v", err)
 	}
 }
 

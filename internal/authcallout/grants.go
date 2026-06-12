@@ -16,6 +16,11 @@ type Grant struct {
 	PubDeny  []string
 	SubAllow []string
 	SubDeny  []string
+	// AllowResponses, when true, grants a NATS dynamic response permission (publish once to a received
+	// message's reply subject). Agent/trusted-backend connections do request/reply, so they keep it; a
+	// VISITOR is strictly subscribe-only — without it the static PubDeny `>` cannot be bypassed by an
+	// inbound message carrying a `reply` (cross-review: response perms otherwise re-open a publish path).
+	AllowResponses bool
 }
 
 // GrantsFor mints the per-connection permissions for an authenticated Identity; self is the ACL-pinned
@@ -78,7 +83,8 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"tenant." + t + ".routing.>",
 				inbox,
 			},
-			SubDeny: []string{"_INBOX.>"},
+			SubDeny:        []string{"_INBOX.>"},
+			AllowResponses: true,
 		}, nil
 	default: // RoleAgent
 		// No $JS.API grant: a broad $JS.API.CONSUMER.> would let the agent pull-read raw .log or
@@ -105,6 +111,7 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"_INBOX.>",
 				"tenant.*.interaction.*.log",
 			},
+			AllowResponses: true,
 		}, nil
 	}
 }

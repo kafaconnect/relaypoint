@@ -30,17 +30,23 @@ port: 4222
 http_port: -1
 accounts {
   APP: {
-    users: [ { user: "authsvc", password: %q, permissions: {
-      publish:   { allow: [ "$SYS.REQ.USER.AUTH", "$SYS._INBOX.>", "_INBOX.>" ] }
-      subscribe: { allow: [ "$SYS.REQ.USER.AUTH", "$SYS._INBOX.>", "_INBOX.>" ] }
-    } } ]
+    users: [
+      { user: "authsvc", password: %q, permissions: {
+        publish:   { allow: [ "$SYS.REQ.USER.AUTH", "$SYS._INBOX.>", "_INBOX.>" ] }
+        subscribe: { allow: [ "$SYS.REQ.USER.AUTH", "$SYS._INBOX.>", "_INBOX.>" ] }
+      } },
+      { user: "deskpub", password: "deskpub-dev", permissions: {
+        publish:   { allow: [ "tenant.>", "_INBOX.>" ] }
+        subscribe: { allow: [ "_INBOX.>" ] }
+      } }
+    ]
   }
 }
 authorization {
   auth_callout {
     issuer: %q
     account: APP
-    auth_users: [ authsvc ]
+    auth_users: [ authsvc, deskpub ]
   }
 }
 `, responderPass, account)
@@ -202,6 +208,65 @@ func TestAuthCalloutMintsVisitorACL(t *testing.T) {
 	}
 	if canPub(t, url, visTok, "tenant.T.interaction.i1.cmd.sess1") {
 		t.Error("visitor must NOT publish any cmd")
+	}
+}
+
+// @spec:authcallout.visitor.subscribe-only-no-responses (enforced by real NATS)
+// A visitor receives an event carrying a `reply` subject and tries to answer it. Because the visitor JWT
+// has NO response permission, the reply publish is denied — the subscribe-only invariant holds even against
+// the dynamic response-permission path (cross-review HIGH).
+func TestAuthCalloutVisitorCannotReply(t *testing.T) {
+	url, kp, pass := startNATS(t)
+
+	m := newDeskMinter(t, "k1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	dialResponderChain(t, url, pass, kp, NewVisitorVerifier(src, time.Minute))
+
+	visTok := m.mint(t, mintOpts{sub: "sess1", tid: "T", cid: "C1"})
+
+	denied := make(chan struct{}, 1)
+	vc, err := connectWithRetry(t, url, nats.Token(visTok),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, _ error) {
+			select {
+			case denied <- struct{}{}:
+			default:
+			}
+		}))
+	if err != nil {
+		t.Fatalf("visitor connect: %v", err)
+	}
+	defer vc.Drain()
+
+	// The visitor subscribes its conversation and, on receipt, attempts to publish to the message's reply.
+	_, err = vc.Subscribe("tenant.T.conversation.C1.events", func(msg *nats.Msg) {
+		_ = vc.Publish(msg.Reply, []byte("answer")) // must be denied (no response permission)
+	})
+	if err != nil {
+		t.Fatalf("visitor subscribe: %v", err)
+	}
+	vc.Flush()
+
+	// The desk data-plane publisher (a static account user, auth_users-exempt) publishes an event WITH a
+	// reply pointing at a privileged subject — representing desk's kept conversation.events publisher (§3d).
+	dc, err := connectWithRetry(t, url, nats.UserInfo("deskpub", "deskpub-dev"))
+	if err != nil {
+		t.Fatalf("desk publisher connect: %v", err)
+	}
+	defer dc.Drain()
+	if err := dc.PublishMsg(&nats.Msg{
+		Subject: "tenant.T.conversation.C1.events",
+		Reply:   "tenant.T.interaction.evil.log",
+		Data:    []byte("event"),
+	}); err != nil {
+		t.Fatalf("desk publish: %v", err)
+	}
+
+	select {
+	case <-denied:
+		// expected: the visitor's reply publish was rejected
+	case <-time.After(800 * time.Millisecond):
+		t.Error("visitor reply publish should have been denied (no response permission)")
 	}
 }
 

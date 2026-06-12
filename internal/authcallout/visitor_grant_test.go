@@ -49,6 +49,21 @@ func TestGrantsForVisitor(t *testing.T) {
 	}
 }
 
+// @spec:authcallout.visitor.subscribe-only-no-responses
+// A visitor grant carries NO response permission, so an inbound event's `reply` subject can never become a
+// one-shot publish path past the static PubDeny. Agent + trusted-backend keep responses (request/reply).
+func TestVisitorGrantHasNoResponsePermission(t *testing.T) {
+	vis, _ := GrantsFor(signaling.Identity{TenantID: "T", UserID: "s", Role: signaling.RoleVisitor, ConversationID: "C1"}, "v1")
+	if vis.AllowResponses {
+		t.Fatal("visitor must NOT be granted a response permission (subscribe-only)")
+	}
+	agent, _ := GrantsFor(signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, "v1")
+	be, _ := GrantsFor(signaling.Identity{TenantID: "T", UserID: "desk", Role: signaling.RoleTrustedBackend}, "v1")
+	if !agent.AllowResponses || !be.AllowResponses {
+		t.Fatal("agent + trusted-backend must keep their response permission (request/reply)")
+	}
+}
+
 // @spec:authcallout.visitor.grant-binds-cid
 // A visitor for conversation A cannot subscribe conversation B: the grant binds the cid, so swapping the
 // Identity's ConversationID changes ONLY which conversation literal is permitted.
