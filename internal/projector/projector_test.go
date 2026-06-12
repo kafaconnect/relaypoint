@@ -206,6 +206,106 @@ func TestFanoutToParticipantsOnly(t *testing.T) {
 	}
 }
 
+// Tenant-wide dev/test shortcut: with TenantWideAgents set, every fact of the tenant reaches the
+// configured agents' feeds regardless of participation (no participant.joined at all here), and a
+// non-listed agent gets nothing.
+func TestTenantWideFanoutShortcut(t *testing.T) {
+	src := newFakeSource(
+		fact(1, "I", 1, "interaction.started", "u1"),
+		fact(2, "I", 2, "message.created", "u1"),
+	)
+	sink := newFakeSink()
+	runAll(t, src, sink, nil, Config{TenantWideAgents: map[string][]string{tn: {"agent1"}}})
+
+	if got := len(sink.feedsFor("agent1", "I")); got != 2 { // started + message, no join needed
+		t.Fatalf("agent1 feed = %d facts, want 2 (tenant-wide ignores participation)", got)
+	}
+	if got := len(sink.feedsFor("bob", "I")); got != 0 {
+		t.Fatalf("bob (not in roster) feed = %d, want 0", got)
+	}
+}
+
+// fakeRoster is the in-memory production-roster source: a tenant maps to its agents; an error is
+// returned when set (a roster outage). Records the lookups for assertion.
+type fakeRoster struct {
+	agents  map[string][]string
+	err     error
+	lookups int
+}
+
+func (r *fakeRoster) Agents(_ context.Context, tenantID string) ([]string, error) {
+	r.lookups++
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.agents[tenantID], nil
+}
+
+// PRODUCTION tenant-roster fan-out: with a Roster set, every fact of the tenant fans to ALL agents
+// the roster reports — sourced from the real desk roster, no hardcode — regardless of participation.
+func TestTenantRosterFanout(t *testing.T) {
+	src := newFakeSource(
+		fact(1, "I", 1, "interaction.started", "u1"),
+		fact(2, "I", 2, "message.created", "u1"),
+	)
+	sink := newFakeSink()
+	rr := &fakeRoster{agents: map[string][]string{tn: {"agent1", "agent2"}}}
+	runAll(t, src, sink, nil, Config{Roster: rr})
+
+	for _, a := range []string{"agent1", "agent2"} {
+		if got := len(sink.feedsFor(a, "I")); got != 2 { // started + message, no participation needed
+			t.Fatalf("%s feed = %d facts, want 2 (tenant-roster fans to every agent)", a, got)
+		}
+	}
+	if got := len(sink.feedsFor("stranger", "I")); got != 0 {
+		t.Fatalf("non-roster agent feed = %d, want 0", got)
+	}
+	if rr.lookups == 0 {
+		t.Fatal("roster was never consulted")
+	}
+}
+
+// A roster outage Naks the fact (redelivery) rather than dropping it or fanning to a stale set.
+func TestTenantRosterErrorNaks(t *testing.T) {
+	f := fact(2, "I", 2, "message.created", "u1")
+	src := newFakeSource(
+		fact(1, "I", 1, "interaction.started", "u1"),
+		f, f, // redelivery: first fails (roster down), retry succeeds
+	)
+	sink := newFakeSink()
+	rr := &fakeRoster{} // errs until flipped below
+
+	// First two deliveries (started ok with empty roster, then message) — make the message's first
+	// delivery fail by erroring on the second lookup, then recover. Simpler: error always for one
+	// delivery via a counter.
+	calls := 0
+	failing := &errOnceRoster{agents: map[string][]string{tn: {"agent1"}}, failAt: 2, calls: &calls}
+	_ = rr
+	runAll(t, src, sink, nil, Config{Roster: failing})
+
+	if countSeq(src.naked, 2) < 1 {
+		t.Fatal("streamSeq 2 was never Nak'd despite a roster outage")
+	}
+	if !containsSeq(t, sink.feedsFor("agent1", "I"), 2) {
+		t.Fatal("agent1 never received seq 2 after the roster recovered on redelivery")
+	}
+}
+
+// errOnceRoster errors on the Nth lookup (1-indexed) and succeeds otherwise.
+type errOnceRoster struct {
+	agents map[string][]string
+	failAt int
+	calls  *int
+}
+
+func (r *errOnceRoster) Agents(_ context.Context, tenantID string) ([]string, error) {
+	*r.calls++
+	if *r.calls == r.failAt {
+		return nil, errors.New("roster outage")
+	}
+	return r.agents[tenantID], nil
+}
+
 // @spec:signaling.feed.fanout-dedup
 // Concurrent/redelivered same-fact is deduped to one stored copy per (agent, interaction, sequence).
 func TestFanoutDedup(t *testing.T) {

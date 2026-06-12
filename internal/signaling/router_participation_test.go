@@ -211,6 +211,36 @@ func TestRouter_DevFallbackSuffixIsAdvisory(t *testing.T) {
 	}
 }
 
+// A trusted backend acts on behalf of agents: publishing under its service suffix (desk-svc) it may
+// carry an arbitrary actor_id (≠ suffix) and an empty actor_id on interaction.started — both
+// accepted, and the message.created folds with the real author. This is the open-bus signal-test
+// posture (desk-svc operator-listed, identity minted as a trusted backend even in dev mode).
+func TestRouter_TrustedBackendActsForAgent(t *testing.T) {
+	st := newFakeStore()
+	r := NewRouter(st, WithDevMode())
+	ctx := deskCtx("t1", "desk-svc")
+	// interaction.started with no actor_id, published under the desk-svc suffix.
+	start, _ := proto.Marshal(&Command{CommandId: "s1", TenantId: "t1", Type: "interaction.started", Medium: "chat"})
+	if got := r.HandleCommand(ctx, cmdSubj("t1", "iT", "desk-svc"), start); got.Status != statusAccepted {
+		t.Fatalf("trusted-backend start (no actor_id): %+v", got)
+	}
+	// message.created authored by agent1 (actor_id != suffix) — accepted, folded with the real actor.
+	msg, _ := proto.Marshal(&Command{CommandId: "m1", TenantId: "t1", ActorId: "agent1", Type: "message.created", Medium: "chat"})
+	if got := r.HandleCommand(ctx, cmdSubj("t1", "iT", "desk-svc"), msg); got.Status != statusAccepted {
+		t.Fatalf("trusted-backend message on behalf of agent1: %+v", got)
+	}
+	facts, _, _ := st.Replay(logSubjectFor("t1", "iT"))
+	var found bool
+	for _, e := range facts {
+		if e.EventType == "message.created" && e.ActorId == "agent1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("message.created must fold with the real author agent1; facts=%+v", facts)
+	}
+}
+
 // @spec:signaling.feed.cmd-nonparticipant-denied (prod fail-closed)
 // In production (no dev mode) an unauthenticated command is rejected outright, an authenticated
 // non-participant agent is rejected not_a_participant, and a trusted-backend identity is accepted —

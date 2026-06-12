@@ -75,3 +75,13 @@ type SnapshotStore interface {
 	Load(ctx context.Context, maxSeq uint64) (*Snapshot, uint64, error)
 	Save(ctx context.Context, seq uint64, s *Snapshot) error
 }
+
+// Roster resolves the set of agents (Zitadel subs) belonging to a tenant — the PRODUCTION fan-out
+// recipient set in tenant-roster mode (M1 inbox is tenant-shared: every agent of the tenant sees
+// every interaction, participation filtering deferred). The projector depends on this PORT, not on
+// desk's HTTP directly (loose coupling): the live adapter (DeskRoster) pulls desk's
+// GET /internal/.../tenants/{tid}/agents, and tests inject a fake. A transient error leaves the
+// source fact un-acked (Nak → redelivery), so a roster outage never drops a fact.
+type Roster interface {
+	Agents(ctx context.Context, tenantID string) ([]string, error)
+}

@@ -78,6 +78,21 @@ type Config struct {
 	PublishRetry  int           // per-feed publish attempts before Nak (default 4)
 	RetryBackoff  time.Duration // base backoff between publish attempts (default 50ms)
 	LeaseRenew    time.Duration // lease heartbeat interval (default 2s; lease TTL ~5s)
+
+	// TenantWideAgents is a DEV/TEST shortcut, off by default (nil): for a tenant present here, every
+	// fact of that tenant fans out to the listed agents' feeds, bypassing the participation gate. This
+	// exists because desk M1 emits no participation facts yet, so the stock per-participation fan-out
+	// leaves every feed empty. Participation is still folded (snapshots stay correct); only the
+	// recipient set is overridden. Production leaves this nil → strict per-participation fan-out.
+	TenantWideAgents map[string][]string
+
+	// Roster is the PRODUCTION tenant-shared fan-out source (off by default, nil): when set, every
+	// fact of a tenant fans out to ALL agents the roster reports for that tenant (sourced from desk's
+	// real Zitadel roster, no hardcode). It is the authoritative successor to TenantWideAgents and
+	// takes precedence over it. Participation is still folded (snapshots stay correct); only the
+	// recipient set is overridden, exactly like TenantWideAgents. Future per-participation mode leaves
+	// this nil. A roster lookup error Naks the fact (redelivery), never drops it.
+	Roster Roster
 }
 
 func (c Config) withDefaults() Config {
@@ -225,6 +240,22 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	// their agent but no fact at S > L reaches an already-left agent.
 	view.ApplyFact(e)
 	recipients := coveredBy(view, e.Sequence)
+	switch {
+	case p.cfg.Roster != nil:
+		// Production tenant-shared fan-out: ALL agents of the tenant per desk's real roster. A
+		// roster outage Naks (redelivery) rather than dropping the fact or fanning to a stale set.
+		agents, rerr := p.cfg.Roster.Agents(ctx, e.TenantId)
+		if rerr != nil {
+			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
+				"sequence", e.Sequence, "err", rerr.Error())
+			return p.src.Nak(f)
+		}
+		recipients = agents
+		log.Info("projector.roster-fanout", "tenant", e.TenantId, "subject_iid", iid,
+			"sequence", e.Sequence, "agents", agents)
+	case len(p.cfg.TenantWideAgents[e.TenantId]) > 0:
+		recipients = p.cfg.TenantWideAgents[e.TenantId] // dev/test shortcut, no participation gate
+	}
 
 	payload, err := proto.Marshal(e)
 	if err != nil {

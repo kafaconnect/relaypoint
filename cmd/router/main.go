@@ -55,7 +55,14 @@ func main() {
 	_, err = nc.QueueSubscribe("tenant.*.interaction.*.cmd.*", "router", func(m *nats.Msg) {
 		ctx := obs.ContextFromTraceparent(context.Background(), traceparentOf(m))
 		ctx = obs.WithCorrelation(ctx, slog.Default())
-		if !devMode {
+		if devMode {
+			// Anonymous bus: agents stay unauthenticated (suffix advisory, participation gate off), but
+			// an operator-listed service suffix (e.g. desk-svc) is folded as a trusted backend so it may
+			// publish on behalf of agents (actor_id != suffix) before auth-callout mints identities.
+			if id := devTrustedIdentity(m.Subject, trusted); id.Role != "" {
+				ctx = signaling.WithIdentity(ctx, id)
+			}
+		} else {
 			ctx = signaling.WithIdentity(ctx, identityFromSubject(m.Subject, trusted))
 		}
 		res := r.HandleCommand(ctx, m.Subject, m.Data)
@@ -87,6 +94,17 @@ func identityFromSubject(subject string, trusted map[string]bool) signaling.Iden
 		role = signaling.RoleTrustedBackend
 	}
 	return signaling.Identity{TenantID: p[1], UserID: p[5], Role: role}
+}
+
+// devTrustedIdentity returns a RoleTrustedBackend identity ONLY when the subject's suffix is an
+// operator-listed backend; otherwise a zero Identity, leaving the caller in the anonymous dev
+// fallback (suffix advisory, participation gate off). Dev-only — prod uses identityFromSubject.
+func devTrustedIdentity(subject string, trusted map[string]bool) signaling.Identity {
+	p := strings.Split(subject, ".")
+	if len(p) != 6 || p[1] == "" || p[5] == "" || !trusted[p[5]] {
+		return signaling.Identity{}
+	}
+	return signaling.Identity{TenantID: p[1], UserID: p[5], Role: signaling.RoleTrustedBackend}
 }
 
 func trustedSet(csv string) map[string]bool {

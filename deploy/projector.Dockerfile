@@ -3,9 +3,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /router ./cmd/router
+RUN CGO_ENABLED=0 go build -o /projector ./cmd/projector
 
 FROM gcr.io/distroless/static-debian12
 USER 65532:65532
-COPY --from=build /router /router
-ENTRYPOINT ["/router"]
+COPY --from=build /projector /projector
+ENTRYPOINT ["/projector"]
