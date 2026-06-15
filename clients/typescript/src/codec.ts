@@ -9,9 +9,18 @@ import {
   CommandResult_Status,
   CommandSchema,
   EventSchema,
+  FeedControlSchema,
   SignalEventSchema,
 } from "./gen/relaypoint/interaction/v1/interaction_pb.js";
-import { SCHEMA_V1, type ChatPayload, type Command, type CommandResult, type LogEvent } from "./types.js";
+import {
+  SCHEMA_V1,
+  type AgentFeedItem,
+  type ChatPayload,
+  type Command,
+  type CommandResult,
+  type LogEvent,
+} from "./types.js";
+import { interactionIdFromFeedSubject } from "./subjects.js";
 
 export interface CommandContext {
   readonly tenantId: string;
@@ -82,6 +91,18 @@ export function decodeLogEvent(bytes: Uint8Array): LogEvent {
     ...(w.refId !== "" ? { refId: w.refId } : {}),
     data: decodePayload(w.medium, w.eventType, w.data),
   };
+}
+
+export function decodeAgentFeedItem(bytes: Uint8Array, subject: string | undefined): AgentFeedItem {
+  const ctrl = fromBinary(FeedControlSchema, bytes);
+  if (ctrl.schema === SCHEMA_V1 && ctrl.control.startsWith("feed.")) {
+    const item = { interactionId: ctrl.interactionId, atSequence: Number(ctrl.atSequence) };
+    if (ctrl.control === "feed.revoked") return { kind: "revoked", ...item };
+    return { kind: "control", control: ctrl.control, ...item };
+  }
+  const interactionId = interactionIdFromFeedSubject(subject);
+  if (!interactionId) throw new Error("agent feed Event missing concrete feed subject");
+  return { kind: "event", interactionId, event: decodeLogEvent(bytes) };
 }
 
 export function encodeSignal(type: string, actorId: string, data: unknown): Uint8Array {

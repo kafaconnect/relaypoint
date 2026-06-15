@@ -7,8 +7,9 @@ import (
 )
 
 // @spec:authcallout.visitor.grant-scoped-one-conversation
-// A visitor grant subscribes EXACTLY its one conversation's events plane plus its minted inbox, publishes
-// nothing, and is denied every other conversation, the agent feed, and .log.
+// A visitor grant subscribes EXACTLY its one conversation's `.log` (the SDK chat slice) + the transitional
+// events plane plus its minted inbox, publishes nothing, and is denied every OTHER conversation's log/events,
+// the agent feed, and the raw tenant-wide log. cid == interaction id (ADR-0009).
 func TestGrantsForVisitor(t *testing.T) {
 	id := signaling.Identity{TenantID: "T", UserID: "sess9", Role: signaling.RoleVisitor, ConversationID: "C1"}
 	g, err := GrantsFor(id, "v1")
@@ -22,10 +23,11 @@ func TestGrantsForVisitor(t *testing.T) {
 		subj  string
 		allow bool
 	}{
+		{"sub own conversation log", "sub", "tenant.T.interaction.C1.log", true},
+		{"deny other conversation log", "sub", "tenant.T.interaction.C2.log", false},
 		{"sub own conversation events", "sub", "tenant.T.conversation.C1.events", true},
 		{"deny other conversation events", "sub", "tenant.T.conversation.C2.events", false},
 		{"deny agent feed", "sub", "tenant.T.agent.alice.feed.i1", false},
-		{"deny raw log", "sub", "tenant.T.interaction.i1.log", false},
 		{"deny tenant-wide", "sub", "tenant.T.routing.offer.user.alice", false},
 		{"sub own inbox", "sub", "_INBOX_v1.reply", true},
 		{"deny broad inbox", "sub", "_INBOX.reply", false},

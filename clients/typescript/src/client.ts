@@ -1,5 +1,6 @@
 import { Emitter } from "./emitter.js";
 import { AuthFailedError } from "./errors.js";
+import { AgentFeed } from "./agent-feed.js";
 import { InteractionHandle } from "./interaction.js";
 import type { Subscription, Transport } from "./transport.js";
 import type { ConnectionState } from "./types.js";
@@ -39,6 +40,7 @@ export class RelayPointClient {
   private readonly authBackoff: number[];
   private readonly connectBackoff: number[];
   private readonly handles = new Map<string, InteractionHandle>();
+  private feed?: AgentFeed;
   private _state: ConnectionState = "disconnected";
   private statusSub?: Subscription;
   private closed = false;
@@ -106,10 +108,24 @@ export class RelayPointClient {
     return handle;
   }
 
+  agentFeed(): AgentFeed {
+    if (this.feed && !this.feed.isClosed) return this.feed;
+    this.feed = new AgentFeed(
+      () => this.transport,
+      { tenantId: this.options.tenantId, selfUserId: this.options.selfUserId },
+    );
+    return this.feed;
+  }
+
+  inbox(): AgentFeed {
+    return this.agentFeed();
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     this.statusSub?.unsubscribe();
     for (const h of this.handles.values()) h.close();
+    this.feed?.close();
     await this.transport.close();
     this.setState("closed");
   }
@@ -137,6 +153,7 @@ export class RelayPointClient {
       }
       this.setState("connected");
       for (const h of this.handles.values()) h.resubscribe();
+      this.feed?.resubscribe();
       this.emitter.emit("reconnected");
     } catch (err) {
       if (!(err instanceof AuthFailedError)) this.setState("disconnected");

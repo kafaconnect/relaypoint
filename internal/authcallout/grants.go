@@ -43,30 +43,27 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 
 	switch signaling.RoleOf(id) {
 	case signaling.RoleVisitor:
-		// F1 (design §3 / §3d): a desk widget visitor reads exactly ONE conversation's events plane and
-		// nothing else. The conversation is bound at mint time (the `vis_` cid, server-resolved), so a
-		// visitor CANNOT subscribe another conversation, the agent feed, .log, or publish anything. This
-		// mirrors verbatim the subscribe-only one-conversation grant desk's responder used to mint — only
-		// the host moved to RP. The kept desk-published data plane is `tenant.<t>.conversation.<cid>.events`.
+		// A widget visitor reads exactly ONE conversation: its interaction `.log` (the SDK chat slice,
+		// rp1-web-feed-consumer) + the transitional events plane. cid is mint-bound (== interaction id,
+		// ADR-0009). NO $JS.API: a LIVE core subscribe can't read the shared INTERACTION_LOGS stream
+		// wholesale; the per-subject ACL confines reach. Other conversations/feeds are absent ⇒ denied.
 		cid := id.ConversationID
 		if err := validSubjectToken(cid); err != nil {
 			return Grant{}, fmt.Errorf("authcallout: invalid conversation: %w", err)
 		}
 		return Grant{
-			PubAllow: nil, // a visitor publishes NOTHING — it only consumes its conversation's events
-			PubDeny:  []string{">"},
+			PubAllow: nil,
+			PubDeny:  []string{">"}, // a visitor publishes NOTHING
 			SubAllow: []string{
-				// The ONLY positive subscribe: this one conversation's events. Every other conversation,
-				// the agent feed, and .log are simply absent from the allow-list ⇒ denied by default. We do
-				// NOT add a `tenant.*.conversation.*.events` SubDeny because NATS deny outranks allow on
-				// overlap — a wildcard events-deny would also shadow this literal and break the visitor's own read.
+				"tenant." + t + ".interaction." + cid + ".log",
 				"tenant." + t + ".conversation." + cid + ".events",
 				inbox,
 			},
+			// No `tenant.*.interaction.*.log` deny: NATS deny outranks allow, so it would shadow the
+			// literal `.log` allow above (same rule as events).
 			SubDeny: []string{
-				"_INBOX.>",                   // the broad shared inbox (only the minted _INBOX_<conn> is allowed)
-				"tenant.*.interaction.*.log", // never the raw log plane
-				"tenant.*.agent.*.feed.>",    // never any agent feed
+				"_INBOX.>",
+				"tenant.*.agent.*.feed.>",
 			},
 		}, nil
 	case signaling.RoleTrustedBackend:

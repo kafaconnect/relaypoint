@@ -30,7 +30,9 @@ The SDK is a **client** of the router-authoritative protocol: it is ALWAYS a non
   ACL grant (the reconnect succeeds on the interaction-scoped token), never on the optimistic
   `accept()` click. A lost CAS (`accepted_elsewhere`/withdraw) rolls the optimistic UI back.
 - **Command plane is write-only; `.log` is read-only.** The SDK publishes intents on
-  `interaction.<id>.cmd` and NEVER writes `.log`. It consumes typed `.log` facts ordered by and
+  `interaction.<id>.cmd.<self>` and NEVER writes `.log`. For the agent inbox, it consumes the
+  per-agent feed from ADR-0003; the narrow `InteractionHandle.events()` path remains for
+  explicitly authorized interaction legs. It consumes typed facts ordered by and
   deduped on the router `sequence` (see the implementation note below), and on a sequence gap
   pauses live apply and replays from JetStream, then resumes. If the replay CANNOT fill the gap (JetStream
   unavailable), the SDK surfaces a typed degraded/fatal **delivery state** and retries with
@@ -41,7 +43,7 @@ The SDK is a **client** of the router-authoritative protocol: it is ALWAYS a non
     (strictly monotonic per interaction) and treats `event_id` as the fact's stable identity. A
     re-delivered fact (same `sequence`) is dropped — the behaviour the `event_id` dedup scenario
     asserts — without depending on the transport header. Do not reintroduce header-based dedup.
-- **Command idempotency (C4).** `send(command)` is a request on `interaction.<id>.cmd` via a
+- **Command idempotency (C4).** `send(command)` is a request on `interaction.<id>.cmd.<self>` via a
   reply `_INBOX`; it attaches a client-generated `command_id` and on retry reuses the same
   `command_id` so the router dedups (no double-append). It returns `Promise<CommandResult>`:
   resolves with the router's `CommandResult` on `accepted` (`causedBy = commandId`, correlating
@@ -114,7 +116,8 @@ The SDK is a **client** of the router-authoritative protocol: it is ALWAYS a non
 
 | SDK action | Subject | Role |
 |---|---|---|
-| Send command (intent) | `interaction.<id>.cmd` | client writes (write-only) |
+| Send command (intent) | `interaction.<id>.cmd.<self>` | client writes (write-only) |
+| Read own inbox feed | `agent.<self>.feed.>` | client reads projected live facts + `feed.revoked` only |
 | Read facts | `interaction.<id>.log` | client reads (NEVER writes) |
 | Own ICE/typing | `interaction.<id>.signal.<self>` | client writes own author only |
 | Read others' signal | `interaction.<id>.signal.*` | client reads |
@@ -236,7 +239,7 @@ export interface LogEvent {
   readonly data: unknown;
 }
 
-// A command intent published on interaction.<id>.cmd as a request carrying a reply _INBOX. The
+// A command intent published on interaction.<id>.cmd.<self> as a request carrying a reply _INBOX. The
 // SDK attaches a client-generated command_id (idempotency key); on retry it REUSES the same
 // command_id so the router dedups (no double-append) and the resulting fact carries
 // caused_by = command_id. commandId is COMMAND-only; it is NOT projected onto LogEvent.
@@ -262,11 +265,24 @@ export interface SignalEvent {
   readonly data?: unknown;
 }
 
+export type AgentFeedItem =
+  | { readonly kind: "event"; readonly interactionId: string; readonly event: LogEvent }
+  | { readonly kind: "revoked"; readonly interactionId: string; readonly atSequence: number }
+  | { readonly kind: "control"; readonly control: string; readonly interactionId: string; readonly atSequence: number }
+  | { readonly kind: "decode_error"; readonly subject?: string; readonly error: unknown };
+
+export interface AgentFeed {
+  events(): AsyncIterable<AgentFeedItem>;  // -> agent.<self>.feed.>, live-only; history is Desk REST
+}
+
+// `feed.*` is reserved for FeedControl.control values; projected Event.eventType values MUST
+// NOT use that prefix, so future feed controls are never confused with facts.
+
 export interface InteractionHandle {
   readonly id: string;
   // ordered and deduped by router sequence; gap -> pause + JetStream replay
   events(): AsyncIterable<LogEvent>;
-  // request on interaction.<id>.cmd via reply _INBOX; resolves with the router's CommandResult on
+  // request on interaction.<id>.cmd.<self> via reply _INBOX; resolves with the router's CommandResult on
   // "accepted", rejects with a typed error (carrying reason) on "rejected". NEVER writes .log.
   send(command: Command): Promise<CommandResult>;
   signal(s: SignalEvent): Promise<void>;   // -> interaction.<id>.signal.<self> (own author only)
@@ -533,7 +549,7 @@ type TicketClaims struct {
 
 ## Command idempotency (C4)
 
-- Every `send(command)` is a request on `interaction.<id>.cmd` via a reply `_INBOX` and attaches
+- Every `send(command)` is a request on `interaction.<id>.cmd.<self>` via a reply `_INBOX` and attaches
   a client-generated `command_id`. On retry the SDK REUSES the same `command_id` so the router
   dedups (no double-append). `send` returns `Promise<CommandResult>` ({ `commandId`, `status`,
   `causedBy?`, `reason?` }): it resolves with the router's `CommandResult` on `accepted`

@@ -175,8 +175,9 @@ func dialResponderChain(t *testing.T, url, pass string, kp nkeys.KeyPair, vis Ve
 }
 
 // @spec:authcallout.visitor.grant-scoped-one-conversation (enforced by real NATS)
-// A desk `vis_` for conversation C1 mints a credential that subscribes ONLY tenant.T.conversation.C1.events,
-// is denied C2 / the agent feed / .log / publish — the embedded server, not the policy unit test, enforces it.
+// A desk `vis_` for conversation C1 mints a credential that subscribes ONLY C1's `.log` + events,
+// is denied another conversation / the agent feed / the tenant-wide log / publish — the embedded
+// server, not the policy unit test, enforces it.
 func TestAuthCalloutMintsVisitorACL(t *testing.T) {
 	url, kp, pass := startNATS(t)
 
@@ -188,6 +189,9 @@ func TestAuthCalloutMintsVisitorACL(t *testing.T) {
 
 	visTok := m.mint(t, mintOpts{sub: "sess1", tid: "T", cid: "C1"})
 
+	if !canSub(t, url, visTok, "tenant.T.interaction.C1.log") {
+		t.Error("visitor must subscribe its own conversation .log")
+	}
 	if !canSub(t, url, visTok, "tenant.T.conversation.C1.events") {
 		t.Error("visitor must subscribe its own conversation events")
 	}
@@ -197,8 +201,8 @@ func TestAuthCalloutMintsVisitorACL(t *testing.T) {
 	if canSub(t, url, visTok, "tenant.T.agent.alice.feed.i1") {
 		t.Error("visitor must NOT subscribe an agent feed")
 	}
-	if canSub(t, url, visTok, "tenant.T.interaction.i1.log") {
-		t.Error("visitor must NOT subscribe raw .log")
+	if canSub(t, url, visTok, "tenant.T.interaction.C2.log") {
+		t.Error("visitor must NOT subscribe another conversation's .log")
 	}
 	if canSub(t, url, visTok, "_INBOX.>") {
 		t.Error("visitor must NOT subscribe broad _INBOX.>")

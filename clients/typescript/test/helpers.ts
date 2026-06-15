@@ -5,6 +5,7 @@ import {
   CommandResult_Status,
   CommandSchema,
   EventSchema,
+  FeedControlSchema,
 } from "../src/gen/relaypoint/interaction/v1/interaction_pb.js";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import type { ChatPayload, LogEvent } from "../src/types.js";
@@ -55,6 +56,22 @@ export function wireResult(r: {
       status: r.status === "accepted" ? CommandResult_Status.ACCEPTED : CommandResult_Status.REJECTED,
       causedBy: r.causedBy ?? "",
       reason: r.reason ?? "",
+    }),
+  );
+}
+
+export function wireFeedRevoked(r: { interactionId: string; atSequence: number }): Uint8Array {
+  return wireFeedControl({ control: "feed.revoked", ...r });
+}
+
+export function wireFeedControl(r: { control: string; interactionId: string; atSequence: number }): Uint8Array {
+  return toBinary(
+    FeedControlSchema,
+    create(FeedControlSchema, {
+      schema: "relaypoint.interaction.v1",
+      control: r.control,
+      interactionId: r.interactionId,
+      atSequence: BigInt(r.atSequence),
     }),
   );
 }

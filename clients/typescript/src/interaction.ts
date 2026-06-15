@@ -81,7 +81,7 @@ export class InteractionHandle {
   }
 
   async send(command: Command): Promise<CommandResult> {
-    const subject = cmdSubject(this.ctx.tenantId, this.id);
+    const subject = cmdSubject(this.ctx.tenantId, this.id, this.ctx.selfUserId);
     const payload = encodeCommand(command, {
       tenantId: this.ctx.tenantId,
       actorId: this.ctx.selfUserId,

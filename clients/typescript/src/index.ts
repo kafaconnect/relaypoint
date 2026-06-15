@@ -2,7 +2,11 @@ export { RelayPointClient } from "./client.js";
 export type { RelayPointClientOptions, RelayPointClientDeps } from "./client.js";
 export { InteractionHandle } from "./interaction.js";
 export type { InteractionConfig } from "./interaction.js";
+export { AgentFeed } from "./agent-feed.js";
 export { NatsWsTransport } from "./adapters/nats.js";
+// For consumers that do a LIVE core subscribe to `.log` (no JetStream replay — e.g. the desk
+// visitor widget, core-subscribe-only) to decode a fact without the high-level InteractionHandle.
+export { decodeLogEvent } from "./codec.js";
 export { CommandRejectedError, AuthFailedError, DeliveryFailedError } from "./errors.js";
 export type {
   Transport,
@@ -19,6 +23,7 @@ export type {
   Command,
   CommandResult,
   SignalEvent,
+  AgentFeedItem,
 } from "./types.js";
 export { SCHEMA_V1 } from "./types.js";
 

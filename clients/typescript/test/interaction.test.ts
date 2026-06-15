@@ -3,7 +3,7 @@ import { RelayPointClient } from "../src/client.js";
 import { CommandRejectedError } from "../src/errors.js";
 import { cmdSubject, logSubject, signalSubject } from "../src/subjects.js";
 import { FakeTransport } from "../src/testing/fake-transport.js";
-import { immediate, readCommand, take, wireEvent, wireResult } from "./helpers.js";
+import { immediate, readCommand, take, wireEvent, wireFeedControl, wireFeedRevoked, wireResult } from "./helpers.js";
 
 function setup() {
   const transport = new FakeTransport();
@@ -23,7 +23,7 @@ describe("command plane", () => {
     const handle = client.interaction("im-1");
     const result = await handle.send({ type: "message.created", commandId: "K", data: { text: "hi" } });
     expect(result).toEqual({ commandId: "K", status: "accepted", causedBy: "K" });
-    expect(transport.requests[0]?.subject).toBe(cmdSubject("t1", "im-1"));
+    expect(transport.requests[0]?.subject).toBe(cmdSubject("t1", "im-1", "alice"));
   });
 
   // @spec:clientsdk.cmd.no-log-write
@@ -66,6 +66,53 @@ describe("command plane", () => {
       commandId: "K",
       reason: "conflict",
     });
+  });
+});
+
+describe("agent feed", () => {
+  // @spec:clientsdk.feed.own-subscription
+  // @spec:clientsdk.feed.event-copy
+  it("reads own per-agent feed and surfaces interaction ids from feed subjects", async () => {
+    const { client, transport } = setup();
+    const got = take(client.agentFeed().events(), 1);
+    transport.deliverLive("tenant.t1.agent.bob.feed.im-0", wireEvent({ sequence: 99 }));
+    transport.deliverLive("tenant.t1.agent.alice.feed.im-1", wireEvent({ sequence: 1 }));
+    const [item] = await got;
+    expect(item).toMatchObject({
+      kind: "event",
+      interactionId: "im-1",
+      event: { sequence: 1, eventType: "message.created" },
+    });
+  });
+
+  // @spec:clientsdk.feed.revoked-tombstone
+  it("decodes feed.revoked tombstones as control items", async () => {
+    const { client, transport } = setup();
+    const got = take(client.inbox().events(), 1);
+    transport.deliverLive("tenant.t1.agent.alice.feed.im-1", wireFeedRevoked({ interactionId: "im-1", atSequence: 7 }));
+    await expect(got).resolves.toEqual([{ kind: "revoked", interactionId: "im-1", atSequence: 7 }]);
+  });
+
+  // @spec:clientsdk.feed.unknown-control
+  it("surfaces unknown feed controls without forging Events", async () => {
+    const { client, transport } = setup();
+    const got = take(client.agentFeed().events(), 1);
+    transport.deliverLive(
+      "tenant.t1.agent.alice.feed.im-1",
+      wireFeedControl({ control: "feed.paused", interactionId: "im-1", atSequence: 8 }),
+    );
+    await expect(got).resolves.toEqual([{ kind: "control", control: "feed.paused", interactionId: "im-1", atSequence: 8 }]);
+  });
+
+  // @spec:clientsdk.feed.decode-error-continues
+  it("keeps the feed alive after an undecodable payload", async () => {
+    const { client, transport } = setup();
+    const got = take(client.agentFeed().events(), 2);
+    transport.deliverLive("tenant.t1.agent.alice.feed.im-1", new Uint8Array([10, 2, 65]));
+    transport.deliverLive("tenant.t1.agent.alice.feed.im-1", wireEvent({ sequence: 2 }));
+    const [bad, good] = await got;
+    expect(bad).toMatchObject({ kind: "decode_error", subject: "tenant.t1.agent.alice.feed.im-1" });
+    expect(good).toMatchObject({ kind: "event", interactionId: "im-1", event: { sequence: 2 } });
   });
 });
 

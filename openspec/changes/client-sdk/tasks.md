@@ -1,7 +1,7 @@
 # Tasks: client-sdk
 
-> **Chat subset implemented; the rest stays design-deferred.** The `signaling-core` chat router
-> is now buildable, so the chat-buildable slice of this design is implemented in
+> **Chat subset + agent feed implemented; the rest stays design-deferred.** The `signaling-core` chat router
+> and ADR-0003 agent feed are now buildable, so the implemented slice of this design lives in
 > `clients/typescript/` (`@relaypoint/client`) with loose-coupling (a `Transport` port + nats.ws
 > adapter + fake-transport unit tests) and `// @spec:`-tagged vitest tests — see ADR-0001. The
 > offer-ring, call/media, recording, transfer, and credential-ticket tasks remain authored-only
@@ -26,16 +26,23 @@
 - [ ] Optimistic-then-confirmed join: roll back when no confirming ACL grant arrives — `// @spec:clientsdk.offer.optimistic-confirmed`
 
 ## Command plane / delivery (TS)
-- [x] `send(command)` → `interaction.<id>.cmd`; never writes `.log` — `// @spec:clientsdk.cmd.send-to-cmd`
+- [x] `send(command)` → `interaction.<id>.cmd.<self>`; never writes `.log` — `// @spec:clientsdk.cmd.send-to-cmd`
 - [x] No public log-write path; `sequence` is router-assigned — `// @spec:clientsdk.cmd.no-log-write`
 - [x] `send` attaches `command_id`; retry reuses same `command_id` (router dedups); correlate via the resolved `CommandResult` + `causedBy` fact / typed error on rejection — `// @spec:clientsdk.cmd.idempotent-retry`
-- [x] `send(command)` is a req/reply on `interaction.<id>.cmd` via `_INBOX` returning `Promise<CommandResult>`: resolves on `accepted` (correlates the fact via `causedBy = commandId`), rejects with a typed error carrying `reason` on `rejected` — `// @spec:clientsdk.cmd.result-correlation`
+- [x] `send(command)` is a req/reply on `interaction.<id>.cmd.<self>` via `_INBOX` returning `Promise<CommandResult>`: resolves on `accepted` (correlates the fact via `causedBy = commandId`), rejects with a typed error carrying `reason` on `rejected` — `// @spec:clientsdk.cmd.result-correlation`
 - [x] Surface router's concurrent interaction-command rejection (second transfer while transferring / duplicate recording-start) as a typed error rejected from `send`'s `CommandResult`, never assume success — `// @spec:clientsdk.handle.concurrent-command-guard`
 - [x] `LogEvent`/`Command`/`CommandResult` are a PRECISE camelCase projection (LogEvent carries `causedBy` not `commandId`; `negotiationId`/`objectRef`/`failureReason` live inside `data`); 1:1 normative field mapping — `// @spec:clientsdk.cmd.wire-field-mapping`
 - [x] Deliver `.log` facts ordered by router `sequence` — `// @spec:clientsdk.delivery.ordered-by-sequence`
 - [x] Dedup by router `sequence` (event_id is the fact identity, not the broker dedup key) — `// @spec:clientsdk.delivery.dedup-event-id`
 - [x] Sequence-gap → pause live apply + JetStream replay + resume — `// @spec:clientsdk.delivery.gap-replay`
 - [x] Replay-failure (JetStream unavailable) → typed degraded/fatal delivery state + backoff; never silently drop facts or loop forever — `// @spec:clientsdk.delivery.replay-failure`
+
+## Agent feed inbox (TS)
+- [x] `client.agentFeed()` / `client.inbox()` subscribes own `tenant.<tenant>.agent.<self>.feed.>` — `// @spec:clientsdk.feed.own-subscription`
+- [x] Decode projected feed `Event` copies with `interactionId` from the concrete feed subject — `// @spec:clientsdk.feed.event-copy`
+- [x] Decode `feed.revoked` `FeedControl` tombstones as typed revocation items — `// @spec:clientsdk.feed.revoked-tombstone`
+- [x] Surface future `feed.*` controls without forging Events — `// @spec:clientsdk.feed.unknown-control`
+- [x] Feed decode errors yield a typed error item and do not kill the iterator — `// @spec:clientsdk.feed.decode-error-continues`
 
 ## Time authority (TS)
 - [x] Order `.log` strictly by router `sequence`; treat `occurredAt` as display-only, never for staleness/ordering/dedup/security — `// @spec:clientsdk.time.occurred-at-display-only`

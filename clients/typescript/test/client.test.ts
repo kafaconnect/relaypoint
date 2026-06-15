@@ -4,7 +4,7 @@ import { AuthFailedError } from "../src/errors.js";
 import { logSubject } from "../src/subjects.js";
 import { FakeTransport } from "../src/testing/fake-transport.js";
 import type { ConnectionState } from "../src/types.js";
-import { immediate, wireEvent } from "./helpers.js";
+import { immediate, take, wireEvent } from "./helpers.js";
 
 function newClient(over: Partial<RelayPointClientOptions> = {}) {
   const transport = new FakeTransport();
@@ -106,6 +106,15 @@ describe("connection lifecycle", () => {
     expect(h2.isClosed).toBe(false);
   });
 
+  it("recreates the agent feed after it is closed", () => {
+    const { client } = newClient();
+    const f1 = client.agentFeed();
+    f1.close();
+    const f2 = client.inbox();
+    expect(f2).not.toBe(f1);
+    expect(f2.isClosed).toBe(false);
+  });
+
   // R3 (deep review): rapid drops must not run concurrent establish() — reconnects serialise.
   it("serialises reconnects (no concurrent establish)", async () => {
     const { client, transport } = newClient();
@@ -125,6 +134,16 @@ describe("connection lifecycle", () => {
     transport.failConnect(2); // first two reconnect attempts fail, third succeeds
     transport.emitStatus({ type: "disconnected", final: false });
     await vi.waitFor(() => expect(client.state).toBe("connected"));
+  });
+
+  it("resubscribes the agent feed after reconnect", async () => {
+    const { client, transport } = newClient();
+    await client.connect();
+    const got = take(client.agentFeed().events(), 1);
+    transport.emitStatus({ type: "disconnected", final: false });
+    await vi.waitFor(() => expect(client.state).toBe("connected"));
+    transport.deliverLive("tenant.t1.agent.alice.feed.im-1", wireEvent({ sequence: 1 }));
+    await expect(got).resolves.toMatchObject([{ kind: "event", interactionId: "im-1" }]);
   });
 
   // @spec:clientsdk.connection.gettoken-failure
