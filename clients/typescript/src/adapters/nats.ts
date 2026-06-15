@@ -60,12 +60,12 @@ export class NatsWsTransport implements Transport {
 
   async request(subject: string, data: Uint8Array, opts: RequestOptions): Promise<TransportMsg> {
     const m = await this.conn().request(subject, data, { timeout: opts.timeoutMs });
-    return toMsg(m.data, m.headers);
+    return toMsg(m.data, m.headers, m.subject);
   }
 
   subscribe(subject: string, cb: (msg: TransportMsg) => void): Subscription {
     const sub = this.conn().subscribe(subject, {
-      callback: (_err, m) => cb(toMsg(m.data, m.headers)),
+      callback: (_err, m) => cb(toMsg(m.data, m.headers, m.subject)),
     });
     return { unsubscribe: () => sub.unsubscribe() };
   }
@@ -107,7 +107,7 @@ export class NatsWsTransport implements Transport {
         probed = true;
         if (step.r.done) return;
         const m = step.r.value;
-        yield toMsg(m.data, m.headers ?? undefined);
+        yield toMsg(m.data, m.headers ?? undefined, m.subject);
         if (m.info.pending === 0) return; // caught up to the stream head
         nextMsg = it.next();
       }
@@ -153,9 +153,10 @@ export class NatsWsTransport implements Transport {
   }
 }
 
-function toMsg(data: Uint8Array, h: { keys(): string[]; get(k: string): string } | undefined): TransportMsg {
-  if (!h) return { data };
+function toMsg(data: Uint8Array, h: { keys(): string[]; get(k: string): string } | undefined, subject?: string): TransportMsg {
+  const base = subject === undefined ? { data } : { data, subject };
+  if (!h) return base;
   const headers: Record<string, string> = {};
   for (const k of h.keys()) headers[k] = h.get(k);
-  return { data, headers };
+  return { ...base, headers };
 }

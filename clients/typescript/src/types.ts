@@ -54,3 +54,26 @@ export interface SignalEvent {
 }
 
 export type DeliveryState = "live" | "replaying" | "degraded" | "failed";
+
+export type AgentFeedItem =
+  | {
+      readonly kind: "event";
+      readonly interactionId: string;
+      readonly event: LogEvent;
+    }
+  | {
+      readonly kind: "revoked";
+      readonly interactionId: string;
+      readonly atSequence: number;
+    }
+  | {
+      readonly kind: "control";
+      readonly control: string;
+      readonly interactionId: string;
+      readonly atSequence: number;
+    }
+  | {
+      readonly kind: "decode_error";
+      readonly subject?: string;
+      readonly error: unknown;
+    };

@@ -20,7 +20,8 @@ Two **design-first** SDKs over the `signaling-core` contract, distributed via a 
 - **`@relaypoint/client`** — a TypeScript, browser, framework-agnostic core over `nats.ws`,
   consumed by the Desk web app and the embeddable widget. It encapsulates the connection
   lifecycle, the offer/ring controller, the write-only command plane + ordered `.log`
-  delivery, a typed interaction handle, and a `CallController` driven through a `MediaAdapter`
+  delivery, the per-agent fan-out feed consumer introduced by ADR-0003, a typed interaction handle,
+  and a `CallController` driven through a `MediaAdapter`
   port. The default `WebrtcP2pAdapter` implements the `webrtc-p2p` media profile. Media
   credentials are obtained through a `MediaCredentialProvider` port via a ticket exchange —
   RelayPoint never holds vendor secrets.
@@ -48,8 +49,9 @@ expensive to retrofit because they shape the core's call-control and audit surfa
 
 - New design-first change defining `@relaypoint/client` (TS) + `relaypoint-go` (Go) SDKs and
   the `MediaAdapter` / `MediaCapabilities` / `MediaCredentialProvider` ports.
-- Consumes (does not change) the `signaling-core` subjects/envelope: `interaction.<id>.cmd`
-  (SDK writes), `interaction.<id>.log` (SDK reads, never writes), `interaction.<id>.signal.<self>`
+- Consumes the current `signaling-core` / agent-feed subjects/envelope: `interaction.<id>.cmd.<self>`
+  (SDK writes), `agent.<self>.feed.>` (SDK inbox reads), `interaction.<id>.log` (narrow per-interaction
+  handle reads only when authorized), `interaction.<id>.signal.<self>`
   (SDK writes own ICE/typing), `routing.offer.user.<self>(.control)`, `routing.audit.>` (Go
   SDK reads), KV `offer.active.<self>` (SDK reconstructs).
 - Establishes the credential boundary: RelayPoint issues an opaque **signaling-session ticket**;

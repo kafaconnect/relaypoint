@@ -2,6 +2,7 @@
 
 export interface TransportMsg {
   readonly data: Uint8Array;
+  readonly subject?: string;
   readonly headers?: Readonly<Record<string, string>>;
   respond?(data: Uint8Array): void;
 }

@@ -155,13 +155,13 @@ profile/vendor (the media engine is bound only at media-setup).
 - **THEN** the SDK does NOT mark the user joined and rolls back any optimistic UI state
 
 ### Requirement: Command plane never writes the log
-The TS SDK MUST publish intents only as COMMANDS on `interaction.<id>.cmd` and MUST NEVER
+The TS SDK MUST publish intents only as COMMANDS on `interaction.<id>.cmd.<self>` and MUST NEVER
 write `interaction.<id>.log` and MUST NEVER assign `sequence`. The SDK's only path to record a
 fact is a command; the router is the authoritative writer. `send(command)` MUST attach a
 client-generated `command_id`; on retry the SDK MUST REUSE the same `command_id` so the router
 dedups (no double-append).
 
-`send(command)` MUST be a NATS request on `interaction.<id>.cmd` carrying a reply `_INBOX`, and
+`send(command)` MUST be a NATS request on `interaction.<id>.cmd.<self>` carrying a reply `_INBOX`, and
 MUST return `Promise<CommandResult>` where `CommandResult = { commandId: string; status:
 "accepted" | "rejected"; causedBy?: string; reason?: string }` (the camelCase projection of the
 router's ephemeral `CommandResult`). On `accepted` the promise MUST resolve with the
@@ -175,7 +175,8 @@ ack/correlation, NOT the source of truth (the `.log` fact is).
 - **id:** `clientsdk.cmd.send-to-cmd`
 - **GIVEN** an `InteractionHandle`
 - **WHEN** the consumer calls `send(command)`
-- **THEN** the SDK publishes on `interaction.<id>.cmd` and never on `interaction.<id>.log`
+- **THEN** the SDK publishes on `interaction.<id>.cmd.<self>` and never on `interaction.<id>.log`
+- **AND** `<self>` is the SDK's authenticated `selfUserId`, matching ADR-0003's ACL-pinned command suffix
 
 #### Scenario: SDK exposes no log-write path
 - **id:** `clientsdk.cmd.no-log-write`
@@ -192,7 +193,7 @@ ack/correlation, NOT the source of truth (the `.log` fact is).
 
 #### Scenario: send resolves with the CommandResult and correlates the fact
 - **id:** `clientsdk.cmd.result-correlation`
-- **GIVEN** a `send(command)` issued as a request on `interaction.<id>.cmd` with a reply `_INBOX`, attaching `commandId = K`
+- **GIVEN** a `send(command)` issued as a request on `interaction.<id>.cmd.<self>` with a reply `_INBOX`, attaching `commandId = K`
 - **WHEN** the router replies with an `accepted` `CommandResult { commandId: K, status: "accepted", causedBy: K }`
 - **THEN** `send` resolves with that `CommandResult` and the SDK correlates the resulting fact via the `.log` fact whose `causedBy = K` (the result is an ack/correlation, not the source of truth)
 - **AND** when the router replies `rejected` (`CommandResult { commandId: K, status: "rejected", reason }`) `send` rejects with a typed error carrying that `reason` and `commandId = K`, and the SDK never treats the rejected command as applied
@@ -260,6 +261,47 @@ an unfilled gap).
 - **WHEN** the replay cannot fill the gap because JetStream is unavailable / the stream cannot be reached
 - **THEN** the SDK surfaces a typed degraded/fatal delivery state and retries the replay with backoff, and it NEVER silently drops the missing facts nor resumes live over the unfilled gap nor loops forever
 
+### Requirement: Agent feed inbox consumes own live feed only
+The TS SDK MUST expose `client.agentFeed()` and `client.inbox()` as aliases for the ADR-0003
+agent-inbox read surface. The SDK MUST subscribe to `tenant.<tenant>.agent.<self>.feed.>` only,
+MUST decode projected `.log` `Event` copies into `{ kind: "event", interactionId, event }`, and
+MUST decode `FeedControl { control: "feed.revoked" }` into
+`{ kind: "revoked", interactionId, atSequence }`, MUST surface future `feed.*` controls without
+forging `Event` items, and MUST keep the feed iterator alive after an undecodable message by
+yielding `{ kind: "decode_error", subject?, error }`. The feed is live delivery only; the SDK MUST
+NOT use RelayPoint as a conversation-history source. The `feed.*` type prefix is reserved for
+`FeedControl.control` values and MUST NOT be used as an `Event.event_type`.
+
+#### Scenario: Own feed subscription
+- **id:** `clientsdk.feed.own-subscription`
+- **GIVEN** a client for tenant `t1` and self user `alice`
+- **WHEN** the consumer opens `client.agentFeed().events()`
+- **THEN** the SDK subscribes to `tenant.t1.agent.alice.feed.>` and not to another agent's feed
+
+#### Scenario: Projected feed Event includes the interaction id
+- **id:** `clientsdk.feed.event-copy`
+- **GIVEN** a projected protobuf `Event` arrives on `tenant.t1.agent.alice.feed.im-1`
+- **WHEN** the SDK decodes the feed message
+- **THEN** it yields `{ kind: "event", interactionId: "im-1", event }` with the decoded `Event`
+
+#### Scenario: Revocation tombstone closes the feed item
+- **id:** `clientsdk.feed.revoked-tombstone`
+- **GIVEN** a protobuf `FeedControl { control: "feed.revoked", interaction_id: "im-1", at_sequence: 7 }`
+- **WHEN** the SDK decodes the feed message
+- **THEN** it yields `{ kind: "revoked", interactionId: "im-1", atSequence: 7 }`
+
+#### Scenario: Unknown feed control is not forged as an Event
+- **id:** `clientsdk.feed.unknown-control`
+- **GIVEN** a protobuf `FeedControl { control: "feed.paused", interaction_id: "im-1", at_sequence: 8 }`
+- **WHEN** the SDK decodes the feed message
+- **THEN** it yields a typed control item and MUST NOT decode it as an Event
+
+#### Scenario: Decode error does not kill the feed
+- **id:** `clientsdk.feed.decode-error-continues`
+- **GIVEN** an undecodable feed message followed by a valid feed Event
+- **WHEN** the SDK consumes the feed
+- **THEN** it yields a `decode_error` item for the bad message and still yields the later valid Event
+
 ### Requirement: Time authority and clock-skew immunity
 The TS SDK MUST order `.log` facts strictly by the router-assigned `sequence` (and discard stale
 renegotiation by `generation`); it MUST treat `occurredAt` as **display-only** and MUST NOT use it
@@ -291,7 +333,7 @@ consumer's own author subject; it MUST NOT write another user's `signal.<userId>
 - **id:** `clientsdk.handle.stream-and-send`
 - **GIVEN** `client.interaction(id)`
 - **WHEN** the consumer reads `events()` and calls `send(command)`
-- **THEN** it receives ordered `.log` facts and the command is published on `interaction.<id>.cmd`
+- **THEN** it receives ordered `.log` facts and the command is published on `interaction.<id>.cmd.<self>`
 
 #### Scenario: Signal published only under own author subject
 - **id:** `clientsdk.handle.signal-own-author`
@@ -309,7 +351,7 @@ MUST stay opaque to core and be tagged `media_profile`.
 - **id:** `clientsdk.call.facts-via-commands`
 - **GIVEN** a `CallController` for an interaction
 - **WHEN** the consumer calls `start()` / `hold()` / `resume()` / `stop()`
-- **THEN** the SDK issues the corresponding commands on `interaction.<id>.cmd` and the router writes the `call.*` facts; the SDK writes no `.log`
+- **THEN** the SDK issues the corresponding commands on `interaction.<id>.cmd.<self>` and the router writes the `call.*` facts; the SDK writes no `.log`
 
 #### Scenario: Adapter handles the opaque descriptor tagged by media_profile
 - **id:** `clientsdk.call.opaque-descriptor`

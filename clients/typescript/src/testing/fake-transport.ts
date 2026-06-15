@@ -37,6 +37,7 @@ export class FakeTransport implements Transport {
       throw new Error("transport connect failed");
     }
     if (this.connectGate) await this.connectGate;
+    if (this.connectTokens.length > 0) this.subs.clear();
     this.connectTokens.push(token);
   }
 
@@ -71,7 +72,7 @@ export class FakeTransport implements Transport {
     }
     const log = this.durable.get(subject) ?? [];
     for (const e of log) {
-      if (e.sequence >= fromSequence) yield { data: e.data };
+      if (e.sequence >= fromSequence) yield { data: e.data, subject };
     }
   }
 
@@ -85,7 +86,10 @@ export class FakeTransport implements Transport {
   }
 
   deliverLive(subject: string, data: Uint8Array): void {
-    for (const cb of this.subs.get(subject) ?? []) cb({ data });
+    for (const [pattern, cbs] of this.subs) {
+      if (!subjectMatches(pattern, subject)) continue;
+      for (const cb of cbs) cb({ data, subject });
+    }
   }
 
   appendDurable(subject: string, sequence: number, data: Uint8Array, live = false): void {
@@ -120,4 +124,16 @@ export class FakeTransport implements Transport {
   emitStatus(status: TransportStatus): void {
     for (const cb of [...this.statusCbs]) cb(status);
   }
+}
+
+function subjectMatches(pattern: string, subject: string): boolean {
+  if (pattern === subject) return true;
+  const pp = pattern.split(".");
+  const sp = subject.split(".");
+  for (let i = 0; i < pp.length; i++) {
+    if (pp[i] === ">") return i < sp.length;
+    if (sp[i] === undefined) return false;
+    if (pp[i] !== "*" && pp[i] !== sp[i]) return false;
+  }
+  return pp.length === sp.length;
 }
