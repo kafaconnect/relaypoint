@@ -35,12 +35,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Start NATS (JetStream + ws + ACLs)
         run: |
+          # nats-server env-expands FOUR secrets from the committed deploy config; all must be
+          # present or it aborts config parse and never boots (a missing one surfaced only as an
+          # opaque ws "non-101" in the test). ROUTER_PASSWORD + CLIENT_PASSWORD are the static
+          # trusted users this test connects as. AUTH_PASSWORD + AUTH_CALLOUT_ISSUER back the
+          # authsvc user + auth_callout block: the callout never fires here (router/client are
+          # exempt auth_users), so the issuer is a throwaway dev account nkey with no matching seed.
           docker run -d --name nats \
             -e ROUTER_PASSWORD=router-dev -e CLIENT_PASSWORD=client-dev \
+            -e AUTH_PASSWORD=auth-dev \
+            -e AUTH_CALLOUT_ISSUER=ACFPE6KPJID4EMOOIH7XT5VVRFWVTNJF6A6TKRSZJJ6DM6XQYISJ7MH2 \
             -v "$PWD/deploy/nats/nats-server.conf:/etc/nats/nats-server.conf:ro" \
             -p 18088:8088 -p 18222:8222 \
             nats:2.10-alpine -c /etc/nats/nats-server.conf
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18222/healthz && break; sleep 1; done
+          # Fail loudly (with logs) if NATS never became ready — e.g. a future config adds another
+          # env var — instead of leaking it into the suite as a confusing connect error.
+          curl -fsS http://127.0.0.1:18222/healthz >/dev/null || { echo "NATS not ready"; docker logs nats; exit 1; }
       - uses: pnpm/action-setup@v4
         with:
           version: 11.5.0
