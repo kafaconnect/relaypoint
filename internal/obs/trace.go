@@ -121,6 +121,11 @@ func TraceFromContext(ctx context.Context) (TraceContext, bool) {
 // only mints a child span id (no exporter); once the OTLP exporter lands behind this seam a
 // missed end leaks an unfinished span — hence "defer it" is the contract now (ADR-0011 §10).
 func StartSpan(ctx context.Context, name string) (context.Context, func()) {
+	if tracer != nil {
+		// An OTLP exporter is wired (InitTracer): mint a real span and stitch its ids into the
+		// bound TraceContext so logs, the wire traceparent, and the export all share one trace_id.
+		return startOTelSpan(ctx, name)
+	}
 	parent, ok := TraceFromContext(ctx)
 	traceID := parent.TraceID
 	if !ok || traceID == "" {
