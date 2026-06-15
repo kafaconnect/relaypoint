@@ -158,6 +158,9 @@ func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
 		UserID:         sub,
 		Role:           signaling.RoleVisitor,
 		ConversationID: cid,
+		// The responder caps the minted credential at min(this, its ceiling) so a visitor connection
+		// is short-lived + revocable (ADR-0012 §4).
+		ExpiresAt: parsed.Expiration(),
 	}, nil
 }
 
