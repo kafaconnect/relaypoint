@@ -53,12 +53,23 @@ callout is on), the design must be agreed on the RP repo first, with a no-lockou
 
 ## Migration / rollback order
 
-S1 desk code prep on the still-anonymous bus → S2 provision secrets → S3 apply accounts+users + flip
-each service client to its static cred (verify via `/connz`) → S4 deploy the responder (replicas≥2,
+S1 desk code prep on the still-anonymous bus → S2 provision secrets → **[S3+S4 = ONE atomic
+maintenance window]** S3 apply accounts+users + flip each service client to its static cred (verify
+via `/connz`) **immediately followed in the same window by** S4 deploy the responder (replicas≥2,
 queue) + apply the `auth_callout` block (the destructive line) → verify the live-bus T1/T2 isolation +
-no-lockout + visitor-receives-a-message → S5 retire desk's stopgap. **Rollback at each step reverts the
-matching service Deployments AND the NATS config together** (`helm rollback nats` to the prior rev);
-the pre-callout image is a safe rollback target until the desk responder is deleted in S5.
+no-lockout + visitor-receives-a-message → S5 retire desk's stopgap.
+
+> **Why S3+S4 are one window (not sequential):** the instant `accounts`+`users` exist (S3) WITHOUT
+> the `auth_callout` block, a connection presenting no/non-matching credentials is REJECTED — and
+> browsers/visitors have no static user and nothing mints them until the responder + callout land
+> (S4). So S3 alone would drop every browser. The **service** identities (router/projector/authsvc/
+> desk-rp/desk-api/connector-zalo) CAN be validated under S3 (they have static creds), but the
+> callout (S4) MUST land in the same window so the browser-serving bus is never in an accounts-only
+> interim. Plan accordingly (off-peak; brief realtime blip; REST keeps working).
+
+**Rollback at each step reverts the matching service Deployments AND the NATS config together**
+(`helm rollback nats` to the prior rev); the pre-callout image is a safe rollback target until the
+desk responder is deleted in S5.
 
 ## Consequences
 

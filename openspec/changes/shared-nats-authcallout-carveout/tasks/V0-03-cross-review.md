@@ -2,7 +2,7 @@
 id: V0-03
 slice: V0
 title: independent cross-review of the carve-out ADR (codex + agy) — the GATE
-status: todo
+status: done
 issue:
 specs: []
 ---
@@ -11,3 +11,7 @@ no-lockout census completeness, no anon/bypass identity, visitor TTL + HA, rollb
 service env AND NATS config.
 
 ## Log
+- 2026-06-15 done: agy gate review (BLOCKED) folded — added projector to the reference
+  auth_users + clarified reference-vs-shared-infra; made S3+S4 one atomic window in the ADR; formally
+  retired the obsoleted client-log-write-denied scenario. Record: reviews/cross-review-20260615.md.
+  (codex flaked; single-reviewer coverage noted. The live flip remains the desk story's gated step.)
