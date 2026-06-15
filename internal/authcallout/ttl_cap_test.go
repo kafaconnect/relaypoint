@@ -61,4 +61,13 @@ func TestCappedExpiry(t *testing.T) {
 			t.Fatalf("cappedExpiry = %d, want %d (ceiling)", got, want)
 		}
 	})
+
+	t.Run("visitor with zero ExpiresAt → STILL capped at the ceiling (never bypassed)", func(t *testing.T) {
+		r := testResponder(t, WithClock(clock), WithVisitorTTLCap(time.Hour))
+		id := signaling.Identity{Role: signaling.RoleVisitor} // no ExpiresAt
+		want := now.Add(time.Hour).Unix()
+		if got := r.cappedExpiry(id); got != want {
+			t.Fatalf("cappedExpiry = %d, want %d (ceiling — a visitor is never uncapped)", got, want)
+		}
+	})
 }

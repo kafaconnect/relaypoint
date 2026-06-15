@@ -141,17 +141,18 @@ func (r *Responder) handle(reqJWT []byte) (string, error) {
 	return r.respond(req, userJWT, "")
 }
 
-// cappedExpiry returns the Unix expiry a minted credential should carry: bounded by the identity's
-// ExpiresAt (the vis_ token's exp) AND the responder's ceiling — a visitor credential MUST expire and
-// be short (ADR-0012 §4). Returns 0 (no expiry) for an identity with no ExpiresAt (agents/backends,
-// whose own token auth gates the connect).
+// cappedExpiry returns the Unix expiry a minted credential should carry. It keys off ROLE, not
+// ExpiresAt: a VISITOR credential MUST always be time-bounded (ADR-0012 §4 short-lived + revocable)
+// and can never bypass the cap — bounded by the RP ceiling and further by the vis_ token's exp WHEN
+// present. Non-visitors (agents/backends) get 0 (no RP-imposed expiry); their own token auth gates
+// the connect.
 func (r *Responder) cappedExpiry(id signaling.Identity) int64 {
-	if id.ExpiresAt.IsZero() {
+	if id.Role != signaling.RoleVisitor {
 		return 0
 	}
-	exp := id.ExpiresAt
-	if ceiling := r.now().Add(r.visitorTTLCap); ceiling.Before(exp) {
-		exp = ceiling
+	exp := r.now().Add(r.visitorTTLCap)
+	if !id.ExpiresAt.IsZero() && id.ExpiresAt.Before(exp) {
+		exp = id.ExpiresAt // the vis_ exp is tighter than the ceiling
 	}
 	return exp.Unix()
 }
