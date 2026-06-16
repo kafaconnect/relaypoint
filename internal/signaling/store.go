@@ -1,12 +1,15 @@
 package signaling
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/kafaconnect/relaypoint/internal/obs"
 )
 
 // ErrOCCConflict means the append's expected last-subject-sequence no longer matched: another
@@ -28,7 +31,9 @@ type LogStore interface {
 	// order them differently). Callers therefore MUST treat ErrOCCConflict as "rebuild + re-check
 	// command_id dedup", never as a hard "this command was not committed" — the router does exactly
 	// this (its re-fold reveals the committed command_id and replays the cached accepted result).
-	Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (duplicate bool, err error)
+	// ctx carries the inbound command's W3C trace: the fact is published with a `traceparent` header
+	// so a trace spans the router→.log→projector→agent-feed hops (F5b trace continuity).
+	Append(ctx context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (duplicate bool, err error)
 	// Replay MUST error (not return a short slice) if the log can't be fully read, so callers
 	// fail closed. It also returns the subject's current last STREAM sequence (0 if empty) — the
 	// OCC token a subsequent Append must echo, distinct from the dense per-interaction sequence.
@@ -39,8 +44,13 @@ type jetstreamStore struct{ js nats.JetStreamContext }
 
 func NewJetStreamStore(js nats.JetStreamContext) LogStore { return &jetstreamStore{js: js} }
 
-func (s *jetstreamStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
-	ack, err := s.js.Publish(subject, data,
+func (s *jetstreamStore) Append(ctx context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+	// Publish via a message so the inbound trace rides onto the fact as a `traceparent` header
+	// (F5b). MsgId + ExpectLastSequencePerSubject keep the same dedup + OCC semantics as before.
+	msg := nats.NewMsg(subject)
+	msg.Data = data
+	obs.InjectTraceparent(ctx, func(k, v string) { msg.Header.Set(k, v) })
+	ack, err := s.js.PublishMsg(msg,
 		nats.MsgId(dedupID), nats.ExpectLastSequencePerSubject(expectedLastSubjSeq))
 	if err != nil {
 		var apiErr *nats.APIError

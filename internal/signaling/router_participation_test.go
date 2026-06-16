@@ -386,14 +386,14 @@ type occInjectStore struct {
 	injected bool
 }
 
-func (s *occInjectStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+func (s *occInjectStore) Append(ctx context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
 	if !s.injected && subject == s.subject {
 		s.injected = true
 		s.inject.Sequence = int64(expectedLastSubjSeq) + 1
 		raw, _ := proto.Marshal(s.inject)
-		if _, err := s.fakeStore.Append(subject, raw, "inject-"+dedupID, expectedLastSubjSeq); err != nil {
+		if _, err := s.fakeStore.Append(ctx, subject, raw, "inject-"+dedupID, expectedLastSubjSeq); err != nil {
 			return false, err
 		}
 	}
-	return s.fakeStore.Append(subject, data, dedupID, expectedLastSubjSeq)
+	return s.fakeStore.Append(ctx, subject, data, dedupID, expectedLastSubjSeq)
 }

@@ -223,6 +223,12 @@ func (p *Projector) Hydrate(ctx context.Context) error {
 // intended publishes succeed (ack-after-publish). A poison fact past max_deliver is DLQ'd + acked
 // so the consumer is not wedged; an open-interval revocation also writes the feed.revoked tombstone.
 func (p *Projector) process(ctx context.Context, f Fact) error {
+	// Continue the trace carried on the .log fact (F5b): every downstream publish (feed fan-out +
+	// the revoked tombstone) and log line for this fact stays on the originating command's trace.
+	// Only when the fact actually carries one — a trace-less fact is NOT given a fabricated trace.
+	if tp := f.Traceparent(); tp != "" {
+		ctx = obs.ContextFromTraceparent(ctx, tp)
+	}
 	log := obs.Logger(ctx)
 	e := f.Event
 	if e == nil || e.TenantId == "" || e.EventType == "" {

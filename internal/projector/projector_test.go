@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
@@ -68,6 +69,7 @@ func (s *fakeSource) FoldRange(_ context.Context, lo, hi uint64) ([]Fact, error)
 type pub struct {
 	tenant, agent, iid, dedup string
 	payload                   []byte
+	traceparent               string // the W3C trace the core seeded the publish ctx with (F5b)
 }
 
 type fakeSink struct {
@@ -80,7 +82,7 @@ type fakeSink struct {
 
 func newFakeSink() *fakeSink { return &fakeSink{seen: map[string]bool{}, failFor: map[string]int{}} }
 
-func (s *fakeSink) Publish(_ context.Context, tenant, agent, iid, dedupID string, payload []byte) error {
+func (s *fakeSink) Publish(ctx context.Context, tenant, agent, iid, dedupID string, payload []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if n := s.failFor[dedupID]; n > 0 {
@@ -91,7 +93,10 @@ func (s *fakeSink) Publish(_ context.Context, tenant, agent, iid, dedupID string
 		return nil // dedup: the feed stores it at most once
 	}
 	s.seen[dedupID] = true
-	s.pubs = append(s.pubs, pub{tenant, agent, iid, dedupID, payload})
+	// Capture the traceparent the core seeded onto the publish ctx (what the live sink injects).
+	var tp string
+	obs.InjectTraceparent(ctx, func(_, v string) { tp = v })
+	s.pubs = append(s.pubs, pub{tenant, agent, iid, dedupID, payload, tp})
 	return nil
 }
 
@@ -156,6 +161,49 @@ func fact(streamSeq uint64, iid string, seq int64, typ, actor string) Fact {
 		Schema: signaling.SchemaV1, TenantId: tn, EventType: typ, ActorId: actor, Sequence: seq,
 		EventId: fmt.Sprintf("ev-%d", streamSeq),
 	}, iid, streamSeq)
+}
+
+// @spec:obs.rp-log-hop-preserves-trace
+// F5b trace continuity: the trace carried on the inbound .log fact is propagated onto the fanned-out
+// feed message. The store/feed adapters carry it as a W3C `traceparent` header; here the CORE's
+// seeding of the publish context from Fact.Traceparent is asserted (the fake sink reads back the
+// traceparent the live sink would inject). A trace-less fact stays trace-less (no fabricated trace).
+func TestProjector_PropagatesTraceFromLogToFeed(t *testing.T) {
+	const tp = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+
+	traced := fact(1, "i1", 1, "message.created", "u1")
+	traced.traceparent = tp // the inbound .log fact's trace (same package: set the unexported field)
+	untraced := fact(2, "i2", 1, "message.created", "u1")
+
+	src := newFakeSource(traced, untraced)
+	sink := newFakeSink()
+	runAll(t, src, sink, nil, Config{TenantWideAgents: map[string][]string{tn: {"alice"}}})
+
+	tracedFeeds := sink.feedsFor("alice", "i1")
+	if len(tracedFeeds) != 1 {
+		t.Fatalf("want 1 feed publish for the traced fact, got %d", len(tracedFeeds))
+	}
+	// Continuity = SAME trace id; the span id is a fresh child (each hop is its own span, W3C).
+	got, ok := obs.ParseTraceparent(tracedFeeds[0].traceparent)
+	if !ok {
+		t.Fatalf("feed traceparent not well-formed: %q", tracedFeeds[0].traceparent)
+	}
+	want, _ := obs.ParseTraceparent(tp)
+	if got.TraceID != want.TraceID {
+		t.Fatalf("feed trace id = %q, want the inbound .log trace id %q (continuity broken)", got.TraceID, want.TraceID)
+	}
+	if got.SpanID == want.SpanID {
+		t.Fatalf("feed span id should be a fresh child span, got the parent's %q", got.SpanID)
+	}
+
+	// A trace-less .log fact is NOT given a fabricated trace — its feed carries no traceparent.
+	untracedFeeds := sink.feedsFor("alice", "i2")
+	if len(untracedFeeds) != 1 {
+		t.Fatalf("want 1 feed publish for the untraced fact, got %d", len(untracedFeeds))
+	}
+	if untracedFeeds[0].traceparent != "" {
+		t.Fatalf("a trace-less fact must not fabricate a trace, got %q", untracedFeeds[0].traceparent)
+	}
 }
 
 func runAll(t *testing.T, src *fakeSource, sink *fakeSink, snaps *fakeSnaps, cfg Config) *Projector {

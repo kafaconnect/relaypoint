@@ -22,7 +22,7 @@ func newFakeStore() *fakeStore {
 
 // streamSeq is the fake's per-subject STREAM sequence — the in-memory analogue of JetStream's
 // per-subject last-sequence the router echoes for OCC. Append enforces it like the real store.
-func (s *fakeStore) Append(subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+func (s *fakeStore) Append(_ context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dedup[dedupID] {
@@ -148,7 +148,7 @@ type concurrentWriterStore struct {
 	replays int
 }
 
-func (s *concurrentWriterStore) Append(string, []byte, string, uint64) (bool, error) {
+func (s *concurrentWriterStore) Append(context.Context, string, []byte, string, uint64) (bool, error) {
 	return true, nil
 }
 func (s *concurrentWriterStore) Replay(string) ([]*Event, uint64, error) {
@@ -212,7 +212,7 @@ func TestCore_RefIDRequired(t *testing.T) {
 // duplicate; the dup-path rebuild then fails — the router must NOT keep stale in-memory seq.
 type dupRebuildFailStore struct{ calls int }
 
-func (s *dupRebuildFailStore) Append(string, []byte, string, uint64) (bool, error) {
+func (s *dupRebuildFailStore) Append(context.Context, string, []byte, string, uint64) (bool, error) {
 	return true, nil
 }
 func (s *dupRebuildFailStore) Replay(string) ([]*Event, uint64, error) {
@@ -252,7 +252,7 @@ type occBeforeDedupStore struct {
 	appends int
 }
 
-func (s *occBeforeDedupStore) Append(string, []byte, string, uint64) (bool, error) {
+func (s *occBeforeDedupStore) Append(context.Context, string, []byte, string, uint64) (bool, error) {
 	s.appends++
 	return false, ErrOCCConflict
 }

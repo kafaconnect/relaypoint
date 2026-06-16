@@ -18,6 +18,9 @@ type Fact struct {
 	Event     *signaling.Event
 	iid       string
 	StreamSeq uint64
+	// traceparent is the inbound .log message's W3C trace header (empty if none). The core seeds the
+	// publish context from it so the fanned-out feed message stays on the same trace (F5b continuity).
+	traceparent string
 	// opaque delivery handle (e.g. *nats.Msg) as `any` so the core imports no transport type
 	msg any
 }
@@ -28,6 +31,10 @@ func NewFact(e *signaling.Event, iid string, streamSeq uint64) Fact {
 }
 
 func (f Fact) Iid() string { return f.iid }
+
+// Traceparent is the inbound .log message's W3C trace header (empty if none) — propagated onto the
+// agent-feed message so a trace is continuous across the .log→projector→feed hops (F5b).
+func (f Fact) Traceparent() string { return f.traceparent }
 
 // LogSource is the durable, serial (MaxAckPending=1) consumer of `tenant.*.interaction.*.log`.
 // Exactly ONE fact is in flight at a time: the core fully processes a Fact (fold + fan-out +

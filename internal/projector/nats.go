@@ -11,8 +11,18 @@ import (
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
+
+// traceparentOf reads the inbound .log message's W3C trace header (nil-safe — a header-less message
+// yields ""), so the projector can re-inject it onto the agent feed (F5b trace continuity).
+func traceparentOf(m *nats.Msg) string {
+	if m == nil || m.Header == nil {
+		return ""
+	}
+	return m.Header.Get("traceparent")
+}
 
 // The NATS adapters — the only code here importing nats.go — implement the owned ports so the core
 // never sees a NATS type (loose-coupling HARD RULE).
@@ -100,7 +110,7 @@ func (s *jsLogSource) Deliver(ctx context.Context) (Fact, error) {
 		if uerr := proto.Unmarshal(m.Data, e); uerr != nil {
 			e = nil
 		}
-		return Fact{Event: e, iid: iidFromLogSubject(m.Subject), StreamSeq: meta.Sequence.Stream, msg: m}, nil
+		return Fact{Event: e, iid: iidFromLogSubject(m.Subject), StreamSeq: meta.Sequence.Stream, msg: m, traceparent: traceparentOf(m)}, nil
 	}
 }
 
@@ -193,9 +203,14 @@ type jsFeedSink struct{ js nats.JetStreamContext }
 
 func NewFeedSink(js nats.JetStreamContext) FeedSink { return &jsFeedSink{js: js} }
 
-func (s *jsFeedSink) Publish(_ context.Context, tenant, agent, iid, dedupID string, payload []byte) error {
+func (s *jsFeedSink) Publish(ctx context.Context, tenant, agent, iid, dedupID string, payload []byte) error {
 	subj := fmt.Sprintf("tenant.%s.agent.%s.feed.%s", tenant, agent, iid)
-	_, err := s.js.Publish(subj, payload, nats.MsgId(dedupID))
+	// Publish via a message so the fact's trace rides onto the feed event (F5b). MsgId keeps the
+	// at-most-once dedup; the traceparent header is outside the dedup identity.
+	msg := nats.NewMsg(subj)
+	msg.Data = payload
+	obs.InjectTraceparent(ctx, func(k, v string) { msg.Header.Set(k, v) })
+	_, err := s.js.PublishMsg(msg, nats.MsgId(dedupID))
 	return err
 }
 

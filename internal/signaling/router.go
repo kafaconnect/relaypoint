@@ -337,7 +337,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		payload, _ := proto.Marshal(ev)
 		// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even
 		// if a prior append's ack was lost.
-		d, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
+		d, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
 			// Lost the race: another writer advanced the subject. Re-fold once from the log and
 			// retry; if we still lose, surface a retryable rejection (never append behind a stale seq).
@@ -606,7 +606,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 			CausedBy: parentID, CommandedBy: commandedBy, Reason: pd.Reason, RequestId: pd.RequestID,
 		}
 		payload, _ := proto.Marshal(ev)
-		_, aerr := r.store.Append(logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
+		_, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
 			fresh, ferr := r.rebuild(tenant, iid)
 			if ferr != nil || attempt >= 1 {
