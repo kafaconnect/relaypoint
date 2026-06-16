@@ -90,6 +90,12 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 		return Grant{
 			PubAllow: []string{
 				"tenant." + t + ".interaction.*.cmd." + self,
+				// Presence/typing hints, identity-pinned to <self>: the agent publishes its OWN
+				// presence state (presence.<self>.state) + per-conversation typing
+				// (presence.<self>.typing.<cid>) and CANNOT forge another identity's (the `<self>`
+				// segment is ACL-fixed). Without this the desk console floods the bus with Publish
+				// Violations on every keystroke (F1 grant gap).
+				"tenant." + t + ".presence." + self + ".>",
 				inbox,
 			},
 			PubDeny: []string{
@@ -101,7 +107,11 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"tenant." + t + ".routing.offer.user." + self,
 				"tenant." + t + ".routing.offer.user." + self + ".control",
 				"tenant." + t + ".notify." + self,
-				"tenant." + t + ".presence." + self,
+				// The tenant presence roster + per-conversation typing of OTHER participants
+				// (presence.*.state / presence.*.typing.<cid>). Tenant-scoped (the `tenant.<t>`
+				// prefix is ACL-fixed), non-sensitive hints. Replaces the prior own-only
+				// `presence.<self>` literal, which never matched the `presence.*.…` the console reads.
+				"tenant." + t + ".presence.*.>",
 				inbox,
 			},
 			SubDeny: []string{
