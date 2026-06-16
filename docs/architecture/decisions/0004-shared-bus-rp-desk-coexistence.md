@@ -38,6 +38,14 @@ callout is on), the design must be agreed on the RP repo first, with a no-lockou
    - `connector-zalo` — the connector sidecar (must NOT stay anonymous at the flip).
    Browsers/visitors have **no** static user — they are minted per-connection by the responder.
 
+   **Scope of "no `client`":** this topology is the PRODUCTION shared `nats` Helm release. Those
+   values are owned by the desk repo (`deploy/nats/shared-infra-authcallout-values.yaml` in the
+   canonical `m1_5-f1-shared-nats-authcallout` change) — they enumerate the service identities above
+   and OMIT `client`. The RP repo's `deploy/nats/nats-server.conf` is a SEPARATE artifact: the
+   single-node local dev reference the SDK integration suite boots and connects to **as `client`**.
+   It is an ephemeral local NATS, never the shared production bus, so it retains the dev `client`
+   user (and its `.log`-write deny). The callout-bypass removal applies to the production bus only.
+
 4. **Minted credentials are short-lived where they must be.** A **visitor** credential is capped at
    `min(vis_.exp, an RP ceiling)` (implemented: `WithVisitorTTLCap`, default 1h) — NATS drops the
    connection at expiry and the client re-exchanges a fresh `vis_` (ADR-0012 §4 revocable). The
