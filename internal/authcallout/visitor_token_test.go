@@ -55,6 +55,7 @@ func (m *deskMinter) jwks(t *testing.T) []byte {
 
 type mintOpts struct {
 	iss, aud, sub, tid, cid string
+	role                    string // when set, stamps the `role` claim (e.g. "agent"); empty == a visitor token
 	exp                     time.Time
 	noExp                   bool // omit the exp claim entirely (an anomalous token the verifier must reject)
 	kid                     string
@@ -88,6 +89,9 @@ func (m *deskMinter) mint(t *testing.T, o mintOpts) string {
 		IssuedAt(time.Now()).
 		Claim("tid", o.tid).
 		Claim("cid", o.cid)
+	if o.role != "" {
+		b = b.Claim("role", o.role)
+	}
 	if !o.noExp {
 		b = b.Expiration(o.exp)
 	}
@@ -371,6 +375,75 @@ func TestVisitorUnknownKidFloodThrottled(t *testing.T) {
 	src.set(twoKeyJWKS(t, m, rotated), nil)
 	if _, err := v.Verify(rotated.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
 		t.Fatalf("rotation after cooldown must verify: %v", err)
+	}
+}
+
+// @spec:authcallout.agent.token-verifies-grants-feed
+// The F1 desk-agent path end-to-end: a desk-minted AGENT connect token (role=agent, tid embedded, NO
+// cid) is verified through the SAME EdDSA/desk-JWKS trust as a `vis_`, yields a RoleAgent identity, and
+// GrantsFor mints the agent's own-feed ACL — its own `…feed.>` subscribe + `interaction.*.cmd.<self>`
+// publish, never a `.log` read nor another agent's feed. (codex M1.5 review: was live-verified, untested.)
+func TestAgentTokenVerifiesViaJWKSAndGrantsOwnFeed(t *testing.T) {
+	m := newDeskMinter(t, "desk-ingress-1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	v := NewVisitorVerifier(src, time.Minute)
+
+	const agentSub = "agent7"
+	id, err := v.Verify(m.mint(t, mintOpts{sub: agentSub, tid: tidOK, role: "agent"}))
+	if err != nil {
+		t.Fatalf("desk agent token must verify via JWKS: %v", err)
+	}
+	if id.Role != signaling.RoleAgent || id.TenantID != tidOK || id.UserID != agentSub {
+		t.Fatalf("unexpected agent identity: %+v", id)
+	}
+	// An agent carries NO conversation binding (unlike a visitor) — it is not pinned to one chat.
+	if id.ConversationID != "" {
+		t.Fatalf("agent identity must not carry a ConversationID, got %q", id.ConversationID)
+	}
+
+	g, err := GrantsFor(id, "conn-abc")
+	if err != nil {
+		t.Fatalf("GrantsFor(agent): %v", err)
+	}
+	if !allowsSubscribe(g, "tenant."+tidOK+".agent."+agentSub+".feed.i1") {
+		t.Fatalf("agent must subscribe its own feed; SubAllow=%v", g.SubAllow)
+	}
+	if !allowsPublish(g, "tenant."+tidOK+".interaction.i1.cmd."+agentSub) {
+		t.Fatalf("agent must publish its own cmd suffix; PubAllow=%v", g.PubAllow)
+	}
+	if allowsSubscribe(g, "tenant."+tidOK+".interaction.i1.log") {
+		t.Fatal("agent must NOT read raw interaction logs")
+	}
+	if allowsSubscribe(g, "tenant."+tidOK+".agent.someone-else.feed.i1") {
+		t.Fatal("agent must NOT read another agent's feed")
+	}
+}
+
+// @spec:authcallout.agent.requires-tid-sub
+// tid/sub are interpolated into the minted ACL subjects — an agent token missing either is rejected
+// closed (an empty token would otherwise widen the grant to `tenant..agent..feed.>`).
+func TestAgentTokenMissingTidRejected(t *testing.T) {
+	m := newDeskMinter(t, "k1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	v := NewVisitorVerifier(src, time.Minute)
+
+	for _, c := range []struct {
+		name     string
+		sub, tid string
+	}{
+		{"missing tid", subOK, ""},
+		{"missing sub", "", tidOK},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := v.Verify(m.mint(t, mintOpts{sub: c.sub, tid: c.tid, role: "agent"}))
+			if err == nil {
+				t.Fatalf("%s must be rejected", c.name)
+			} else if !errors.Is(err, ErrVisitorToken) {
+				t.Fatalf("%s: error must wrap ErrVisitorToken, got %v", c.name, err)
+			}
+		})
 	}
 }
 

@@ -140,17 +140,33 @@ func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
 	}
 
 	tid, _ := claimString(parsed, "tid")
-	cid, _ := claimString(parsed, "cid")
 	sub := parsed.Subject()
-	if tid == "" || cid == "" || sub == "" {
-		return signaling.Identity{}, fmt.Errorf("%w: missing tid/cid/sub", ErrVisitorToken)
+	role, _ := claimString(parsed, "role")
+	if tid == "" || sub == "" {
+		return signaling.Identity{}, fmt.Errorf("%w: missing tid/sub", ErrVisitorToken)
 	}
-	// tid/cid/sub are interpolated into the visitor's ACL subjects — reject any value that is not a single
-	// safe NATS subject token (the same A6 injection guard the grant boundary enforces) before it reaches a grant.
-	for _, c := range []struct{ k, s string }{{"tid", tid}, {"cid", cid}, {"sub", sub}} {
+	// tid/sub are interpolated into the minted ACL subjects — reject any value that is not a single
+	// safe NATS subject token (the A6 injection guard the grant boundary enforces) before it reaches a grant.
+	for _, c := range []struct{ k, s string }{{"tid", tid}, {"sub", sub}} {
 		if err := validSubjectToken(c.s); err != nil {
 			return signaling.Identity{}, fmt.Errorf("%w: unsafe %s: %v", ErrVisitorToken, c.k, err)
 		}
+	}
+
+	// A desk-minted AGENT connect token (role=agent) carries no conversation binding — its grant is the
+	// agent's own feed (GrantsFor RoleAgent). Same EdDSA/desk-JWKS trust as a `vis_` (desk resolved the
+	// tenant + embedded it, so RP stays DB-free); only the role + the absent cid differ. The default
+	// (no/visitor role) stays the single-conversation visitor binding.
+	if role == string(signaling.RoleAgent) {
+		return signaling.Identity{TenantID: tid, UserID: sub, Role: signaling.RoleAgent}, nil
+	}
+
+	cid, _ := claimString(parsed, "cid")
+	if cid == "" {
+		return signaling.Identity{}, fmt.Errorf("%w: missing cid", ErrVisitorToken)
+	}
+	if err := validSubjectToken(cid); err != nil {
+		return signaling.Identity{}, fmt.Errorf("%w: unsafe cid: %v", ErrVisitorToken, err)
 	}
 
 	return signaling.Identity{
