@@ -97,6 +97,13 @@ func TestGrantsForAgent(t *testing.T) {
 		{"sub own offer", "sub", "tenant.T.routing.offer.user.alice", true},
 		{"sub own notify", "sub", "tenant.T.notify.alice", true},
 		{"deny other notify", "sub", "tenant.T.notify.bob", false},
+		// presence/typing hints (F1 grant): publish OWN, identity-pinned; read the tenant roster.
+		{"pub own presence state", "pub", "tenant.T.presence.alice.state", true},
+		{"pub own typing", "pub", "tenant.T.presence.alice.typing.i1", true},
+		{"deny forging another's presence", "pub", "tenant.T.presence.bob.state", false},
+		{"deny forging another's typing", "pub", "tenant.T.presence.bob.typing.i1", false},
+		{"sub roster presence (any actor)", "sub", "tenant.T.presence.bob.state", true},
+		{"sub another's typing in a conversation", "sub", "tenant.T.presence.bob.typing.i1", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
