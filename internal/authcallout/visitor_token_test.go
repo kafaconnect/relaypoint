@@ -146,12 +146,17 @@ func TestVisitorValidVerifies(t *testing.T) {
 	src.set(m.jwks(t), nil)
 	v := NewVisitorVerifier(src, time.Minute)
 
-	id, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA}))
+	exp := time.Now().Add(7 * time.Minute)
+	id, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, exp: exp}))
 	if err != nil {
 		t.Fatalf("valid vis_ must verify: %v", err)
 	}
 	if id.Role != signaling.RoleVisitor || id.TenantID != tidOK || id.ConversationID != cidA || id.UserID != subOK {
 		t.Fatalf("unexpected identity: %+v", id)
+	}
+	// The vis_ exp must be threaded onto the Identity so the responder can cap the minted credential.
+	if id.ExpiresAt.Unix() != exp.Unix() {
+		t.Fatalf("ExpiresAt = %v, want the vis_ exp %v", id.ExpiresAt, exp)
 	}
 }
 
