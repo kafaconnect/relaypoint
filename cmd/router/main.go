@@ -19,6 +19,15 @@ import (
 func main() {
 	slog.SetDefault(obs.New("relaypoint-router"))
 
+	// OTLP trace export (M1.5 F5b) behind the obs.StartSpan seam — no-op when the OTLP endpoint is
+	// unset; a setup error is logged and the service continues log-only (fail-open).
+	tracerShutdown, terr := obs.InitTracer(context.Background(), "relaypoint-router")
+	if terr != nil {
+		slog.Default().Warn("otel.init_failed_continuing_log_only", "err", terr)
+		tracerShutdown = func(context.Context) error { return nil }
+	}
+	defer func() { _ = tracerShutdown(context.Background()) }()
+
 	url := envOr("NATS_URL", nats.DefaultURL)
 	user := envOr("NATS_USER", "router")
 	pass := envOr("NATS_PASSWORD", "router-dev")

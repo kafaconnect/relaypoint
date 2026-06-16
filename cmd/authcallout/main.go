@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,14 @@ import (
 
 func main() {
 	slog.SetDefault(obs.New("relaypoint-authcallout"))
+
+	// OTLP trace export (M1.5 F5b) — no-op when the OTLP endpoint is unset; fail-open on a setup error.
+	tracerShutdown, terr := obs.InitTracer(context.Background(), "relaypoint-authcallout")
+	if terr != nil {
+		slog.Default().Warn("otel.init_failed_continuing_log_only", "err", terr)
+		tracerShutdown = func(context.Context) error { return nil }
+	}
+	defer func() { _ = tracerShutdown(context.Background()) }()
 
 	url := envOr("NATS_URL", nats.DefaultURL)
 	user := envOr("NATS_AUTH_USER", "authsvc")
