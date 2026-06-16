@@ -1,15 +1,27 @@
 package authcallout
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
+
+// traceparentOf reads the auth request message's W3C trace header, nil-safe (a header-less message
+// yields ""), so the auth decision can join an inbound trace if one is propagated.
+func traceparentOf(m *nats.Msg) string {
+	if m == nil || m.Header == nil {
+		return ""
+	}
+	return m.Header.Get("traceparent")
+}
 
 // AuthRequestSubject is the NATS auth-callout request subject the server publishes to.
 const AuthRequestSubject = "$SYS.REQ.USER.AUTH"
@@ -34,6 +46,7 @@ type Responder struct {
 	connID        func() string
 	visitorTTLCap time.Duration    // ceiling on a minted visitor credential's lifetime
 	now           func() time.Time // clock (injectable for tests)
+	log           *slog.Logger     // structured decisions (allow/deny), correlated to the request trace
 }
 
 // NewResponder builds the responder. issuerSeed is the account signing-key SEED (the trust root; from
@@ -50,11 +63,21 @@ func NewResponder(v Verifier, issuerSeed []byte, account string, opts ...Respond
 		connID:        defaultConnID,
 		visitorTTLCap: defaultVisitorTTLCap,
 		now:           time.Now,
+		log:           slog.Default(),
 	}
 	for _, o := range opts {
 		o(r)
 	}
 	return r, nil
+}
+
+// WithLogger overrides the structured logger the responder records auth decisions on (tests capture it).
+func WithLogger(l *slog.Logger) ResponderOption {
+	return func(r *Responder) {
+		if l != nil {
+			r.log = l
+		}
+	}
 }
 
 type ResponderOption func(*Responder)
@@ -91,9 +114,21 @@ func (r *Responder) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 	// QueueSubscribe (not Subscribe): replicas>=2 share the `authsvc` queue so exactly one answers
 	// each request — HA without two responders minting for the same connect.
 	return nc.QueueSubscribe(AuthRequestSubject, authQueue, func(m *nats.Msg) {
-		token, err := r.handle(m.Data)
+		// Extract any OTLP trace context the auth request carries and open a span, so each auth
+		// decision is observable and correlates with the connection's downstream activity (a no-op
+		// export when no OTLP endpoint is configured / no inbound trace is present).
+		ctx := obs.WithCorrelation(obs.ContextFromTraceparent(context.Background(), traceparentOf(m)), r.log)
+		ctx, end := obs.StartSpan(ctx, "authcallout.handle")
+		defer end()
+
+		token, id, err := r.handle(m.Data)
 		if err != nil {
+			// Reason only — NEVER the token or any credential material.
+			obs.Logger(ctx).Warn("authcallout.deny", "reason", err.Error())
 			token, _ = r.deny(m.Data, err.Error())
+		} else {
+			obs.Logger(ctx).Info("authcallout.allow",
+				"tenant", id.TenantID, "user", id.UserID, "role", string(signaling.RoleOf(id)))
 		}
 		if token != "" {
 			_ = m.Respond([]byte(token))
@@ -103,19 +138,19 @@ func (r *Responder) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 
 // handle returns the signed authorization-response JWT for the minted per-connection user; a
 // verify/grant failure returns an error the caller turns into a signed DENY (not a timeout).
-func (r *Responder) handle(reqJWT []byte) (string, error) {
+func (r *Responder) handle(reqJWT []byte) (string, signaling.Identity, error) {
 	req, err := jwt.DecodeAuthorizationRequestClaims(string(reqJWT))
 	if err != nil {
-		return "", fmt.Errorf("decode auth request: %w", err)
+		return "", signaling.Identity{}, fmt.Errorf("decode auth request: %w", err)
 	}
 	id, err := r.verify.Verify(req.ConnectOptions.Token)
 	if err != nil {
-		return "", err
+		return "", signaling.Identity{}, err
 	}
 	conn := r.connID()
 	grant, err := GrantsFor(id, conn)
 	if err != nil {
-		return "", err
+		return "", id, err
 	}
 
 	uc := jwt.NewUserClaims(req.UserNkey)
@@ -136,9 +171,10 @@ func (r *Responder) handle(reqJWT []byte) (string, error) {
 	}
 	userJWT, err := uc.Encode(r.issuer)
 	if err != nil {
-		return "", fmt.Errorf("encode user jwt: %w", err)
+		return "", id, fmt.Errorf("encode user jwt: %w", err)
 	}
-	return r.respond(req, userJWT, "")
+	token, err := r.respond(req, userJWT, "")
+	return token, id, err
 }
 
 // cappedExpiry returns the Unix expiry a minted credential should carry. It keys off ROLE, not
