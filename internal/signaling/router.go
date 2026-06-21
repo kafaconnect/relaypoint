@@ -89,6 +89,10 @@ func legalTransition(status, cmdType string) bool {
 	case "message.created", "message.updated", "message.deleted",
 		"participant.joined", "participant.left", "interaction.assigned", "interaction.context.updated":
 		return status == "started"
+	case "call.ringing", "call.answered", "call.completed", "call.missed",
+		"call.no_answer", "call.busy", "call.canceled", "call.declined", "call.failed",
+		"call.upgrade_video":
+		return status == "started"
 	default:
 		return false
 	}
