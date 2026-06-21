@@ -59,6 +59,11 @@ func cmd(id, tenant, typ, text string) []byte {
 	return b
 }
 
+func callCmd(id, tenant, typ string) []byte {
+	b, _ := proto.Marshal(&Command{CommandId: id, TenantId: tenant, ActorId: "u1", Type: typ, Medium: "call"})
+	return b
+}
+
 // the .cmd subject carries the publisher identity suffix; cmd()'s actor is u1.
 const subj = "tenant.t1.interaction.iX.cmd.u1"
 
@@ -72,15 +77,18 @@ func TestCore_NoNATS(t *testing.T) {
 	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi")); got.Status != statusAccepted {
 		t.Fatalf("message: %+v", got)
 	}
+	if got := r.HandleCommand(context.Background(), subj, callCmd("c-call-upgrade", "t1", "call.upgrade_video")); got.Status != statusAccepted {
+		t.Fatalf("call upgrade: %+v", got)
+	}
 	facts, _, _ := st.Replay(logSubjectFor("t1", "iX"))
-	if len(facts) != 2 || facts[0].Sequence != 1 || facts[1].Sequence != 2 {
-		t.Fatalf("sequences %+v want 1,2", facts)
+	if len(facts) != 3 || facts[0].Sequence != 1 || facts[1].Sequence != 2 || facts[2].Sequence != 3 || facts[2].Medium != "call" {
+		t.Fatalf("facts %+v want chat start/message plus call upgrade", facts)
 	}
 
 	// idempotency: same command replayed → no second fact
 	a := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi"))
 	facts, _, _ = st.Replay(logSubjectFor("t1", "iX"))
-	if a.Status != statusAccepted || len(facts) != 2 {
+	if a.Status != statusAccepted || len(facts) != 3 {
 		t.Fatalf("retry double-appended: %+v / %d facts", a, len(facts))
 	}
 	// conflict: same id, different payload
