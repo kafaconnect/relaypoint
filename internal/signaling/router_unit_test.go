@@ -77,12 +77,12 @@ func TestCore_NoNATS(t *testing.T) {
 	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi")); got.Status != statusAccepted {
 		t.Fatalf("message: %+v", got)
 	}
-	if got := r.HandleCommand(context.Background(), subj, callCmd("c-call-upgrade", "t1", "call.upgrade_video")); got.Status != statusAccepted {
-		t.Fatalf("call upgrade: %+v", got)
+	if got := r.HandleCommand(context.Background(), subj, callCmd("c-call-ring", "t1", "call.ringing")); got.Status != statusAccepted {
+		t.Fatalf("call ringing: %+v", got)
 	}
 	facts, _, _ := st.Replay(logSubjectFor("t1", "iX"))
 	if len(facts) != 3 || facts[0].Sequence != 1 || facts[1].Sequence != 2 || facts[2].Sequence != 3 || facts[2].Medium != "call" {
-		t.Fatalf("facts %+v want chat start/message plus call upgrade", facts)
+		t.Fatalf("facts %+v want chat start/message plus call ringing", facts)
 	}
 
 	// idempotency: same command replayed → no second fact
