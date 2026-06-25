@@ -86,20 +86,14 @@ func legalTransition(status, cmdType string) bool {
 		return status == ""
 	case "interaction.ended":
 		return status == "started"
-	case "message.created", "message.updated", "message.deleted",
-		"participant.joined", "participant.left", "interaction.assigned", "interaction.context.updated":
-		return status == "started"
-	case "call.ringing", "call.answered", "call.completed", "call.missed",
-		"call.no_answer", "call.busy", "call.canceled", "call.declined", "call.failed",
-		"call.upgrade_video":
-		return status == "started"
 	default:
-		return false
+		// RP gates on delivery STRUCTURE, not a domain-verb census: any annotation
+		// (message.*, call.*, routing.*, and future Desk/Router verbs) is an opaque type RP
+		// logs and the projector fans out — legal only on an open (started, not-yet-ended)
+		// interaction. Lifecycle (started/ended), ordering, dedup, tenancy and the
+		// participation carve-out above are the only structural gates RP owns.
+		return status == "started"
 	}
-}
-
-func requiresRefID(cmdType string) bool {
-	return cmdType == "message.updated" || cmdType == "message.deleted"
 }
 
 func applyTransition(st *interactionState, cmdType string) {
@@ -268,11 +262,6 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	// unaudited join/leave/assignment (A2b).
 	if isParticipationFact(cmd.Type) {
 		res.Status, res.Reason = statusRejected, "participation fact requires a privileged command"
-		return res
-	}
-
-	if requiresRefID(cmd.Type) && cmd.RefId == "" {
-		res.Status, res.Reason = statusRejected, "missing ref_id"
 		return res
 	}
 

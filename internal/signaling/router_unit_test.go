@@ -207,17 +207,38 @@ func TestCore_ConflictAcrossRestart(t *testing.T) {
 	}
 }
 
-// edit/delete must name the message they target (ref_id).
-func TestCore_RefIDRequired(t *testing.T) {
+// RP no longer enforces message edit/delete referential integrity (ref_id) — that is chat-domain
+// knowledge owned by the producer (Desk). RP gates on delivery STRUCTURE only, so message.updated
+// is an opaque annotation accepted on a started interaction with or without ref_id.
+func TestCore_RefIDNotGatedByRP(t *testing.T) {
 	r := NewRouter(newFakeStore(), WithDevMode())
 	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
 	noRef, _ := proto.Marshal(&Command{CommandId: "u1", TenantId: "t1", ActorId: "u1", Type: "message.updated", Medium: "chat"})
-	if got := r.HandleCommand(context.Background(), subj, noRef); got.Status != statusRejected {
-		t.Fatalf("message.updated without ref_id must be rejected, got %+v", got)
+	if got := r.HandleCommand(context.Background(), subj, noRef); got.Status != statusAccepted {
+		t.Fatalf("RP must not gate on ref_id (a chat-domain rule); message.updated should be accepted, got %+v", got)
 	}
-	withRef, _ := proto.Marshal(&Command{CommandId: "u2", TenantId: "t1", ActorId: "u1", Type: "message.updated", Medium: "chat", RefId: "m1"})
-	if got := r.HandleCommand(context.Background(), subj, withRef); got.Status != statusAccepted {
-		t.Fatalf("message.updated with ref_id should be accepted, got %+v", got)
+}
+
+// A novel domain verb (routing.*, emitted by desk-router) is accepted as an opaque annotation on a
+// started interaction with ZERO RelayPoint change — the generic structural gate that replaced the
+// closed cmdType enum. Regression for the live "illegal transition routing.offered" rejection.
+func TestCore_NovelVerbIsOpaqueAnnotation(t *testing.T) {
+	r := NewRouter(newFakeStore(), WithDevMode())
+	// The lifecycle gate still holds for new verbs: no annotation before the interaction is started.
+	if got := r.HandleCommand(context.Background(), subj, cmd("r0", "t1", "routing.offered", "X")); got.Status != statusRejected {
+		t.Fatalf("routing.offered before interaction.started must be rejected, got %+v", got)
+	}
+	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
+	if got := r.HandleCommand(context.Background(), subj, cmd("r1", "t1", "routing.offered", "X")); got.Status != statusAccepted {
+		t.Fatalf("routing.offered on a started interaction must be accepted, got %+v", got)
+	}
+	if got := r.HandleCommand(context.Background(), subj, cmd("r2", "t1", "routing.no_candidates", "Y")); got.Status != statusAccepted {
+		t.Fatalf("routing.no_candidates on a started interaction must be accepted, got %+v", got)
+	}
+	// Upper lifecycle bound: once the interaction is ended, the same opaque annotation is rejected.
+	r.HandleCommand(context.Background(), subj, cmd("e1", "t1", "interaction.ended", ""))
+	if got := r.HandleCommand(context.Background(), subj, cmd("r3", "t1", "routing.offered", "Z")); got.Status != statusRejected {
+		t.Fatalf("routing.offered after interaction.ended must be rejected, got %+v", got)
 	}
 }
 
