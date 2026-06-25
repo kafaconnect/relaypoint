@@ -235,6 +235,11 @@ func TestCore_NovelVerbIsOpaqueAnnotation(t *testing.T) {
 	if got := r.HandleCommand(context.Background(), subj, cmd("r2", "t1", "routing.no_candidates", "Y")); got.Status != statusAccepted {
 		t.Fatalf("routing.no_candidates on a started interaction must be accepted, got %+v", got)
 	}
+	// Upper lifecycle bound: once the interaction is ended, the same opaque annotation is rejected.
+	r.HandleCommand(context.Background(), subj, cmd("e1", "t1", "interaction.ended", ""))
+	if got := r.HandleCommand(context.Background(), subj, cmd("r3", "t1", "routing.offered", "Z")); got.Status != statusRejected {
+		t.Fatalf("routing.offered after interaction.ended must be rejected, got %+v", got)
+	}
 }
 
 // dupRebuildFailStore: the first Replay (getState build) succeeds empty; the append reports a
