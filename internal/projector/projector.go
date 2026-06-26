@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kafaconnect/relaypoint/internal/obs"
@@ -20,6 +21,11 @@ import (
 const (
 	feedControlSchema = signaling.SchemaV1
 	controlRevoked    = "feed.revoked"
+
+	// fanoutConcurrency bounds the per-fact recipient fan-out. Only one fact is in flight at a
+	// time (MaxAckPending=1), so this caps total concurrent feed publishes; a tenant's agent set is
+	// small, so it mainly collapses N sequential publish RTTs into ~one. @spec: RDL-01
+	fanoutConcurrency = 32
 )
 
 // Snapshot is the participation view serialized by stream sequence — an ACKED-PREFIX state (its
@@ -267,15 +273,11 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	if err != nil {
 		return p.poison(ctx, f, "marshal event")
 	}
-	for _, agent := range recipients {
-		dedup := fmt.Sprintf("%s.%s.%s.%d", e.TenantId, agent, iid, e.Sequence)
-		if perr := p.publishWithRetry(ctx, e.TenantId, agent, iid, dedup, payload); perr != nil {
-			// Leave the source un-acked: Nak schedules redelivery; dedup makes the re-projection of
-			// already-published feeds a no-op (no drop, at-most-once per feed).
-			log.Warn("projector.publish-failed", "subject_iid", iid, "agent", agent,
-				"sequence", e.Sequence, "err", perr.Error())
-			return p.src.Nak(f)
-		}
+	if perr := p.fanout(ctx, e, iid, recipients, payload); perr != nil {
+		// Leave the source un-acked: Nak schedules redelivery; dedup makes the re-projection of
+		// already-published feeds a no-op (no drop, at-most-once per feed).
+		log.Warn("projector.publish-failed", "subject_iid", iid, "sequence", e.Sequence, "err", perr.Error())
+		return p.src.Nak(f)
 	}
 
 	if e.EventType == "participant.left" {
@@ -292,6 +294,28 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	p.lastAckSeq = f.StreamSeq
 	p.maybeSnapshot(ctx, f.StreamSeq)
 	return nil
+}
+
+// fanout publishes the projection to every recipient feed CONCURRENTLY (bounded by
+// fanoutConcurrency), so a fact bound for N agents costs ~one publish RTT instead of N sequential
+// ones. Ack-after-publish is preserved: the caller acks only when fanout returns nil (every
+// recipient acknowledged). The first failure cancels the rest and is returned so the caller Naks —
+// redelivery re-publishes, and the per-(agent,iid,sequence) dedup id makes an already-published
+// feed a no-op (at-most-once per feed). @spec: RDL-01
+func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, recipients []string, payload []byte) error {
+	if len(recipients) == 0 {
+		return nil
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(fanoutConcurrency)
+	for _, agent := range recipients {
+		agent := agent
+		dedup := fmt.Sprintf("%s.%s.%s.%d", e.TenantId, agent, iid, e.Sequence)
+		g.Go(func() error {
+			return p.publishWithRetry(gctx, e.TenantId, agent, iid, dedup, payload)
+		})
+	}
+	return g.Wait()
 }
 
 func (p *Projector) publishWithRetry(ctx context.Context, tenant, agent, iid, dedup string, payload []byte) error {

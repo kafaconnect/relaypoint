@@ -488,6 +488,38 @@ func TestPartialPublishThenCrash(t *testing.T) {
 	}
 }
 
+// @spec: RDL-01
+// @spec: RDL-02
+// Concurrent fan-out: a fact for many recipients reaches EVERY feed exactly once (the bounded
+// errgroup drops none), and the source is acked once. If ONE recipient fails all retries on the
+// first delivery, the whole fact is Nak'd (never acked) — redelivery re-publishes, the already-
+// published feeds dedup to a single copy, the failed one now lands, and the source acks exactly once.
+func TestConcurrentFanoutAllRecipients(t *testing.T) {
+	agents := []string{"a1", "a2", "a3", "a4", "a5", "a6"}
+	f := fact(2, "I", 2, "message.created", "u1")
+	src := newFakeSource(
+		fact(1, "I", 1, "interaction.started", "u1"),
+		f, // a Nak rewinds the fake source to redeliver this same fact
+	)
+	sink := newFakeSink()
+	// a4 fails every PublishRetry attempt on its FIRST delivery (default PublishRetry=4), forcing a
+	// whole-fact Nak; it recovers on redelivery.
+	sink.failFor[fmt.Sprintf("%s.%s.%s.%d", tn, "a4", "I", 2)] = 4
+	runAll(t, src, sink, nil, Config{Roster: &fakeRoster{agents: map[string][]string{tn: agents}}})
+
+	for _, a := range agents {
+		if n := countSeqIn(t, sink.feedsFor(a, "I"), 2); n != 1 {
+			t.Fatalf("%s got seq 2 %d times, want exactly 1 (concurrent fan-out + dedup across redelivery)", a, n)
+		}
+	}
+	if countSeq(src.acked, 2) != 1 {
+		t.Fatalf("streamSeq 2 acked %d times, want 1 (ack only after ALL recipients)", countSeq(src.acked, 2))
+	}
+	if countSeq(src.naked, 2) < 1 {
+		t.Fatal("streamSeq 2 was never Nak'd despite one recipient failing its first delivery")
+	}
+}
+
 // @spec:signaling.feed.poison-dlq
 // A malformed envelope past max_deliver is DLQ'd and acked, not wedged.
 func TestPoisonDLQ(t *testing.T) {
