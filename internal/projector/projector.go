@@ -26,6 +26,13 @@ const (
 	// time (MaxAckPending=1), so this caps total concurrent feed publishes; a tenant's agent set is
 	// small, so it mainly collapses N sequential publish RTTs into ~one. @spec: RDL-01
 	fanoutConcurrency = 32
+
+	// A single lease-renew failure must NOT crash the single-active projector: a crash costs a
+	// restart + lease re-acquire + hydrate = several seconds of stalled fact delivery (observed live:
+	// a transient `nats: timeout` on renew dropped ~18s of call facts). Tolerate a brief NATS blip by
+	// retrying the renew within the lease TTL window before declaring the lease genuinely lost.
+	leaseRenewAttempts     = 3
+	leaseRenewRetryBackoff = 300 * time.Millisecond
 )
 
 // Snapshot is the participation view serialized by stream sequence — an ACKED-PREFIX state (its
@@ -191,12 +198,34 @@ func (p *Projector) renewLoop(ctx context.Context, out chan<- error) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := p.lease.Renew(ctx); err != nil {
+			if err := p.renewWithRetry(ctx); err != nil {
 				out <- err
 				return
 			}
 		}
 	}
+}
+
+// renewWithRetry tolerates a transient lease-renew failure (e.g. a brief `nats: timeout`) by retrying
+// a few times before reporting the lease lost — so a momentary NATS blip no longer crash-exits the
+// single-active projector. A sustained outage still surfaces (the caller exits and a standby/restart
+// takes over after the TTL).
+func (p *Projector) renewWithRetry(ctx context.Context) error {
+	var err error
+	for attempt := 0; attempt < leaseRenewAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(leaseRenewRetryBackoff):
+			}
+		}
+		if err = p.lease.Renew(ctx); err == nil {
+			return nil
+		}
+		obs.Logger(ctx).Warn("projector.lease-renew-retry", "attempt", attempt+1, "err", err.Error())
+	}
+	return err
 }
 
 // Hydrate loads the latest snapshot whose seq <= durable ack floor and read-only-folds
