@@ -63,6 +63,9 @@ func (d *DeskRoster) Agents(ctx context.Context, tenantID string) ([]string, err
 	if err != nil {
 		return nil, err
 	}
+	if len(agents) == 0 {
+		return agents, nil // never cache an empty roster: the next lookup re-fetches so a mid-rebuild blip can't dark a tenant for the TTL
+	}
 	d.mu.Lock()
 	d.entries[tenantID] = rosterEntry{agents: agents, expires: now.Add(d.ttl)}
 	d.mu.Unlock()

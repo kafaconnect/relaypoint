@@ -7,7 +7,9 @@ package projector
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
+var errRosterUnavailable = errors.New("projector: roster unavailable after in-process retry window")
+
 const (
 	feedControlSchema = signaling.SchemaV1
 	controlRevoked    = "feed.revoked"
@@ -27,11 +31,7 @@ const (
 	// small, so it mainly collapses N sequential publish RTTs into ~one. @spec: RDL-01
 	fanoutConcurrency = 32
 
-	// A transient lease-renew blip must neither crash the single-active projector (a restart costs
-	// re-acquire + hydrate) NOR keep it fanning out unfenced. renewWithRetry retries within a budget
-	// DERIVED from the lease TTL (renewBudget) so total retry time stays under the (TTL−renewInterval)
-	// fencing window, and an overdue renew pauses the data path immediately (ADR-0007). These are the
-	// retry shape only; the per-attempt timeout is derived from the TTL, never pinned. @spec:RDL-03
+	// @spec:RDL-03
 	leaseRenewAttempts     = 3
 	leaseRenewRetryBackoff = 300 * time.Millisecond
 )
@@ -87,12 +87,13 @@ func (s *state) restore(snap *Snapshot) {
 
 // Config tunes the worker; zero values fall back to sane defaults.
 type Config struct {
-	MaxDeliver    int           // DLQ a fact past this delivery count (default 5)
-	SnapshotEvery int           // save a snapshot every N acked facts (default 50)
-	PublishRetry  int           // per-feed publish attempts before Nak (default 4)
-	RetryBackoff  time.Duration // base backoff between publish attempts (default 50ms)
-	LeaseRenew    time.Duration // lease heartbeat interval (default 2s; lease TTL ~5s)
-	LeaseTTL      time.Duration // lease expiry; the renew budget derives from (LeaseTTL − LeaseRenew) (default 5s)
+	MaxDeliver        int           // DLQ a fact past this delivery count (default 5)
+	SnapshotEvery     int           // save a snapshot every N acked facts (default 50)
+	PublishRetry      int           // per-feed publish attempts before Nak (default 4)
+	RetryBackoff      time.Duration // base backoff between publish attempts (default 50ms)
+	LeaseRenew        time.Duration // lease heartbeat interval (default 2s; lease TTL ~5s)
+	LeaseTTL          time.Duration // lease expiry; the renew budget derives from (LeaseTTL − LeaseRenew) (default 5s)
+	RosterRetryWindow time.Duration // in-process roster-retry cap before Nak fallback (default 90s)
 
 	// TenantWideAgents is a DEV/TEST shortcut, off by default (nil): for a tenant present here, every
 	// fact of that tenant fans out to the listed agents' feeds, bypassing the participation gate. This
@@ -131,6 +132,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.LeaseRenew >= c.LeaseTTL {
 		c.LeaseRenew = c.LeaseTTL / 2 // keep a positive fencing slack
+	}
+	if c.RosterRetryWindow <= 0 {
+		c.RosterRetryWindow = 90 * time.Second
 	}
 	return c
 }
@@ -172,9 +176,6 @@ func (p *Projector) Run(ctx context.Context) error {
 		return fmt.Errorf("hydrate: %w", err)
 	}
 
-	// The fence gates the data path on lease health: an overdue renew pauses it (cancelling the
-	// in-flight fact), a renew that recovers within budget resumes it, a confirmed loss exits — so a
-	// former holder stops fanning out/snapshotting BEFORE a standby could re-acquire (ADR-0007).
 	fence := newFence(ctx)
 	renewCtx, stopRenew := context.WithCancel(ctx)
 	defer stopRenew()
@@ -220,12 +221,7 @@ func (p *Projector) renewLoop(ctx context.Context, fence *fence) {
 	}
 }
 
-// renewWithRetry renews the lease within a budget DERIVED from the TTL so total retry time stays
-// under the (TTL − renewInterval) fencing window — a TTL change re-derives it, it cannot silently
-// re-open the unfenced window. Each attempt is bounded by a per-attempt context (the bug being fixed:
-// Renew ignored ctx and rode the NATS default timeout). The instant an attempt is overdue the data
-// path is paused (stop-the-world), NOT after exhausting every attempt; a renew that recovers within
-// budget resumes it. @spec:RDL-03
+// @spec:RDL-03
 func (p *Projector) renewWithRetry(ctx context.Context, fence *fence) error {
 	perAttempt, attempts, backoff := renewBudget(p.cfg.LeaseTTL, p.cfg.LeaseRenew)
 	var err error
@@ -244,25 +240,22 @@ func (p *Projector) renewWithRetry(ctx context.Context, fence *fence) error {
 			fence.resume()
 			return nil
 		}
-		fence.pause() // overdue: fence the data path now, before a standby could re-acquire the lease
+		fence.pause()
 		obs.Logger(ctx).Warn("projector.lease-renew-retry", "attempt", attempt+1, "err", err.Error())
 	}
 	return err
 }
 
-// renewBudget derives the per-attempt renew timeout from the lease fencing slack (TTL −
-// renewInterval) so total = attempts×perAttempt + (attempts−1)×backoff stays strictly under the
-// slack (a 10% margin). Deriving it from the TTL means a TTL change cannot silently re-open the
-// unfenced-processing window. @spec:RDL-03
+// @spec:RDL-03
 func renewBudget(ttl, renewInterval time.Duration) (perAttempt time.Duration, attempts int, backoff time.Duration) {
 	slack := ttl - renewInterval
 	if slack <= 0 {
-		return time.Millisecond, 1, 0 // misconfig (renewInterval >= ttl): one immediately-bounded attempt
+		return time.Millisecond, 1, 0
 	}
 	attempts, backoff = leaseRenewAttempts, leaseRenewRetryBackoff
 	budget := slack * 9 / 10
 	if time.Duration(attempts-1)*backoff >= budget {
-		backoff = budget / time.Duration(attempts) / 2 // shrink the pinned backoff to fit a small TTL
+		backoff = budget / time.Duration(attempts) / 2
 	}
 	perAttempt = (budget - time.Duration(attempts-1)*backoff) / time.Duration(attempts)
 	if perAttempt <= 0 {
@@ -271,25 +264,20 @@ func renewBudget(ttl, renewInterval time.Duration) (perAttempt time.Duration, at
 	return perAttempt, attempts, backoff
 }
 
-// fence gates the projector's data path on lease health. pause (an overdue renew) cancels the
-// in-flight data context and holds the path; resume (a renew that recovered within budget) re-arms
-// it; fail (a confirmed loss) exits the loop. This keeps a former holder's fenced window strictly
-// containing its fan-out/snapshot writes, so it never races a standby (ADR-0007). @spec:RDL-03
+// @spec:RDL-03
 type fence struct {
 	parent context.Context
 	mu     sync.Mutex
 	paused bool
 	lost   error
-	cancel context.CancelFunc // cancels the live data context on pause/fail
-	wakeup chan struct{}      // closed to wake a begin() blocked while paused
+	cancel context.CancelFunc
+	wakeup chan struct{}
 }
 
 func newFence(parent context.Context) *fence {
 	return &fence{parent: parent, wakeup: make(chan struct{})}
 }
 
-// begin blocks while the lease is paused and returns a fresh data context for the next fact, or nil
-// when the loop must exit (parent cancelled or lease confirmed lost — exitErr reports which).
 func (f *fence) begin() context.Context {
 	for {
 		f.mu.Lock()
@@ -299,7 +287,7 @@ func (f *fence) begin() context.Context {
 		}
 		if !f.paused {
 			if f.cancel != nil {
-				f.cancel() // release the previous epoch's context
+				f.cancel()
 			}
 			dctx, cancel := context.WithCancel(f.parent)
 			f.cancel = cancel
@@ -387,69 +375,62 @@ func (p *Projector) Hydrate(ctx context.Context) error {
 	return nil
 }
 
-// process folds ONE fact, fans it out to every participating agent, then acks ONLY after all
-// intended publishes succeed (ack-after-publish). A poison fact past max_deliver is DLQ'd + acked
-// so the consumer is not wedged; an open-interval revocation also writes the feed.revoked tombstone.
 func (p *Projector) process(ctx context.Context, f Fact) error {
-	// Continue the trace carried on the .log fact (F5b): every downstream publish (feed fan-out +
-	// the revoked tombstone) and log line for this fact stays on the originating command's trace.
-	// Only when the fact actually carries one — a trace-less fact is NOT given a fabricated trace.
 	if tp := f.Traceparent(); tp != "" {
 		ctx = obs.ContextFromTraceparent(ctx, tp)
 	}
 	log := obs.Logger(ctx)
 	e := f.Event
 	if e == nil || e.TenantId == "" || e.EventType == "" {
-		return p.poison(ctx, f, "malformed envelope")
+		return p.dlqOrNak(ctx, f, "malformed envelope")
 	}
 	iid := interactionOf(f)
 	if iid == "" {
-		return p.poison(ctx, f, "unresolved interaction id")
+		return p.dlqOrNak(ctx, f, "unresolved interaction id")
 	}
 	key := e.TenantId + "/" + iid
 	view := p.st.view(key)
 
-	// Fold FIRST so the closing left fact's own interval is consulted, then pick recipients by the
-	// interval covering S (epoch guard, Decision 6): join ≤ S ≤ left, so join@J and left@L each reach
-	// their agent but no fact at S > L reaches an already-left agent.
+	// Fold before picking recipients so a closing left@L is itself projected but no fact at S>L is.
 	view.ApplyFact(e)
 	recipients := coveredBy(view, e.Sequence)
 	switch {
 	case p.cfg.Roster != nil:
-		// Production tenant-shared fan-out: ALL agents of the tenant per desk's real roster. A
-		// roster outage Naks (redelivery) rather than dropping the fact or fanning to a stale set.
-		agents, rerr := p.cfg.Roster.Agents(ctx, e.TenantId)
+		agents, rerr := p.resolveRoster(ctx, f, e, iid, log)
 		if rerr != nil {
-			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
-				"sequence", e.Sequence, "err", rerr.Error())
 			return p.src.Nak(f)
 		}
 		recipients = agents
 		log.Info("projector.roster-fanout", "tenant", e.TenantId, "subject_iid", iid,
 			"sequence", e.Sequence, "agents", agents)
 	case len(p.cfg.TenantWideAgents[e.TenantId]) > 0:
-		recipients = p.cfg.TenantWideAgents[e.TenantId] // dev/test shortcut, no participation gate
+		recipients = p.cfg.TenantWideAgents[e.TenantId]
 	}
 
 	payload, err := proto.Marshal(e)
 	if err != nil {
-		return p.poison(ctx, f, "marshal event")
+		return p.dlqOrNak(ctx, f, "marshal event")
 	}
 	if perr := p.fanout(ctx, e, iid, recipients, payload); perr != nil {
-		// Leave the source un-acked: Nak schedules redelivery; dedup makes the re-projection of
-		// already-published feeds a no-op (no drop, at-most-once per feed).
-		log.Warn("projector.publish-failed", "subject_iid", iid, "sequence", e.Sequence, "err", perr.Error())
-		return p.src.Nak(f)
+		if ctx.Err() != nil {
+			return p.src.Nak(f)
+		}
+		return p.dlqOrNak(ctx, f, fmt.Sprintf("feed publish failed: %v", perr))
 	}
 
 	if e.EventType == "participant.left" {
 		if terr := p.tombstone(ctx, e.TenantId, e.ActorId, iid, e.Sequence); terr != nil {
-			log.Warn("projector.tombstone-failed", "subject_iid", iid, "agent", e.ActorId,
-				"sequence", e.Sequence, "err", terr.Error())
-			return p.src.Nak(f)
+			if ctx.Err() != nil {
+				return p.src.Nak(f)
+			}
+			return p.dlqOrNak(ctx, f, fmt.Sprintf("revoked tombstone failed: %v", terr))
 		}
 	}
 
+	// WHY: a fence (overdue/lost lease) cancels ctx mid-fact; a stale holder must Nak, never ack/snapshot (RH-02).
+	if ctx.Err() != nil {
+		return p.src.Nak(f)
+	}
 	if err := p.src.Ack(f); err != nil {
 		return fmt.Errorf("ack: %w", err)
 	}
@@ -458,12 +439,40 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	return nil
 }
 
-// fanout publishes the projection to every recipient feed CONCURRENTLY (bounded by
-// fanoutConcurrency), so a fact bound for N agents costs ~one publish RTT instead of N sequential
-// ones. Ack-after-publish is preserved: the caller acks only when fanout returns nil (every
-// recipient acknowledged). The first failure cancels the rest and is returned so the caller Naks —
-// redelivery re-publishes, and the per-(agent,iid,sequence) dedup id makes an already-published
-// feed a no-op (at-most-once per feed). @spec: RDL-01
+// @spec:projector.roster.unbounded-retry
+func (p *Projector) resolveRoster(ctx context.Context, f Fact, e *signaling.Event, iid string, log *slog.Logger) ([]string, error) {
+	deadline := time.Now().Add(p.cfg.RosterRetryWindow)
+	backoff := p.cfg.RetryBackoff
+	for {
+		agents, err := p.cfg.Roster.Agents(ctx, e.TenantId)
+		switch {
+		case err == nil && len(agents) > 0:
+			return agents, nil
+		case err != nil:
+			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
+				"sequence", e.Sequence, "err", err.Error())
+		default:
+			log.Warn("projector.roster-empty", "tenant", e.TenantId, "subject_iid", iid, "sequence", e.Sequence)
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return nil, errRosterUnavailable
+		}
+		// WHY: hold the MaxAckPending=1 slot via InProgress so a roster blip doesn't burn the MaxDeliver budget (RH-04).
+		if ierr := p.src.InProgress(f); ierr != nil {
+			return nil, errRosterUnavailable
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errRosterUnavailable
+		case <-time.After(backoff):
+		}
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
+	}
+}
+
+// @spec: RDL-01
 func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, recipients []string, payload []byte) error {
 	if len(recipients) == 0 {
 		return nil
@@ -497,9 +506,6 @@ func (p *Projector) publishWithRetry(ctx context.Context, tenant, agent, iid, de
 	return err
 }
 
-// tombstone writes the terminal feed.revoked feed-control marker into the revoked agent's feed so a
-// reconnecting client deterministically drops the interaction even if it missed participant.left.
-// Deterministic dedup id keeps it at-most-once across redelivery.
 func (p *Projector) tombstone(ctx context.Context, tenant, agent, iid string, atSeq int64) error {
 	ctrl := &signaling.FeedControl{
 		Schema: feedControlSchema, Control: controlRevoked, InteractionId: iid, AtSequence: atSeq,
@@ -512,9 +518,10 @@ func (p *Projector) tombstone(ctx context.Context, tenant, agent, iid string, at
 	return p.publishWithRetry(ctx, tenant, agent, iid, dedup, payload)
 }
 
-func (p *Projector) poison(ctx context.Context, f Fact, reason string) error {
+// @spec:projector.delivery.exhausted-to-dlq
+func (p *Projector) dlqOrNak(ctx context.Context, f Fact, reason string) error {
 	if p.src.Delivered(f) < p.cfg.MaxDeliver {
-		obs.Logger(ctx).Warn("projector.poison-retry", "reason", reason, "delivered", p.src.Delivered(f))
+		obs.Logger(ctx).Warn("projector.delivery-retry", "reason", reason, "delivered", p.src.Delivered(f))
 		return p.src.Nak(f)
 	}
 	tenant, evID, seq := "", "", int64(0)
@@ -526,7 +533,7 @@ func (p *Projector) poison(ctx context.Context, f Fact, reason string) error {
 	}
 	obs.Logger(ctx).Error("projector.dlq", "reason", reason, "event_id", evID, "sequence", seq)
 	if err := p.src.Ack(f); err != nil { // ack so the consumer is not wedged
-		return fmt.Errorf("ack poison: %w", err)
+		return fmt.Errorf("ack dlq: %w", err)
 	}
 	p.lastAckSeq = f.StreamSeq
 	return nil
@@ -537,17 +544,13 @@ func (p *Projector) maybeSnapshot(ctx context.Context, seq uint64) {
 	if p.sinceSnap < p.cfg.SnapshotEvery {
 		return
 	}
-	// Save only AFTER the Ack that produced this seq → the snapshot is always an acked prefix
-	// (seq <= durable ack floor), never ahead of the cursor.
 	if err := p.snaps.Save(ctx, seq, p.st.snapshot()); err != nil {
 		obs.Logger(ctx).Warn("projector.snapshot-failed", "sequence", seq, "err", err.Error())
-		return // a failed snapshot is non-fatal: hydration falls back to an older snapshot + a longer tail fold
+		return
 	}
 	p.sinceSnap = 0
 }
 
-// coveredBy returns the agents whose membership interval covers sequence S (join ≤ S ≤ left, or
-// join ≤ S for an open interval) — the recipient set of the fact at S.
 func coveredBy(v *signaling.ParticipationView, s int64) []string {
 	var out []string
 	for _, a := range v.Agents() {
@@ -561,5 +564,4 @@ func coveredBy(v *signaling.ParticipationView, s int64) []string {
 	return out
 }
 
-// interactionOf returns the iid the adapter parsed from the delivery subject (the Event has no iid).
 func interactionOf(f Fact) string { return f.iid }

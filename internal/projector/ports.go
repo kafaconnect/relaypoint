@@ -48,6 +48,7 @@ type LogSource interface {
 	// (1 on first delivery) so the core can DLQ past max_deliver.
 	Ack(f Fact) error
 	Nak(f Fact) error
+	InProgress(f Fact) error
 	Delivered(f Fact) int
 	// AckFloor is the durable consumer's ack floor — the recovery cursor. Hydration loads the
 	// snapshot at/below it and read-only-folds (snapshot_seq, AckFloor].

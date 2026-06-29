@@ -2,7 +2,7 @@
 id: RH-04
 slice: RH
 title: HIGH — gate publish/tombstone Nak on MaxDeliver to DLQ, roster failure retries unbounded
-status: todo
+status: done
 specs: [projector.delivery.exhausted-to-dlq, projector.roster.unbounded-retry]
 ---
 
@@ -27,4 +27,5 @@ alert) or wedges the single-active consumer (`MaxAckPending=1` → total stall).
 `// @spec:projector.delivery.exhausted-to-dlq`, `// @spec:projector.roster.unbounded-retry`
 
 ## Log
-- todo
+- done: `poison`→`dlqOrNak` (one MaxDeliver-gated DLQ+ack helper, reads `cfg.MaxDeliver`); the publish/tombstone Nak branches now route through it (exhausted → DLQ+ack, else Nak), the roster-error branch stays a direct unbounded Nak (never DLQ). Tests: `TestExhaustedDeliveryToDLQ` (@spec:projector.delivery.exhausted-to-dlq) + `TestRosterErrorRetriesUnboundedNeverDLQ` (@spec:projector.roster.unbounded-retry); fake source gained an opt-in `redeliverCap` modelling the broker terminating at MaxDeliver. build/vet/vet-integration/race green; RDL-01/02/03 + failFor tests preserved.
+- cross-review follow-up: a plain `Nak` on roster failure still counts toward `MaxDeliver=5`, so "roster retries unbounded" was false (a >5-redelivery desk outage still terminated a valid fact). Fixed: roster resolution moved into `resolveRoster`, which retries IN-PROCESS holding the delivery via `msg.InProgress()` (new `LogSource.InProgress` port — extends the ack deadline without consuming the delivery budget) for a bounded window (`Config.RosterRetryWindow`, default 90s ~ a few × AckWait), only falling back to `Nak` after the cap. Briefly holds the `MaxAckPending=1` consumer, acceptable for a short desk blip and far better than dropping a valid fact. `dlqOrNak` (exhausted publish/tombstone → DLQ+ack) unchanged. Renamed `TestRosterErrorRetriesUnboundedNeverDLQ` → `TestRosterErrorHeldViaInProgressThenBoundedNakNeverDLQ` (keeps `@spec:projector.roster.unbounded-retry`): asserts InProgress is used + never DLQ/ack-drop; `TestTenantRosterErrorRecoversInProcessNoNak` shows a transient error recovers in-process with no Nak.

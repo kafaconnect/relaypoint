@@ -2,7 +2,7 @@
 id: RH-05
 slice: RH
 title: HIGH — empty roster (200, empty agents) must soft-fail and never be cached
-status: todo
+status: done
 specs: [projector.roster.empty-not-cached, projector.roster.empty-soft-fail]
 ---
 
@@ -27,4 +27,5 @@ including an empty success — and only HTTP errors are treated as non-cacheable
 `// @spec:projector.roster.empty-not-cached`, `// @spec:projector.roster.empty-soft-fail`
 
 ## Log
-- todo
+- done: projector roster arm now soft-fails an empty roster (200, no agents) → Nak/retry (never ack-drop, never DLQ, never fan to the empty set); a zero-agent tenant is indistinguishable from a mid-rebuild so we prefer retry (documented terse). `DeskRoster.Agents` caches ONLY non-empty results (empty success returned but not stored), mirroring "errors are not cached". Tests: `TestEmptyRosterSoftFailNotDropped` (@spec:projector.roster.empty-soft-fail) + `TestDeskRoster_EmptyNotCachedNonEmptyCached` (@spec:projector.roster.empty-not-cached). build/vet/race green.
+- cross-review follow-up (with RH-04): the empty-roster path now also retries IN-PROCESS via `msg.InProgress()` (same bounded `Config.RosterRetryWindow`) before the `Nak` fallback, so a mid-rebuild window holds the delivery instead of burning `MaxDeliver` — still never ack-drops, never DLQs, never fans to the empty set. `DeskRoster` empty-not-cached behavior unchanged.

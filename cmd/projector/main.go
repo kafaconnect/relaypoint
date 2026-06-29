@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/projector"
@@ -43,6 +44,8 @@ func main() {
 
 	js, err := nc.JetStream()
 	must("jetstream", err)
+	jsKV, err := jetstream.New(nc)
+	must("jetstream-kv", err)
 
 	must("feed-stream", projector.EnsureFeedStream(js, time.Hour, 10*time.Minute))
 
@@ -51,9 +54,9 @@ func main() {
 	src, err := projector.NewLogSource(js, maxDeliver, 30*time.Second)
 	must("log-source", err)
 	sink := projector.NewFeedSink(js)
-	lease, err := projector.NewLeaseStore(js, workerID(), leaseTTL)
+	lease, err := projector.NewLeaseStore(jsKV, workerID(), leaseTTL)
 	must("lease", err)
-	snaps, err := projector.NewSnapshotStore(js)
+	snaps, err := projector.NewSnapshotStore(jsKV)
 	must("snapshot-store", err)
 
 	cfg := projector.Config{MaxDeliver: maxDeliver, LeaseTTL: leaseTTL}

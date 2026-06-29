@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kafaconnect/relaypoint/internal/signaling"
@@ -130,18 +131,22 @@ func count(xs []int64, v int64) int {
 }
 
 // runProjector starts a worker against the live source/sink and returns a stop func.
-func runProjector(t *testing.T, js nats.JetStreamContext, cfg Config) (stop func(), p *Projector) {
+func runProjector(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, cfg Config) (stop func(), p *Projector) {
 	t.Helper()
+	jsKV, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream kv: %v", err)
+	}
 	src, err := NewLogSource(js, 3, 3*time.Second)
 	if err != nil {
 		t.Fatalf("log source: %v", err)
 	}
 	sink := NewFeedSink(js)
-	lease, err := NewLeaseStore(js, fmt.Sprintf("w-%d", time.Now().UnixNano()), 5*time.Second)
+	lease, err := NewLeaseStore(jsKV, fmt.Sprintf("w-%d", time.Now().UnixNano()), 5*time.Second)
 	if err != nil {
 		t.Fatalf("lease: %v", err)
 	}
-	snaps, err := NewSnapshotStore(js)
+	snaps, err := NewSnapshotStore(jsKV)
 	if err != nil {
 		t.Fatalf("snaps: %v", err)
 	}
@@ -178,7 +183,7 @@ func TestIntegration_FanoutTwoParticipantsVerbatimOnce(t *testing.T) {
 	appendFact(t, js, "I", 3, "participant.joined", "bob")
 	appendFact(t, js, "I", 4, "message.created", "u1")
 
-	stop, _ := runProjector(t, js, Config{SnapshotEvery: 1})
+	stop, _ := runProjector(t, nc, js, Config{SnapshotEvery: 1})
 	defer stop()
 
 	waitUntil(t, func() bool {
@@ -229,7 +234,7 @@ func TestIntegration_RevokeStopsAndTombstones(t *testing.T) {
 	appendFact(t, js, "I", 4, "participant.left", "alice")
 	appendFact(t, js, "I", 5, "message.created", "u1")
 
-	stop, _ := runProjector(t, js, Config{SnapshotEvery: 1})
+	stop, _ := runProjector(t, nc, js, Config{SnapshotEvery: 1})
 	defer stop()
 
 	waitUntil(t, func() bool {
@@ -275,7 +280,7 @@ func TestIntegration_RestartHydratesNoDropNoDup(t *testing.T) {
 	appendFact(t, js, "I", 2, "participant.joined", "alice")
 	appendFact(t, js, "I", 3, "message.created", "u1")
 
-	stop1, _ := runProjector(t, js, Config{SnapshotEvery: 1})
+	stop1, _ := runProjector(t, nc, js, Config{SnapshotEvery: 1})
 	waitUntil(t, func() bool { return has(eventSeqs(t, drainFeed(t, js, "alice", "I")), 3) }, "worker1 did not project seq 3")
 	stop1() // simulate crash/handover (durable cursor + snapshot survive)
 
@@ -283,7 +288,7 @@ func TestIntegration_RestartHydratesNoDropNoDup(t *testing.T) {
 	appendFact(t, js, "I", 4, "message.created", "u1")
 	appendFact(t, js, "I", 5, "message.created", "u1")
 
-	stop2, _ := runProjector(t, js, Config{SnapshotEvery: 1})
+	stop2, _ := runProjector(t, nc, js, Config{SnapshotEvery: 1})
 	defer stop2()
 	waitUntil(t, func() bool {
 		s := eventSeqs(t, drainFeed(t, js, "alice", "I"))
@@ -311,7 +316,7 @@ func TestIntegration_ConcurrentSameFactDeduped(t *testing.T) {
 	appendFact(t, js, "I", 2, "participant.joined", "alice")
 	appendFact(t, js, "I", 3, "message.created", "u1")
 
-	stop, _ := runProjector(t, js, Config{SnapshotEvery: 1})
+	stop, _ := runProjector(t, nc, js, Config{SnapshotEvery: 1})
 	waitUntil(t, func() bool { return has(eventSeqs(t, drainFeed(t, js, "alice", "I")), 3) }, "projector did not project seq 3")
 	stop()
 

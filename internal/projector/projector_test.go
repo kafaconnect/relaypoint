@@ -18,12 +18,14 @@ import (
 // --- in-memory fakes (no live NATS — loose-coupling HARD RULE) ---
 
 type fakeSource struct {
-	facts   []Fact
-	next    int
-	floor   uint64
-	deliver map[uint64]int // streamSeq -> delivery count
-	acked   []uint64
-	naked   []uint64
+	facts        []Fact
+	next         int
+	floor        uint64
+	deliver      map[uint64]int // streamSeq -> delivery count
+	acked        []uint64
+	naked        []uint64
+	inProgress   int
+	redeliverCap int // 0 = unlimited (default); >0 models the broker terminating a fact at MaxDeliver (no further redelivery)
 }
 
 func newFakeSource(facts ...Fact) *fakeSource {
@@ -50,11 +52,15 @@ func (s *fakeSource) Ack(f Fact) error {
 
 func (s *fakeSource) Nak(f Fact) error {
 	s.naked = append(s.naked, f.StreamSeq)
+	if s.redeliverCap > 0 && s.deliver[f.StreamSeq] >= s.redeliverCap {
+		return nil // broker gave up at MaxDeliver: do NOT rewind (the fact is terminated, no redelivery)
+	}
 	// redeliver: rewind so the same fact is delivered again on the next Deliver.
 	s.next--
 	return nil
 }
 
+func (s *fakeSource) InProgress(Fact) error                    { s.inProgress++; return nil }
 func (s *fakeSource) Delivered(f Fact) int                     { return s.deliver[f.StreamSeq] }
 func (s *fakeSource) AckFloor(context.Context) (uint64, error) { return s.floor, nil }
 
@@ -121,9 +127,6 @@ func (s *fakeSink) feedsFor(agent, iid string) []pub {
 	return out
 }
 
-// fakeLease is the in-memory lease: a nil renew always succeeds (the healthy default the existing
-// fan-out tests rely on); a non-nil renew can return an error or BLOCK past a per-attempt budget
-// (honouring its ctx, like the fixed adapter) to exercise the fencing/budget paths.
 type fakeLease struct {
 	mu      sync.Mutex
 	renew   func(context.Context) error
@@ -291,8 +294,6 @@ func TestTenantWideFanoutShortcut(t *testing.T) {
 	}
 }
 
-// fakeRoster is the in-memory production-roster source: a tenant maps to its agents; an error is
-// returned when set (a roster outage). Records the lookups for assertion.
 type fakeRoster struct {
 	agents  map[string][]string
 	err     error
@@ -307,8 +308,6 @@ func (r *fakeRoster) Agents(_ context.Context, tenantID string) ([]string, error
 	return r.agents[tenantID], nil
 }
 
-// PRODUCTION tenant-roster fan-out: with a Roster set, every fact of the tenant fans to ALL agents
-// the roster reports — sourced from the real desk roster, no hardcode — regardless of participation.
 func TestTenantRosterFanout(t *testing.T) {
 	src := newFakeSource(
 		fact(1, "I", 1, "interaction.started", "u1"),
@@ -331,33 +330,28 @@ func TestTenantRosterFanout(t *testing.T) {
 	}
 }
 
-// A roster outage Naks the fact (redelivery) rather than dropping it or fanning to a stale set.
-func TestTenantRosterErrorNaks(t *testing.T) {
-	f := fact(2, "I", 2, "message.created", "u1")
+func TestTenantRosterErrorRecoversInProcessNoNak(t *testing.T) {
 	src := newFakeSource(
 		fact(1, "I", 1, "interaction.started", "u1"),
-		f, f, // redelivery: first fails (roster down), retry succeeds
+		fact(2, "I", 2, "message.created", "u1"),
 	)
 	sink := newFakeSink()
-	rr := &fakeRoster{} // errs until flipped below
-
-	// First two deliveries (started ok with empty roster, then message) — make the message's first
-	// delivery fail by erroring on the second lookup, then recover. Simpler: error always for one
-	// delivery via a counter.
 	calls := 0
 	failing := &errOnceRoster{agents: map[string][]string{tn: {"agent1"}}, failAt: 2, calls: &calls}
-	_ = rr
-	runAll(t, src, sink, nil, Config{Roster: failing})
+	runAll(t, src, sink, nil, Config{Roster: failing,
+		RosterRetryWindow: 50 * time.Millisecond, RetryBackoff: time.Millisecond})
 
-	if countSeq(src.naked, 2) < 1 {
-		t.Fatal("streamSeq 2 was never Nak'd despite a roster outage")
-	}
 	if !containsSeq(t, sink.feedsFor("agent1", "I"), 2) {
-		t.Fatal("agent1 never received seq 2 after the roster recovered on redelivery")
+		t.Fatal("agent1 never received seq 2 after the roster recovered in-process")
+	}
+	if countSeq(src.naked, 2) != 0 {
+		t.Fatalf("seq 2 Nak'd %d times, want 0 (a transient roster error is held in-process, not redelivered)", countSeq(src.naked, 2))
+	}
+	if src.inProgress < 1 {
+		t.Fatal("InProgress was never called to hold the delivery during the roster blip")
 	}
 }
 
-// errOnceRoster errors on the Nth lookup (1-indexed) and succeeds otherwise.
 type errOnceRoster struct {
 	agents map[string][]string
 	failAt int
@@ -370,6 +364,78 @@ func (r *errOnceRoster) Agents(_ context.Context, tenantID string) ([]string, er
 		return nil, errors.New("roster outage")
 	}
 	return r.agents[tenantID], nil
+}
+
+// @spec:projector.delivery.exhausted-to-dlq
+func TestExhaustedDeliveryToDLQ(t *testing.T) {
+	f := fact(1, "I", 1, "message.created", "u1")
+	src := newFakeSource(f)
+	src.redeliverCap = 3
+	sink := newFakeSink()
+	sink.failFor[fmt.Sprintf("%s.%s.%s.%d", tn, "agent1", "I", 1)] = 99
+	runAll(t, src, sink, nil, Config{MaxDeliver: 3, PublishRetry: 1,
+		Roster: &fakeRoster{agents: map[string][]string{tn: {"agent1"}}}})
+
+	if len(sink.dlq) != 1 {
+		t.Fatalf("DLQ entries = %d, want 1 (exhausted delivery dead-lettered, not silently dropped); entries=%v", len(sink.dlq), sink.dlq)
+	}
+	if !strings.Contains(sink.dlq[0], "ev-1") {
+		t.Fatalf("DLQ record %q missing the source event_id", sink.dlq[0])
+	}
+	if countSeq(src.acked, 1) != 1 {
+		t.Fatalf("exhausted streamSeq 1 acked %d times, want 1 (acked after DLQ so the MaxAckPending=1 consumer is not wedged)", countSeq(src.acked, 1))
+	}
+	if countSeq(src.naked, 1) < 1 {
+		t.Fatal("streamSeq 1 was never Nak'd before exhaustion (transient failures must redeliver first)")
+	}
+}
+
+// @spec:projector.roster.unbounded-retry
+func TestRosterErrorHeldViaInProgressThenBoundedNakNeverDLQ(t *testing.T) {
+	f := fact(1, "I", 1, "message.created", "u1")
+	src := newFakeSource(f)
+	src.redeliverCap = 3
+	sink := newFakeSink()
+	runAll(t, src, sink, nil, Config{MaxDeliver: 3,
+		RosterRetryWindow: 30 * time.Millisecond, RetryBackoff: 5 * time.Millisecond,
+		Roster: &fakeRoster{err: errors.New("roster outage")}})
+
+	if src.inProgress < 1 {
+		t.Fatal("InProgress was never called — a roster outage must extend the delivery budget, not burn it")
+	}
+	if len(sink.dlq) != 0 {
+		t.Fatalf("DLQ entries = %d, want 0 (a roster outage must never DLQ a valid fact); entries=%v", len(sink.dlq), sink.dlq)
+	}
+	if countSeq(src.acked, 1) != 0 {
+		t.Fatalf("streamSeq 1 acked %d times, want 0 (a roster outage must not ack-drop the fact)", countSeq(src.acked, 1))
+	}
+	if countSeq(src.naked, 1) < 1 {
+		t.Fatal("streamSeq 1 was never Nak'd (the bounded fallback after the in-process window must Nak)")
+	}
+}
+
+// @spec:projector.roster.empty-soft-fail
+func TestEmptyRosterSoftFailNotDropped(t *testing.T) {
+	f := fact(1, "I", 1, "message.created", "u1")
+	src := newFakeSource(f)
+	src.redeliverCap = 3
+	sink := newFakeSink()
+	runAll(t, src, sink, nil, Config{MaxDeliver: 3,
+		RosterRetryWindow: 30 * time.Millisecond, RetryBackoff: 5 * time.Millisecond,
+		Roster: &fakeRoster{agents: map[string][]string{tn: {}}}})
+
+	if countSeq(src.acked, 1) != 0 {
+		t.Fatalf("empty-roster streamSeq 1 acked %d times, want 0 (soft-fail must not ack-drop a real fact)", countSeq(src.acked, 1))
+	}
+	if countSeq(src.naked, 1) < 1 {
+		t.Fatal("empty-roster streamSeq 1 was never Nak'd (it must soft-fail/retry, not ack-drop)")
+	}
+	if len(sink.dlq) != 0 {
+		t.Fatalf("DLQ entries = %d, want 0 (an empty roster is a transient soft-fail, never DLQ); entries=%v", len(sink.dlq), sink.dlq)
+	}
+	if got := len(sink.feedsFor("agent1", "I")); got != 0 {
+		t.Fatalf("empty roster fanned to %d feeds, want 0 (must not fan to a stale/empty set)", got)
+	}
 }
 
 // @spec:signaling.feed.fanout-dedup
@@ -615,9 +681,6 @@ func TestHydrateFromSnapshotNoDropNoDup(t *testing.T) {
 }
 
 // @spec:RDL-03
-// The renew budget is DERIVED from the lease window: total retry time = attempts×perAttempt +
-// (attempts−1)×backoff stays strictly under the fencing slack (TTL − renewInterval) for any TTL, so
-// a TTL change cannot silently re-open the unfenced-processing window.
 func TestRenewBudgetDerivedUnderSlack(t *testing.T) {
 	for _, tc := range []struct{ ttl, interval time.Duration }{
 		{5 * time.Second, 2 * time.Second}, // production default
@@ -638,15 +701,9 @@ func TestRenewBudgetDerivedUnderSlack(t *testing.T) {
 }
 
 // @spec:RDL-03
-// A stalled broker must not blow the fencing window: with a Renew that blocks (honouring its ctx,
-// like the fixed adapter), renewWithRetry's per-attempt timeouts must return the whole retry within
-// the (TTL − renewInterval) slack — the bug rode the NATS ~5s default per attempt (~15.6s total).
 func TestRenewWithRetryBoundedWhenLeaseStalls(t *testing.T) {
 	const ttl, interval = 5 * time.Second, 2 * time.Second
 	slack := ttl - interval
-	// Renew blocks ~1.2s/attempt unless its ctx fires first; the per-attempt budget (~700ms) must cut
-	// each attempt short. (Without the fix — passing the loop ctx, no per-attempt deadline — the full
-	// 1.2s rides every attempt and the total exceeds the slack.)
 	lease := &fakeLease{renew: func(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
@@ -670,10 +727,6 @@ func TestRenewWithRetryBoundedWhenLeaseStalls(t *testing.T) {
 }
 
 // @spec:RDL-03
-// The fence is the stop-the-world primitive: pause cancels the in-flight data context (so an
-// in-flight fan-out stops the instant the renew is overdue), holds the next begin, resume re-arms a
-// fresh context, and a confirmed fail exits the loop — never letting the data path run while the
-// lease cannot be proven held.
 func TestFencePauseStopsResumeFail(t *testing.T) {
 	f := newFence(context.Background())
 
@@ -714,12 +767,8 @@ func TestFencePauseStopsResumeFail(t *testing.T) {
 }
 
 // @spec:RDL-03
-// End-to-end: a confirmed lease loss stops the worker — Run returns "lease lost" and the data path
-// halts (no more fan-out once the lease can no longer be proven held), so a standby can take over.
 func TestRunStopsOnLeaseLoss(t *testing.T) {
 	lease := &fakeLease{renew: func(context.Context) error { return errors.New("nats: timeout") }}
-	// The source blocks (no facts) so the loop sits live while the renew loop runs; on the confirmed
-	// loss begin() returns nil and Run exits with the lease-lost error.
 	p := New(blockingSource{}, newFakeSink(), lease, newFakeSnaps(),
 		Config{LeaseTTL: 200 * time.Millisecond, LeaseRenew: 60 * time.Millisecond})
 
@@ -729,15 +778,63 @@ func TestRunStopsOnLeaseLoss(t *testing.T) {
 	}
 }
 
-// blockingSource yields no facts: Deliver blocks until its (fenced) context is cancelled, so a test
-// can keep the data loop live while the renew loop drives the fence.
+type fenceSink struct {
+	*fakeSink
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *fenceSink) Publish(ctx context.Context, tenant, agent, iid, dedup string, payload []byte) error {
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	return s.fakeSink.Publish(context.Background(), tenant, agent, iid, dedup, payload)
+}
+
+// @spec:RDL-03
+func TestFencedInFlightPublishNaksNotAcks(t *testing.T) {
+	f := fact(1, "I", 1, "message.created", "u1")
+	src := newFakeSource(f)
+	base := newFakeSink()
+	sink := &fenceSink{fakeSink: base, entered: make(chan struct{})}
+	snaps := newFakeSnaps()
+	p := New(src, sink, &fakeLease{}, snaps, Config{
+		SnapshotEvery: 1,
+		Roster:        &fakeRoster{agents: map[string][]string{tn: {"agent1"}}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.process(ctx, f) }()
+
+	<-sink.entered
+	cancel()
+	<-done
+
+	if countSeq(src.acked, 1) != 0 {
+		t.Fatalf("a fenced in-flight fan-out must NOT ack (a stale holder writing latest); acked=%v", src.acked)
+	}
+	if countSeq(src.naked, 1) < 1 {
+		t.Fatal("a fenced in-flight fan-out must Nak the fact for redelivery")
+	}
+	if len(snaps.saved) != 0 {
+		t.Fatalf("a fenced holder must not write a snapshot; saved=%v", snaps.saved)
+	}
+	if len(base.dlq) != 0 {
+		t.Fatal("a fence cancellation must never DLQ")
+	}
+}
+
 type blockingSource struct{}
 
-func (blockingSource) Deliver(ctx context.Context) (Fact, error) { <-ctx.Done(); return Fact{}, ctx.Err() }
-func (blockingSource) Ack(Fact) error                            { return nil }
-func (blockingSource) Nak(Fact) error                            { return nil }
-func (blockingSource) Delivered(Fact) int                        { return 0 }
-func (blockingSource) AckFloor(context.Context) (uint64, error)  { return 0, nil }
+func (blockingSource) Deliver(ctx context.Context) (Fact, error) {
+	<-ctx.Done()
+	return Fact{}, ctx.Err()
+}
+func (blockingSource) Ack(Fact) error                           { return nil }
+func (blockingSource) Nak(Fact) error                           { return nil }
+func (blockingSource) InProgress(Fact) error                    { return nil }
+func (blockingSource) Delivered(Fact) int                       { return 0 }
+func (blockingSource) AckFloor(context.Context) (uint64, error) { return 0, nil }
 func (blockingSource) FoldRange(context.Context, uint64, uint64) ([]Fact, error) {
 	return nil, nil
 }
