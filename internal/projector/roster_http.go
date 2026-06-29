@@ -10,11 +10,7 @@ import (
 	"time"
 )
 
-// DeskRoster is the live Roster adapter: it HTTP-pulls desk's tenant-roster endpoint
-// (GET <baseURL>/tenants/{tid}/agents) with the shared service token, and caches the result per
-// tenant for ttl. A cache miss or an expired entry refreshes; a successful refresh replaces the
-// entry. Errors are not cached (a transient desk/Zitadel blip must not pin an empty roster). The
-// concrete HTTP coupling lives only here — the projector core sees the Roster port (loose coupling).
+// Live Roster adapter (the only HTTP coupling; the core sees the port — loose coupling): caches per tenant for ttl but never caches errors, so a transient blip can't pin an empty roster.
 type DeskRoster struct {
 	baseURL string
 	token   string

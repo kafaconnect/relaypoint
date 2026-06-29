@@ -1,8 +1,4 @@
-// Auth-callout responder: verifies a connection's presented token and mints its per-connection,
-// identity-pinned NATS ACLs (openspec change agent-feed-fanout, Decisions 1/2b/4/9). It replaces
-// the shared-`client` dev user, making the `.cmd.<self>` / `feed.<self>` / `_INBOX_<conn>` pins
-// airtight. The issuer signing-key SEED and the token-verify secret are SECRETS — env only, never
-// committed.
+// Command authcallout verifies a connection's token and mints its per-connection, identity-pinned NATS ACLs (openspec change agent-feed-fanout).
 package main
 
 import (
@@ -39,10 +35,7 @@ func main() {
 	issuerSeed := decodeSeed(mustEnv("AUTH_CALLOUT_ISSUER_SEED"))
 	tokenSecret := []byte(mustEnv("AUTH_TOKEN_SECRET"))
 
-	// F1: RP is the SOLE responder. The verify ladder is agent/trusted-backend (HMAC dev token) →
-	// desk visitor `vis_` (EdDSA, verified against desk's published JWKS). When DESK_INGRESS_JWKS_URL
-	// is unset the visitor link is omitted — a `vis_` then simply has no accepting verifier and is denied
-	// (fail closed), so RP never mints a visitor grant without an explicit desk JWKS source configured.
+	// fail closed: with DESK_INGRESS_JWKS_URL unset no verifier accepts a `vis_` token, so visitor grants are denied (F1).
 	var verifier authcallout.Verifier = authcallout.NewHMACVerifier(tokenSecret)
 	if jwksURL := os.Getenv("DESK_INGRESS_JWKS_URL"); jwksURL != "" {
 		ttl := envDuration("DESK_INGRESS_JWKS_TTL", 5*time.Minute)
@@ -68,8 +61,7 @@ func main() {
 	<-stop
 }
 
-// decodeSeed accepts the nkey seed either raw (`SA…`) or base64-wrapped, so it can be carried in a
-// k8s Secret/env without quoting issues.
+// accepts the seed raw (`SA…`) or base64-wrapped so it survives a k8s Secret/env without quoting issues.
 func decodeSeed(v string) []byte {
 	if len(v) > 0 && v[0] == 'S' {
 		return []byte(v)

@@ -10,7 +10,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// fakeStore is an in-memory LogStore — proves the router core needs no NATS.
 type fakeStore struct {
 	mu        sync.Mutex
 	facts     map[string][]*Event
@@ -66,7 +65,6 @@ func (s *countingStore) Append(ctx context.Context, subject string, data []byte,
 
 func (s *countingStore) occConflicts() int { s.mu.Lock(); defer s.mu.Unlock(); return s.conflicts }
 
-// chatData marshals chat message text into the `data` payload (the registry: medium=chat).
 func chatData(text string) []byte {
 	if text == "" {
 		return nil
@@ -85,7 +83,6 @@ func callCmd(id, tenant, typ string) []byte {
 	return b
 }
 
-// the .cmd subject carries the publisher identity suffix; cmd()'s actor is u1.
 const subj = "tenant.t1.interaction.iX.cmd.u1"
 
 // @spec:web-call.lifecycle-ringing-active-ended
@@ -111,35 +108,29 @@ func TestCore_NoNATS(t *testing.T) {
 		t.Fatalf("facts %+v want chat start/message plus call ringing and upgrade", facts)
 	}
 
-	// idempotency: same command replayed → no second fact
 	a := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "hi"))
 	facts, _, _ = st.Replay(logSubjectFor("t1", "iX"))
 	if a.Status != statusAccepted || len(facts) != 4 {
 		t.Fatalf("retry double-appended: %+v / %d facts", a, len(facts))
 	}
-	// conflict: same id, different payload
 	if got := r.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "DIFF")); got.Status != statusRejected {
 		t.Fatalf("conflict not rejected: %+v", got)
 	}
-	// payload tenant mismatch
 	if got := r.HandleCommand(context.Background(), subj, cmd("c3", "OTHER", "message.created", "")); got.Status != statusRejected {
 		t.Fatalf("tenant mismatch not rejected: %+v", got)
 	}
-	// illegal: message before start on a fresh interaction
 	if got := r.HandleCommand(context.Background(), "tenant.t1.interaction.iY.cmd.u1", cmd("c4", "t1", "message.created", "")); got.Status != statusRejected {
 		t.Fatalf("illegal not rejected: %+v", got)
 	}
 }
 
-// TestCore_RestartRebuild: a NEW router over the SAME store (a restart) continues the
-// sequence and respects state — proving state is rebuilt from the durable log.
 func TestCore_RestartRebuild(t *testing.T) {
 	st := newFakeStore()
 	r1 := NewRouter(st, WithDevMode())
 	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
 	r1.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "a"))
 
-	r2 := NewRouter(st, WithDevMode()) // restart: empty in-memory state
+	r2 := NewRouter(st, WithDevMode())
 	got := r2.HandleCommand(context.Background(), subj, cmd("c3", "t1", "message.created", "b"))
 	if got.Status != statusAccepted {
 		t.Fatalf("post-restart message rejected (state not rebuilt): %+v", got)
@@ -148,7 +139,6 @@ func TestCore_RestartRebuild(t *testing.T) {
 	if n := len(facts); n != 3 || facts[2].Sequence != 3 {
 		t.Fatalf("post-restart sequence wrong: %d facts, last seq %d (want 3,3)", n, facts[len(facts)-1].Sequence)
 	}
-	// a replayed command from before the restart is recognised (no double-append)
 	got = r2.HandleCommand(context.Background(), subj, cmd("c2", "t1", "message.created", "a"))
 	facts, _, _ = st.Replay(logSubjectFor("t1", "iX"))
 	if got.Status != statusAccepted || len(facts) != 3 {
@@ -157,8 +147,6 @@ func TestCore_RestartRebuild(t *testing.T) {
 }
 
 // @spec:signaling.cmd.forged-author-rejected
-// With an authenticated Identity in context, a command whose actor_id differs from
-// the authenticated user is rejected (the subject/payload cannot forge authorship).
 func TestCore_ForgedAuthor(t *testing.T) {
 	r := NewRouter(newFakeStore(), WithDevMode())
 	ctx := WithIdentity(context.Background(), Identity{TenantID: "t1", UserID: "u1"})
@@ -166,16 +154,12 @@ func TestCore_ForgedAuthor(t *testing.T) {
 	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd.u1", body); got.Status != statusRejected {
 		t.Fatalf("forged actor must be rejected, got %+v", got)
 	}
-	// the authenticated user's own command is accepted
 	ok, _ := proto.Marshal(&Command{CommandId: "f2", TenantId: "t1", ActorId: "u1", Type: "interaction.started", Medium: "chat"})
 	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd.u1", ok); got.Status != statusAccepted {
 		t.Fatalf("authenticated actor must be accepted, got %+v", got)
 	}
 }
 
-// concurrentWriterStore models a fact appended by another writer between our getState and our
-// Append: Replay omits it the first time (getState) then reveals it (the dup-path reconcile), and
-// Append always reports a duplicate.
 type concurrentWriterStore struct {
 	base    []*Event
 	hidden  *Event
@@ -194,8 +178,6 @@ func (s *concurrentWriterStore) Replay(string) ([]*Event, uint64, error) {
 	return out, uint64(len(out)), nil
 }
 
-// The dup-append path must compare the COMMITTED fact's payload_hash: a divergent reuse is a
-// conflict, a matching one replays — never a blind accepted.
 func TestCore_DupPathChecksPayloadHash(t *testing.T) {
 	started := &Event{Schema: SchemaV1, EventType: "interaction.started", EventId: "e1", Sequence: 1, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "c1", CausedBy: "c1"}
 	origCmd := &Command{CommandId: "m1", TenantId: "t1", ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatData("A")}
@@ -211,15 +193,13 @@ func TestCore_DupPathChecksPayloadHash(t *testing.T) {
 	}
 }
 
-// After a restart, conflict detection still works because the fact carries payload_hash:
-// a reused command_id with a DIFFERENT payload conflicts; the SAME payload replays accepted.
 func TestCore_ConflictAcrossRestart(t *testing.T) {
 	st := newFakeStore()
 	r1 := NewRouter(st, WithDevMode())
 	r1.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
 	r1.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "A"))
 
-	r2 := NewRouter(st, WithDevMode()) // restart: in-memory state gone, rebuilt from the log
+	r2 := NewRouter(st, WithDevMode())
 	if got := r2.HandleCommand(context.Background(), subj, cmd("m1", "t1", "message.created", "DIFF")); got.Status != statusRejected {
 		t.Fatalf("cross-restart divergent command_id reuse must conflict, got %+v", got)
 	}
@@ -228,9 +208,6 @@ func TestCore_ConflictAcrossRestart(t *testing.T) {
 	}
 }
 
-// RP no longer enforces message edit/delete referential integrity (ref_id) — that is chat-domain
-// knowledge owned by the producer (Desk). RP gates on delivery STRUCTURE only, so message.updated
-// is an opaque annotation accepted on a started interaction with or without ref_id.
 func TestCore_RefIDNotGatedByRP(t *testing.T) {
 	r := NewRouter(newFakeStore(), WithDevMode())
 	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
@@ -240,12 +217,8 @@ func TestCore_RefIDNotGatedByRP(t *testing.T) {
 	}
 }
 
-// A novel domain verb (routing.*, emitted by desk-router) is accepted as an opaque annotation on a
-// started interaction with ZERO RelayPoint change — the generic structural gate that replaced the
-// closed cmdType enum. Regression for the live "illegal transition routing.offered" rejection.
 func TestCore_NovelVerbIsOpaqueAnnotation(t *testing.T) {
 	r := NewRouter(newFakeStore(), WithDevMode())
-	// The lifecycle gate still holds for new verbs: no annotation before the interaction is started.
 	if got := r.HandleCommand(context.Background(), subj, cmd("r0", "t1", "routing.offered", "X")); got.Status != statusRejected {
 		t.Fatalf("routing.offered before interaction.started must be rejected, got %+v", got)
 	}
@@ -256,15 +229,12 @@ func TestCore_NovelVerbIsOpaqueAnnotation(t *testing.T) {
 	if got := r.HandleCommand(context.Background(), subj, cmd("r2", "t1", "routing.no_candidates", "Y")); got.Status != statusAccepted {
 		t.Fatalf("routing.no_candidates on a started interaction must be accepted, got %+v", got)
 	}
-	// Upper lifecycle bound: once the interaction is ended, the same opaque annotation is rejected.
 	r.HandleCommand(context.Background(), subj, cmd("e1", "t1", "interaction.ended", ""))
 	if got := r.HandleCommand(context.Background(), subj, cmd("r3", "t1", "routing.offered", "Z")); got.Status != statusRejected {
 		t.Fatalf("routing.offered after interaction.ended must be rejected, got %+v", got)
 	}
 }
 
-// dupRebuildFailStore: the first Replay (getState build) succeeds empty; the append reports a
-// duplicate; the dup-path rebuild then fails — the router must NOT keep stale in-memory seq.
 type dupRebuildFailStore struct{ calls int }
 
 func (s *dupRebuildFailStore) Append(context.Context, string, []byte, string, uint64) (bool, uint64, error) {
@@ -278,8 +248,6 @@ func (s *dupRebuildFailStore) Replay(string) ([]*Event, uint64, error) {
 	return nil, 0, errors.New("replay down")
 }
 
-// On a duplicate append whose reconciling rebuild fails, the interaction is evicted so the next
-// command rebuilds from the log instead of appending behind an untrustworthy sequence.
 func TestCore_DupRebuildFailEvicts(t *testing.T) {
 	r := NewRouter(&dupRebuildFailStore{}, WithDevMode())
 	got := r.HandleCommand(context.Background(), subj, cmd("c1", "t1", "interaction.started", ""))
@@ -294,12 +262,6 @@ func TestCore_DupRebuildFailEvicts(t *testing.T) {
 	}
 }
 
-// occBeforeDedupStore models a single-server (R1) JetStream where the expected-subject (OCC)
-// check runs BEFORE Nats-Msg-Id dedup. The initial fold (getState) is one sequence behind the
-// true tail — it omits the already-committed command_id — so the router believes it must append;
-// the Append then comes back as ErrOCCConflict (not duplicate=true), and the re-fold reveals the
-// committed fact. Append MUST be called at most once: the router satisfies the retry from its
-// re-fold, never a second append.
 type occBeforeDedupStore struct {
 	base    []*Event // visible on the stale first fold
 	hidden  *Event   // the already-committed command_id, revealed only after the OCC conflict
@@ -320,10 +282,6 @@ func (s *occBeforeDedupStore) Replay(string) ([]*Event, uint64, error) {
 	return out, uint64(len(out)), nil
 }
 
-// On an R1 broker the OCC check precedes dedup, so a retry of an already-committed command_id
-// surfaces as ErrOCCConflict. The router MUST re-fold, recognise the committed command_id, and
-// replay the original cached accepted result (same caused_by) — not a spurious rejection — and
-// MUST NOT append a second fact.
 func TestCore_OCCBeforeDedupReplaysAccepted(t *testing.T) {
 	started := &Event{Schema: SchemaV1, EventType: "interaction.started", EventId: "e1", Sequence: 1, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "c1", CausedBy: "c1"}
 	origCmd := &Command{CommandId: "m1", TenantId: "t1", ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatData("A")}
@@ -344,19 +302,14 @@ func TestCore_OCCBeforeDedupReplaysAccepted(t *testing.T) {
 	}
 }
 
-// a rejected command_id reused with a DIFFERENT payload is a conflict (key bound to
-// its first request); the SAME payload may be retried once it becomes legal.
 func TestCore_RejectedReuseConflict(t *testing.T) {
 	r := NewRouter(newFakeStore(), WithDevMode())
-	// message before start → rejected (and memoised with its payload hash)
 	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "A")); got.Status != statusRejected {
 		t.Fatalf("setup: want rejected, got %+v", got)
 	}
-	// same id, DIFFERENT payload → conflict
 	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "B")); got.Status != statusRejected || got.Reason == "" {
 		t.Fatalf("reuse with different payload must conflict, got %+v", got)
 	}
-	// same id, SAME payload, now legal (after start) → accepted (transient rejection retried)
 	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
 	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "A")); got.Status != statusAccepted {
 		t.Fatalf("same-payload retry once legal should be accepted, got %+v", got)

@@ -1,9 +1,5 @@
 //go:build integration
 
-// OCC concurrency tests against a live NATS (JetStream). Two routers over ONE stream model an
-// HA pair (or a stale rebuilt state): per-subject optimistic concurrency must keep the log
-// authoritative — exactly one fact per router-assigned sequence, the loser re-folds and retries.
-// See openspec change router-occ.
 package signaling
 
 import (
@@ -32,7 +28,6 @@ func occRouters(t *testing.T) (*Router, *Router, nats.JetStreamContext) {
 	}
 	t.Cleanup(func() { rnc.Drain() })
 	store := NewJetStreamStore(rjs)
-	// Two routers, one store: distinct in-memory state, the same durable log — an HA pair.
 	return NewRouter(store, WithDevMode()), NewRouter(store, WithDevMode()), rjs
 }
 
@@ -42,8 +37,6 @@ func handle(r *Router, tenant, iid string, c *Command) *CommandResult {
 }
 
 // @spec:router.occ.expected-subject-seq
-// Two concurrent commands on ONE interaction (one per router) over a live stream produce exactly
-// one fact per sequence: no duplicate sequence, the loser re-folds and retries, ordering holds.
 func TestOCC_ConcurrentSingleInteraction(t *testing.T) {
 	ra, rb, js := occRouters(t)
 	const tn = "t1"
@@ -52,8 +45,6 @@ func TestOCC_ConcurrentSingleInteraction(t *testing.T) {
 	if r := handle(ra, tn, iid, &Command{CommandId: "start", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"}); r.Status != statusAccepted {
 		t.Fatalf("seed start: %+v", r)
 	}
-	// Prime rb's in-memory fold so both routers believe the subject is at the SAME last sequence:
-	// the next two appends will collide on one sequence unless OCC arbitrates.
 	if r := handle(rb, tn, iid, &Command{CommandId: "start", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"}); r.Status != statusAccepted {
 		t.Fatalf("prime rb: %+v", r)
 	}
@@ -89,7 +80,7 @@ func TestOCC_ConcurrentSingleInteraction(t *testing.T) {
 	}
 
 	facts := readLog(t, js, tn, iid)
-	if len(facts) != n+1 { // the start + n messages, each committed exactly once
+	if len(facts) != n+1 {
 		t.Fatalf("want %d facts (1 start + %d msgs), got %d", n+1, n, len(facts))
 	}
 	seen := map[int64]string{}
@@ -98,14 +89,13 @@ func TestOCC_ConcurrentSingleInteraction(t *testing.T) {
 			t.Fatalf("DUPLICATE sequence %d: command_ids %q and %q both got it", f.Sequence, prev, f.CommandId)
 		}
 		seen[f.Sequence] = f.CommandId
-		if int64(i+1) != f.Sequence { // dense, gapless, monotonic
+		if int64(i+1) != f.Sequence {
 			t.Fatalf("sequence not dense/ordered at index %d: seq=%d", i, f.Sequence)
 		}
 	}
 }
 
 // @spec:router.occ.expected-subject-seq
-// The loser of a head-to-head race re-folds and lands the next sequence — never a duplicate.
 func TestOCC_LoserRefoldsAndRetries(t *testing.T) {
 	ra, rb, js := occRouters(t)
 	const tn = "t1"

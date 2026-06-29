@@ -16,9 +16,7 @@ func has(set []string, want string) bool {
 	return false
 }
 
-// allowsPublish/allowsSubscribe model NATS allow/deny resolution (deny wins; allow requires a
-// literal-or-wildcard match) closely enough to assert the policy intent in a pure unit test. The
-// authoritative enforcement is the embedded-NATS integration test (responder_integration_test.go).
+// allowsPublish/allowsSubscribe approximate NATS allow/deny resolution (deny wins) for pure-unit policy assertions; the embedded-NATS integration test is authoritative.
 func allowsPublish(g Grant, subj string) bool {
 	for _, d := range g.PubDeny {
 		if subjectMatch(d, subj) {
@@ -73,7 +71,7 @@ func TestGrantsForAgent(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		kind  string // "pub" | "sub"
+		kind  string
 		subj  string
 		allow bool
 	}{
@@ -93,11 +91,9 @@ func TestGrantsForAgent(t *testing.T) {
 		{"sub own inbox", "sub", "_INBOX_c1.reply", true},
 		{"deny broad inbox", "sub", "_INBOX.reply", false},
 		{"deny other conn inbox", "sub", "_INBOX_c2.reply", false},
-		// own offer/notify/presence
 		{"sub own offer", "sub", "tenant.T.routing.offer.user.alice", true},
 		{"sub own notify", "sub", "tenant.T.notify.alice", true},
 		{"deny other notify", "sub", "tenant.T.notify.bob", false},
-		// presence/typing hints (F1 grant): publish OWN, identity-pinned; read the tenant roster.
 		{"pub own presence state", "pub", "tenant.T.presence.alice.state", true},
 		{"pub own typing", "pub", "tenant.T.presence.alice.typing.i1", true},
 		{"deny forging another's presence", "pub", "tenant.T.presence.bob.state", false},
@@ -148,8 +144,6 @@ func TestGrantsForTrustedBackend(t *testing.T) {
 }
 
 // @spec:signaling.feed.cmd-identity-pinned (ACL-subject injection guarded)
-// A tenant/user that is not a single safe NATS subject token (`.`/`*`/`>`/whitespace/empty) is
-// rejected at the grant boundary, so it can never be interpolated into the `<self>`-pinned ACLs (A6).
 func TestGrantsForRejectsUnsafeSubjectTokens(t *testing.T) {
 	bad := []signaling.Identity{
 		{TenantID: "a.b", UserID: "alice"},

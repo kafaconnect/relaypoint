@@ -7,12 +7,10 @@ import (
 	"time"
 )
 
-// TraceContext mirrors the shape of an OpenTelemetry SpanContext (ADR-0011 §3) so the
-// real OTel SDK can replace this hand-rolled type later behind StartSpan without touching
-// call-sites. It carries only what the W3C `traceparent` wire format needs.
+// Mirrors an OTel SpanContext (ADR-0011 §3) so the real SDK can replace this hand-rolled type behind StartSpan without touching call-sites.
 type TraceContext struct {
-	TraceID string // 32 lowercase hex
-	SpanID  string // 16 lowercase hex
+	TraceID string
+	SpanID  string
 	Sampled bool
 }
 
@@ -23,16 +21,11 @@ const (
 	maxTraceparentLen = 55
 )
 
-// ParseTraceparent validates an untrusted inbound `traceparent` against the W3C format
-// (version 00, non-zero 32-hex trace id, non-zero 16-hex span id, 2-hex flags) and returns
-// it. ok is false for anything malformed, oversized, or all-zero — the caller MUST then
-// treat the input as absent and generate a fresh context (never reuse or echo the raw
-// value). This is the trust boundary that forecloses log injection (ADR-0011 §8).
+// Trust boundary (ADR-0011 §8): on anything malformed/oversized/all-zero the caller MUST treat the input as absent and never reuse or echo the raw value (forecloses log injection).
 func ParseTraceparent(raw string) (TraceContext, bool) {
 	if len(raw) == 0 || len(raw) > maxTraceparentLen {
 		return TraceContext{}, false
 	}
-	// version(2) "-" trace(32) "-" span(16) "-" flags(2)
 	if len(raw) != 55 || raw[2] != '-' || raw[35] != '-' || raw[52] != '-' {
 		return TraceContext{}, false
 	}
@@ -46,7 +39,6 @@ func ParseTraceparent(raw string) (TraceContext, bool) {
 	return TraceContext{TraceID: traceID, SpanID: spanID, Sampled: flags == "01"}, true
 }
 
-// Traceparent renders the context back to the W3C wire format.
 func (tc TraceContext) Traceparent() string {
 	flags := "00"
 	if tc.Sampled {
@@ -55,10 +47,7 @@ func (tc TraceContext) Traceparent() string {
 	return "00-" + tc.TraceID + "-" + tc.SpanID + "-" + flags
 }
 
-// FromInbound builds the trace context for a request: a VALID inbound `traceparent` has its
-// trace id reused with a freshly minted child span id (an inbound span id is the parent,
-// never our own); anything else yields a brand-new sampled trace. It never fails and never
-// reuses an unvalidated value (ADR-0011 §8, §9 fail-open).
+// Valid inbound: reuse the trace id with a fresh child span id (the inbound span is the parent, never ours); else a brand-new trace. Never fails, never reuses an unvalidated value (ADR-0011 §8/§9).
 func FromInbound(raw string) TraceContext {
 	if parent, ok := ParseTraceparent(raw); ok {
 		return TraceContext{TraceID: parent.TraceID, SpanID: newSpanID(), Sampled: parent.Sampled}
@@ -76,10 +65,7 @@ func isHex(s string) bool {
 	return true
 }
 
-// newTraceID / newSpanID draw from crypto/rand; each span id is unique by construction
-// (ADR-0011 §3). A crypto/rand read failure is implausible, but we never panic the request
-// path over telemetry (fail-open) — and we guarantee a non-zero id so we can never emit a
-// W3C-invalid all-zero traceparent: on the impossible failure path one bit is forced on.
+// crypto/rand-backed; on the implausible read failure we force a non-zero byte rather than panic (fail-open), so we never emit a W3C-invalid all-zero id.
 func newTraceID() string { return randHex(16) }
 func newSpanID() string  { return randHex(8) }
 
@@ -105,25 +91,18 @@ func allZero(b []byte) bool {
 
 type traceKey struct{}
 
-// WithTrace stores the trace context for the request.
 func WithTrace(ctx context.Context, tc TraceContext) context.Context {
 	return context.WithValue(ctx, traceKey{}, tc)
 }
 
-// TraceFromContext returns the request's trace context, ok=false if none is bound.
 func TraceFromContext(ctx context.Context) (TraceContext, bool) {
 	tc, ok := ctx.Value(traceKey{}).(TraceContext)
 	return tc, ok && tc.TraceID != ""
 }
 
-// StartSpan opens a child span under the context's trace (or a fresh trace if none) and
-// returns the child context plus an idempotent end function the caller MUST defer. Today it
-// only mints a child span id (no exporter); once the OTLP exporter lands behind this seam a
-// missed end leaks an unfinished span — hence "defer it" is the contract now (ADR-0011 §10).
+// Returns an idempotent end the caller MUST defer: once the OTLP exporter lands behind this seam a missed end leaks a span, so deferring is the contract now (ADR-0011 §10).
 func StartSpan(ctx context.Context, name string) (context.Context, func()) {
 	if tracer != nil {
-		// An OTLP exporter is wired (InitTracer): mint a real span and stitch its ids into the
-		// bound TraceContext so logs, the wire traceparent, and the export all share one trace_id.
 		return startOTelSpan(ctx, name)
 	}
 	parent, ok := TraceFromContext(ctx)
@@ -135,8 +114,6 @@ func StartSpan(ctx context.Context, name string) (context.Context, func()) {
 	ctx = WithTrace(ctx, child)
 	start := time.Now()
 	done := false
-	// Idempotent per the documented single-goroutine defer contract (ADR-0011 §10): the
-	// caller MUST `defer endFn()`; a second call is a safe no-op.
 	end := func() {
 		if done {
 			return

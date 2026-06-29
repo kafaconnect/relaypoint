@@ -1,8 +1,4 @@
-// Package projector is the Participation/Fan-out service core: a leased single-active worker that
-// tails the canonical `tenant.*.interaction.*.log`, folds participation, and projects every fact
-// into the feed of each currently-participating agent — effectively-once (at-least-once delivery +
-// idempotent feed publish). It depends only on owned ports (ports.go); NATS is the adapter
-// (nats.go). See openspec change agent-feed-fanout, Decisions 3/6/7/8.
+// Package projector is the leased single-active fan-out worker: it tails the canonical .log, folds participation, and projects each fact into participants' feeds effectively-once (Decisions 3/6/7/8).
 package projector
 
 import (
@@ -26,9 +22,7 @@ const (
 	feedControlSchema = signaling.SchemaV1
 	controlRevoked    = "feed.revoked"
 
-	// fanoutConcurrency bounds the per-fact recipient fan-out. Only one fact is in flight at a
-	// time (MaxAckPending=1), so this caps total concurrent feed publishes; a tenant's agent set is
-	// small, so it mainly collapses N sequential publish RTTs into ~one. @spec: RDL-01
+	// fanoutConcurrency collapses N sequential publish RTTs into ~one; only one fact is in flight (MaxAckPending=1) so it also caps total concurrent publishes. @spec: RDL-01
 	fanoutConcurrency = 32
 
 	// @spec:RDL-03
@@ -36,18 +30,14 @@ const (
 	leaseRenewRetryBackoff = 300 * time.Millisecond
 )
 
-// Snapshot is the participation view serialized by stream sequence — an ACKED-PREFIX state (its
-// Seq <= the durable ack floor when stored). On takeover the worker loads the latest snapshot at/
-// below the ack floor, then read-only-folds (snapshot_seq, ack_floor] to go live.
+// ACKED-PREFIX state (Seq <= durable ack floor when stored); takeover loads it then read-only-folds (snap_seq, ack_floor] to go live.
 type Snapshot struct {
-	// interaction id -> agent -> its membership intervals in .log order.
 	Intervals map[string]map[string][]signaling.Interval
 }
 
-// state is the in-memory participation across all interactions; the serial MaxAckPending=1 discipline
-// protects this fold from concurrent mutation.
+// The serial MaxAckPending=1 discipline protects this fold from concurrent mutation.
 type state struct {
-	views map[string]*signaling.ParticipationView // keyed by interaction id
+	views map[string]*signaling.ParticipationView
 }
 
 func newState() *state { return &state{views: map[string]*signaling.ParticipationView{}} }
@@ -85,29 +75,19 @@ func (s *state) restore(snap *Snapshot) {
 	}
 }
 
-// Config tunes the worker; zero values fall back to sane defaults.
 type Config struct {
-	MaxDeliver        int           // DLQ a fact past this delivery count (default 5)
-	SnapshotEvery     int           // save a snapshot every N acked facts (default 50)
-	PublishRetry      int           // per-feed publish attempts before Nak (default 4)
-	RetryBackoff      time.Duration // base backoff between publish attempts (default 50ms)
-	LeaseRenew        time.Duration // lease heartbeat interval (default 2s; lease TTL ~5s)
-	LeaseTTL          time.Duration // lease expiry; the renew budget derives from (LeaseTTL − LeaseRenew) (default 5s)
-	RosterRetryWindow time.Duration // in-process roster-retry cap before Nak fallback (default 90s)
+	MaxDeliver        int
+	SnapshotEvery     int
+	PublishRetry      int
+	RetryBackoff      time.Duration
+	LeaseRenew        time.Duration
+	LeaseTTL          time.Duration
+	RosterRetryWindow time.Duration
 
-	// TenantWideAgents is a DEV/TEST shortcut, off by default (nil): for a tenant present here, every
-	// fact of that tenant fans out to the listed agents' feeds, bypassing the participation gate. This
-	// exists because desk M1 emits no participation facts yet, so the stock per-participation fan-out
-	// leaves every feed empty. Participation is still folded (snapshots stay correct); only the
-	// recipient set is overridden. Production leaves this nil → strict per-participation fan-out.
+	// DEV/TEST fan-out override (nil in prod): desk M1 emits no participation facts yet, so the stock per-participation fan-out would leave every feed empty; participation is still folded.
 	TenantWideAgents map[string][]string
 
-	// Roster is the PRODUCTION tenant-shared fan-out source (off by default, nil): when set, every
-	// fact of a tenant fans out to ALL agents the roster reports for that tenant (sourced from desk's
-	// real Zitadel roster, no hardcode). It is the authoritative successor to TenantWideAgents and
-	// takes precedence over it. Participation is still folded (snapshots stay correct); only the
-	// recipient set is overridden, exactly like TenantWideAgents. Future per-participation mode leaves
-	// this nil. A roster lookup error Naks the fact (redelivery), never drops it.
+	// Production tenant-shared fan-out source; takes precedence over TenantWideAgents; a roster lookup error Naks the fact (redelivery), never drops it.
 	Roster Roster
 }
 
@@ -139,9 +119,6 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Projector is the single-active worker core. Constructed against the owned ports and driven by
-// Run; the fold/project/revoke/hydrate logic is exercised directly in unit tests via the same
-// ports backed by in-memory fakes (no live NATS).
 type Projector struct {
 	src   LogSource
 	sink  FeedSink
@@ -158,20 +135,14 @@ func New(src LogSource, sink FeedSink, lease LeaseStore, snaps SnapshotStore, cf
 	return &Projector{src: src, sink: sink, lease: lease, snaps: snaps, cfg: cfg.withDefaults(), st: newState()}
 }
 
-// Run acquires the leader lease, hydrates from the acked-prefix snapshot, then serially processes
-// facts until ctx is cancelled. Exactly one fact is in flight at a time (MaxAckPending=1), so the
-// stateful fold is never concurrent. Lease renewal runs in the background; on its failure Run
-// returns so a standby can take over.
+// On lease-renewal failure Run returns so a standby can take over.
 func (p *Projector) Run(ctx context.Context) error {
 	if err := p.lease.Acquire(ctx); err != nil {
 		return fmt.Errorf("acquire lease: %w", err)
 	}
 	defer p.lease.Release(context.WithoutCancel(ctx))
 
-	// Takeover ordering (PINNED): lease acquired → the prior holder's in-flight delivery settles
-	// (MaxAckPending=1 makes Deliver itself wait for redelivery) → read ack_floor + hydrate → live.
-	// Reading the floor before that settle is forbidden; here Hydrate reads it only after Acquire,
-	// and the next Deliver blocks until the single un-acked fact is redelivered.
+	// PINNED takeover order: acquire lease → the prior holder's in-flight delivery settles (MaxAckPending=1) → read ack_floor + hydrate → live; reading the floor before that settle is forbidden.
 	if err := p.Hydrate(ctx); err != nil {
 		return fmt.Errorf("hydrate: %w", err)
 	}
@@ -184,7 +155,7 @@ func (p *Projector) Run(ctx context.Context) error {
 	for {
 		dctx := fence.begin()
 		if dctx == nil {
-			return fence.exitErr() // parent cancelled or lease confirmed lost
+			return fence.exitErr()
 		}
 		f, err := p.src.Deliver(dctx)
 		if err != nil {
@@ -349,8 +320,7 @@ func (f *fence) exitErr() error {
 	return f.parent.Err()
 }
 
-// Hydrate loads the latest snapshot whose seq <= durable ack floor and read-only-folds
-// (snapshot_seq, ack_floor] to rebuild the live participation view — never a replay from zero.
+// Loads the snapshot at <= ack floor then read-only-folds (snap_seq, ack_floor] — never a replay from zero.
 func (p *Projector) Hydrate(ctx context.Context) error {
 	floor, err := p.src.AckFloor(ctx)
 	if err != nil {

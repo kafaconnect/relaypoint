@@ -16,8 +16,6 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-// traceparentOf reads the inbound .log message's W3C trace header (nil-safe — a header-less message
-// yields ""), so the projector can re-inject it onto the agent feed (F5b trace continuity).
 func traceparentOf(m *nats.Msg) string {
 	if m == nil || m.Header == nil {
 		return ""
@@ -25,8 +23,7 @@ func traceparentOf(m *nats.Msg) string {
 	return m.Header.Get("traceparent")
 }
 
-// The NATS adapters — the only code here importing nats.go — implement the owned ports so the core
-// never sees a NATS type (loose-coupling HARD RULE).
+// NATS adapters implement the owned ports so the core never imports a NATS type (loose-coupling HARD RULE).
 
 const (
 	feedStream   = "AGENT_FEED"
@@ -37,10 +34,7 @@ const (
 	kvSnapName   = "projector-snapshot"
 )
 
-// EnsureFeedStream creates/updates the EPHEMERAL agent-feed stream: a short max_age live
-// disconnect-gap bridge (NOT the audit store — the canonical .log is). Per-subject dedup over a
-// window >= the redelivery/restart horizon makes the deterministic Nats-Msg-Id at-most-once per
-// (agent, interaction, sequence). Decision 8.
+// EPHEMERAL gap-bridge stream (NOT the audit store — .log is); the dedup window >= the redelivery/restart horizon makes the Nats-Msg-Id at-most-once per (agent, interaction, sequence). Decision 8.
 func EnsureFeedStream(js nats.JetStreamContext, maxAge, dedupWindow time.Duration) error {
 	if maxAge <= 0 {
 		maxAge = time.Hour
@@ -72,9 +66,7 @@ type jsLogSource struct {
 	durable string
 }
 
-// NewLogSource binds the durable pull consumer with MaxAckPending=1 (one in-flight fact, no
-// prefetch) so the stateful fold is strictly serial and a lease takeover never overlaps in-flight
-// processing. maxDeliver bounds redelivery before the core DLQs the poison fact.
+// MaxAckPending=1 (no prefetch) keeps the fold strictly serial so a lease takeover never overlaps in-flight processing.
 func NewLogSource(js nats.JetStreamContext, maxDeliver int, ackWait time.Duration) (LogSource, error) {
 	if ackWait <= 0 {
 		ackWait = 30 * time.Second
@@ -106,8 +98,7 @@ func (s *jsLogSource) Deliver(ctx context.Context) (Fact, error) {
 			return Fact{}, fmt.Errorf("delivery metadata: %w", merr)
 		}
 		e := &signaling.Event{}
-		// A corrupt envelope is still a delivered fact: carry a nil Event so the core DLQs it past
-		// max_deliver rather than wedging the consumer.
+		// A corrupt envelope is still a delivered fact: carry a nil Event so the core DLQs it past max_deliver instead of wedging the consumer.
 		if uerr := proto.Unmarshal(m.Data, e); uerr != nil {
 			e = nil
 		}
@@ -143,8 +134,7 @@ func (s *jsLogSource) AckFloor(_ context.Context) (uint64, error) {
 	return info.AckFloor.Stream, nil
 }
 
-// FoldRange replays (lo, hi] by stream sequence with an ephemeral AckNone reader — read-only, no
-// cursor mutation — so hydration rebuilds the tail above the snapshot without touching the durable.
+// Ephemeral AckNone reader: read-only, no cursor mutation, so hydration rebuilds the tail without touching the durable.
 func (s *jsLogSource) FoldRange(_ context.Context, lo, hi uint64) ([]Fact, error) {
 	if hi <= lo {
 		return nil, nil

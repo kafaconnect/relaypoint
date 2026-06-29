@@ -1,7 +1,4 @@
-// Command signaltest-inject publishes ONE message.created Command to the RP router on the
-// anonymous dev bus, on behalf of an arbitrary actor (a non-browser author) — used by the signal
-// test to prove a message the browser never sent flows producer→router→projector→feed→browser.
-// Dev/test only; not part of any production path.
+// Command signaltest-inject publishes one message.created Command as an arbitrary actor to prove a browser-unseen message flows producer→router→projector→feed→browser; dev/test only.
 package main
 
 import (
@@ -60,7 +57,7 @@ func main() {
 	must(err)
 	var res interactionpb.CommandResult
 	must(proto.Unmarshal(reply.Data, &res))
-	fmt.Printf("subject=%s status=%s reason=%q command_id=%s\n", subject, res.GetStatus(), res.GetReason(), cmdID) // program-output
+	fmt.Printf("subject=%s status=%s reason=%q command_id=%s\n", subject, res.GetStatus(), res.GetReason(), cmdID)
 	if res.GetStatus() != interactionpb.CommandResult_STATUS_ACCEPTED {
 		os.Exit(1)
 	}

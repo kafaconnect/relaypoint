@@ -1,8 +1,4 @@
-// Package authcallout is the RelayPoint NATS auth-callout responder: it verifies a connection's
-// token, derives the authenticated Identity, and mints that connection's identity-pinned NATS
-// permissions (openspec change agent-feed-fanout, Decisions 1/2b/4/9). The grant policy (this file)
-// carries no NATS/jwt types so it is unit-testable and stays the only spec of the ACLs; the
-// responder adapter is the only place that touches the wire encoding (loose-coupling HARD RULE).
+// Package authcallout is RelayPoint's NATS auth-callout responder: it verifies a connection token and mints that identity's pinned NATS permissions (change agent-feed-fanout).
 package authcallout
 
 import (
@@ -16,18 +12,11 @@ type Grant struct {
 	PubDeny  []string
 	SubAllow []string
 	SubDeny  []string
-	// AllowResponses, when true, grants a NATS dynamic response permission (publish once to a received
-	// message's reply subject). Agent/trusted-backend connections do request/reply, so they keep it; a
-	// VISITOR is strictly subscribe-only — without it the static PubDeny `>` cannot be bypassed by an
-	// inbound message carrying a `reply` (cross-review: response perms otherwise re-open a publish path).
+	// AllowResponses grants the NATS dynamic response perm (one publish to a msg's reply subject); a VISITOR must NOT get it or an inbound reply re-opens a publish path past PubDeny (cross-review).
 	AllowResponses bool
 }
 
-// GrantsFor mints the per-connection permissions for an authenticated Identity; self is the ACL-pinned
-// `<self>` suffix and conn the responder-minted reply-inbox prefix. An AGENT connection may publish
-// ONLY `…interaction.*.cmd.<self>` and subscribe ONLY its own feed/offer/notify/presence + its minted
-// `_INBOX_<conn>.>` — no `.log`, no feed publish, no JetStream API, no tenant-wide read. A TRUSTED
-// BACKEND additionally reads tenant-wide logs/routing and may drive the JetStream API.
+// conn is the responder-minted reply-inbox prefix (not client-chosen); self is the ACL-pinned `<self>` suffix interpolated into every grant.
 func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 	if err := validSubjectToken(id.TenantID); err != nil {
 		return Grant{}, fmt.Errorf("authcallout: invalid tenant: %w", err)
@@ -43,24 +32,20 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 
 	switch signaling.RoleOf(id) {
 	case signaling.RoleVisitor:
-		// A widget visitor reads exactly ONE conversation: its interaction `.log` (the SDK chat slice,
-		// rp1-web-feed-consumer) + the transitional events plane. cid is mint-bound (== interaction id,
-		// ADR-0009). NO $JS.API: a LIVE core subscribe can't read the shared INTERACTION_LOGS stream
-		// wholesale; the per-subject ACL confines reach. Other conversations/feeds are absent ⇒ denied.
+		// A visitor reads exactly ONE conversation: its interaction `.log` + the transitional events plane; cid is mint-bound (== interaction id, ADR-0009). No $JS.API confines reach to the per-subject ACL.
 		cid := id.ConversationID
 		if err := validSubjectToken(cid); err != nil {
 			return Grant{}, fmt.Errorf("authcallout: invalid conversation: %w", err)
 		}
 		return Grant{
 			PubAllow: nil,
-			PubDeny:  []string{">"}, // a visitor publishes NOTHING
+			PubDeny:  []string{">"},
 			SubAllow: []string{
 				"tenant." + t + ".interaction." + cid + ".log",
 				"tenant." + t + ".conversation." + cid + ".events",
 				inbox,
 			},
-			// No `tenant.*.interaction.*.log` deny: NATS deny outranks allow, so it would shadow the
-			// literal `.log` allow above (same rule as events).
+			// No `tenant.*.interaction.*.log` deny: NATS deny outranks allow, so it would shadow the literal `.log` allow above.
 			SubDeny: []string{
 				"_INBOX.>",
 				"tenant.*.agent.*.feed.>",
@@ -83,18 +68,12 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 			SubDeny:        []string{"_INBOX.>"},
 			AllowResponses: true,
 		}, nil
-	default: // RoleAgent
-		// No $JS.API grant: a broad $JS.API.CONSUMER.> would let the agent pull-read raw .log or
-		// another agent's feed through the consumer API, bypassing the subject denies below; the
-		// browser reads its own feed via a core subscribe only (A4).
+	default:
+		// No $JS.API grant: a broad $JS.API.CONSUMER.> would let the agent pull-read raw .log or another feed past the subject denies; the browser uses a core subscribe (A4).
 		return Grant{
 			PubAllow: []string{
 				"tenant." + t + ".interaction.*.cmd." + self,
-				// Presence/typing hints, identity-pinned to <self>: the agent publishes its OWN
-				// presence state (presence.<self>.state) + per-conversation typing
-				// (presence.<self>.typing.<cid>) and CANNOT forge another identity's (the `<self>`
-				// segment is ACL-fixed). Without this the desk console floods the bus with Publish
-				// Violations on every keystroke (F1 grant gap).
+				// Presence/typing pinned to <self> (the agent can't forge another identity); without it the console floods Publish Violations on every keystroke (F1 grant gap).
 				"tenant." + t + ".presence." + self + ".>",
 				inbox,
 			},
@@ -107,10 +86,7 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"tenant." + t + ".routing.offer.user." + self,
 				"tenant." + t + ".routing.offer.user." + self + ".control",
 				"tenant." + t + ".notify." + self,
-				// The tenant presence roster + per-conversation typing of OTHER participants
-				// (presence.*.state / presence.*.typing.<cid>). Tenant-scoped (the `tenant.<t>`
-				// prefix is ACL-fixed), non-sensitive hints. Replaces the prior own-only
-				// `presence.<self>` literal, which never matched the `presence.*.…` the console reads.
+				// Tenant presence roster + others' per-conversation typing (presence.*.…); replaces the prior own-only `presence.<self>` literal that never matched what the console reads.
 				"tenant." + t + ".presence.*.>",
 				inbox,
 			},

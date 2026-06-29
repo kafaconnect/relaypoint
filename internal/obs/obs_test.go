@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-// decodes the single JSON log line in buf.
 func lastLine(t *testing.T, buf *bytes.Buffer) map[string]any {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -45,9 +44,7 @@ func TestGoldenVector(t *testing.T) {
 		t.Fatalf("traceparent round-trip: got %q want %q", got, g.Traceparent)
 	}
 
-	// Emit the canonical log line through THIS module's obs and assert it matches the golden
-	// object byte-for-byte (modulo the dynamic ts). The desk twin runs the same check against
-	// the same file — any field rename/level-case drift fails in one of the two.
+	// THIS module and the desk twin run the same check against the same golden file, so any field/level-case drift fails one of the two.
 	t.Setenv("OBS_ENV", g.CanonicalLog["env"])
 	var lbuf bytes.Buffer
 	newJSON(g.CanonicalLog["service"], &lbuf).With(
@@ -109,7 +106,6 @@ func TestLabelCardinalitySplit(t *testing.T) {
 	ctx = WithCorrelation(ctx, newJSON("relaypoint-router", &buf))
 	Logger(ctx).With(keyTenantID, "tnt", keyUser, "usr").Info("x")
 	m := lastLine(t, &buf)
-	// low-cardinality label-eligible fields + high-cardinality body ids all present
 	for _, k := range []string{keyService, keyEnv, keyTenantID, keyTraceID, keyRequestID, keyUser} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("missing %q", k)
@@ -121,17 +117,16 @@ func TestLabelCardinalitySplit(t *testing.T) {
 func TestTraceparentMalformedTreatedAsAbsent(t *testing.T) {
 	for _, bad := range []string{
 		"garbage",
-		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",    // missing flags
-		"00-00000000000000000000000000000000-00f067aa0ba902b7-01", // zero trace
-		"00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01", // zero span
-		strings.Repeat("0", 200),                                  // oversized
-		"99-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", // bad version
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",
+		"00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+		strings.Repeat("0", 200),
+		"99-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 	} {
 		if _, ok := ParseTraceparent(bad); ok {
 			t.Errorf("malformed traceparent accepted: %q", bad)
 		}
 	}
-	// a fresh trace is generated; the raw bad value is never reused or echoed into a log field
 	ctx := ContextFromTraceparent(context.Background(), "garbage")
 	tc, ok := TraceFromContext(ctx)
 	if !ok {
@@ -167,7 +162,7 @@ func TestSpanEndIdempotent(t *testing.T) {
 		t.Error("child span id should differ from parent")
 	}
 	end()
-	end() // second call must be a safe no-op
+	end()
 }
 
 // @spec:obs.nats-traceparent-propagated
@@ -179,7 +174,6 @@ func TestNATSTraceparentPropagated(t *testing.T) {
 	if hdr["traceparent"] == "" {
 		t.Fatal("publisher set no traceparent header")
 	}
-	// subscriber side
 	subCtx := ContextFromTraceparent(context.Background(), hdr["traceparent"])
 	sub, ok := TraceFromContext(subCtx)
 	if !ok || sub.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" {
@@ -188,7 +182,6 @@ func TestNATSTraceparentPropagated(t *testing.T) {
 	if sub.SpanID == "00f067aa0ba902b7" {
 		t.Error("subscriber should mint a child span, not reuse the publisher span")
 	}
-	// missing header → fresh trace, not a drop
 	if _, ok := TraceFromContext(ContextFromTraceparent(context.Background(), "")); !ok {
 		t.Error("missing header should still yield a usable trace")
 	}

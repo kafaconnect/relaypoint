@@ -1,7 +1,4 @@
-// Command projector runs the RelayPoint Participation/Fan-out service: a leased single-active
-// worker that tails tenant.*.interaction.*.log and projects each fact into the feed of every
-// currently-participating agent (openspec change agent-feed-fanout). Standby replicas contend for
-// the NATS KV leader lease; only the holder projects.
+// Command projector runs the RelayPoint participation/fan-out service: a leased single-active worker projecting each interaction fact into every participating agent's feed (openspec change agent-feed-fanout).
 package main
 
 import (
@@ -62,8 +59,7 @@ func main() {
 	cfg := projector.Config{MaxDeliver: maxDeliver, LeaseTTL: leaseTTL}
 	switch os.Getenv("PROJECTOR_FANOUT_MODE") {
 	case "tenant-roster":
-		// PRODUCTION tenant-shared fan-out: resolve a tenant's agents from desk's REAL roster (its
-		// Zitadel org membership), no hardcode. Every fact of the tenant fans to ALL its agents.
+		// production: a tenant's agents come from desk's real roster (its Zitadel org membership), never hardcoded.
 		dr, err := projector.NewDeskRoster(
 			mustEnv("DESK_ROSTER_URL"),
 			mustEnv("DESK_ROSTER_TOKEN"),
@@ -73,8 +69,7 @@ func main() {
 		cfg.Roster = dr
 		slog.Info("projector.tenant-roster", "url", os.Getenv("DESK_ROSTER_URL"), "cache_ttl", rosterCacheTTL().String())
 	case "tenant-wide":
-		// Dev/test shortcut (off by default): tenant-wide fan-out to a STATIC agent roster, bypassing
-		// the participation gate that stays empty until desk emits participation facts.
+		// dev shortcut: a static roster bypasses the participation gate, which stays empty until desk emits facts.
 		cfg.TenantWideAgents = parseTenantAgents(os.Getenv("PROJECTOR_TENANT_AGENTS"))
 		slog.Warn("projector.tenant-wide", "tenants", len(cfg.TenantWideAgents), "note", "participation gate bypassed")
 	}
@@ -90,8 +85,6 @@ func main() {
 	}
 }
 
-// parseTenantAgents reads PROJECTOR_TENANT_AGENTS="<tid>:<agent>[,<tid>:<agent>...]" into the
-// per-tenant roster the tenant-wide shortcut fans to. Repeated tids accumulate agents.
 func parseTenantAgents(csv string) map[string][]string {
 	out := map[string][]string{}
 	for _, pair := range strings.Split(csv, ",") {
@@ -130,8 +123,6 @@ func mustEnv(k string) string {
 	return v
 }
 
-// rosterCacheTTL bounds how long a tenant's roster is cached before a refresh (DESK_ROSTER_TTL, a
-// Go duration; default 60s).
 func rosterCacheTTL() time.Duration {
 	if raw := os.Getenv("DESK_ROSTER_TTL"); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {

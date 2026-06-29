@@ -7,8 +7,6 @@ func ev(seq int64, typ, agent string) *Event {
 }
 
 // @spec:signaling.feed.participation-from-facts
-// FoldParticipation folds .log facts into per-agent membership intervals [join_seq, left_seq):
-// a join/assign opens, a leave closes; the same view authorizes the read AND write planes.
 func TestParticipation_IntervalFold(t *testing.T) {
 	facts := []*Event{
 		ev(1, "interaction.started", "u1"),
@@ -43,8 +41,6 @@ func TestParticipation_IntervalFold(t *testing.T) {
 	}
 }
 
-// interaction.assigned opens an interval exactly like participant.joined (both are join facts);
-// a re-join after a leave produces a SECOND interval.
 func TestParticipation_AssignedAndRejoin(t *testing.T) {
 	v := FoldParticipation([]*Event{
 		ev(1, "interaction.started", "u1"),

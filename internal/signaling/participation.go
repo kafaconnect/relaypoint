@@ -1,21 +1,18 @@
 package signaling
 
-// Interval is an agent's membership in an interaction as a half-open range [JoinSeq, LeftSeq):
-// join/assign opens [J, ∞); a participant.left at L closes it to [J, L). LeftOpen marks ∞.
-// See openspec change agent-feed-fanout (Decision 6).
+// Interval is membership as a half-open range [JoinSeq, LeftSeq): join/assign opens, participant.left closes, LeftOpen marks ∞ (agent-feed-fanout Decision 6).
 type Interval struct {
 	JoinSeq  int64
 	LeftSeq  int64
 	LeftOpen bool
 }
 
-// ParticipationView is the SINGLE .log-derived membership source shared by the router's agent-command
-// authz (write plane) and the fan-out projector (read plane) so the two can never disagree.
+// ParticipationView is the SINGLE .log-derived membership source shared by write-plane authz and the read-plane projector so the two can never disagree.
 type ParticipationView struct {
 	intervals map[string][]Interval
 }
 
-// FoldParticipation builds a view from facts in .log sequence order; facts MUST be sequence-ordered.
+// Facts MUST be in .log sequence order.
 func FoldParticipation(facts []*Event) *ParticipationView {
 	v := &ParticipationView{intervals: map[string][]Interval{}}
 	for _, e := range facts {
@@ -28,7 +25,7 @@ func NewParticipationView() *ParticipationView {
 	return &ParticipationView{intervals: map[string][]Interval{}}
 }
 
-// ApplyFact folds ONE fact; facts MUST arrive in sequence order.
+// Facts MUST arrive in sequence order.
 func (v *ParticipationView) ApplyFact(e *Event) {
 	switch e.EventType {
 	case "participant.joined", "interaction.assigned":
@@ -46,7 +43,6 @@ func (v *ParticipationView) Agents() []string {
 	return out
 }
 
-// SetIntervals restores an agent's intervals from a projector snapshot. A nil/empty slice is a no-op.
 func (v *ParticipationView) SetIntervals(agent string, in []Interval) {
 	if len(in) == 0 {
 		return

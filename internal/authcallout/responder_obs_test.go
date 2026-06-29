@@ -7,8 +7,6 @@ import (
 )
 
 // @spec:obs.authcallout-extracts-trace-context
-// The responder reads any W3C traceparent off the auth-request message so the auth decision can join
-// an inbound trace (OTLP trace-context extraction). It is nil-safe: a header-less request yields "".
 func TestTraceparentOf(t *testing.T) {
 	tp := "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
 
