@@ -25,13 +25,7 @@ type LogStore interface {
 	// (0 = the subject is expected empty). dedupID makes the append idempotent: a retry with the
 	// same dedupID returns duplicate=true and writes no second fact.
 	//
-	// On a clean commit Append returns committedSeq — the broker-committed STREAM sequence of the
-	// fact just written (`ack.Sequence`). INTERACTION_LOGS is SHARED, so the next same-subject append
-	// MUST echo this exact value as its OCC token, never prev+1: an interleaving interaction advances
-	// the subject's global last-sequence by more than one (RH-01). committedSeq is meaningful only on
-	// a clean commit; the duplicate and error paths return 0 and self-correct by rebuilding from the
-	// log.
-	//
+	// committedSeq = broker ack.Sequence; next same-subject append echoes it, not prev+1 (RH-01)
 	// dedup-vs-OCC ordering is BROKER-DEPENDENT, not guaranteed: on a single-server (R1) JetStream
 	// the expected-subject check runs BEFORE dedup, so a genuine retry of an already-committed
 	// command_id can surface as ErrOCCConflict instead of duplicate=true (a clustered broker may
@@ -66,7 +60,6 @@ func (s *jetstreamStore) Append(ctx context.Context, subject string, data []byte
 		}
 		return false, 0, err
 	}
-	// ack.Sequence is the committed STREAM seq — the OCC token the next same-subject append echoes.
 	return ack.Duplicate, ack.Sequence, nil
 }
 

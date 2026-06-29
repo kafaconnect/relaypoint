@@ -10,17 +10,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// fakeStore is an in-memory LogStore — proves the router core needs no NATS. It models the SHARED
-// INTERACTION_LOGS stream: ONE global stream sequence advanced by a commit on ANY subject, plus each
-// subject's last committed global seq as its OCC token (exactly JetStream's
-// ExpectLastSequencePerSubject semantics). A per-subject COUNT would hide RH-01 — the spurious
-// conflict only appears once an interleaving subject advances the shared seq by more than one.
+// fakeStore is an in-memory LogStore — proves the router core needs no NATS.
 type fakeStore struct {
 	mu        sync.Mutex
 	facts     map[string][]*Event
 	dedup     map[string]bool
-	streamSeq uint64            // the one shared stream's global last sequence
-	lastSeq   map[string]uint64 // subject -> its last committed global seq (the OCC token)
+	streamSeq uint64
+	lastSeq   map[string]uint64
 }
 
 func newFakeStore() *fakeStore {
@@ -37,7 +33,7 @@ func (s *fakeStore) Append(_ context.Context, subject string, data []byte, dedup
 		return false, 0, ErrOCCConflict
 	}
 	s.dedup[dedupID] = true
-	s.streamSeq++ // a commit on ANY subject advances the one shared stream sequence
+	s.streamSeq++
 	s.lastSeq[subject] = s.streamSeq
 	e := &Event{}
 	_ = proto.Unmarshal(data, e)
@@ -49,12 +45,9 @@ func (s *fakeStore) Replay(subject string) ([]*Event, uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := append([]*Event(nil), s.facts[subject]...)
-	return out, s.lastSeq[subject], nil // the subject's last GLOBAL seq, like meta.Sequence.Stream
+	return out, s.lastSeq[subject], nil
 }
 
-// countingStore wraps a LogStore and tallies appends the broker rejected with ErrOCCConflict — i.e.
-// how often the router presented a stale OCC token. With the RH-01 fix, distinct interactions
-// interleaving on the shared stream present exact (broker-committed) tokens, so this stays 0.
 type countingStore struct {
 	LogStore
 	mu        sync.Mutex
@@ -371,12 +364,6 @@ func TestCore_RejectedReuseConflict(t *testing.T) {
 }
 
 // @spec:router.occ.committed-stream-seq
-// Two distinct interactions A and B append ALTERNATELY on the SHARED INTERACTION_LOGS stream, so the
-// global stream sequence on each subject advances by more than one between that subject's own
-// appends. Each clean append must record the broker-committed stream seq as its next OCC token, not
-// prev+1 — otherwise the ++ guess is stale and ~every append after the first raises a SPURIOUS
-// ErrOCCConflict. Asserts zero broker conflicts on correctly-folded appends and a dense, gapless
-// per-interaction sequence.
 func TestCore_InterleavedSharedStreamNoSpuriousOCC(t *testing.T) {
 	cs := &countingStore{LogStore: newFakeStore()}
 	r := NewRouter(cs, WithDevMode())
@@ -412,12 +399,6 @@ func TestCore_InterleavedSharedStreamNoSpuriousOCC(t *testing.T) {
 	}
 }
 
-// staleTokenRaceStore commits ONE genuine competing fact the first time a real append arrives on
-// `subject` carrying `triggerSeq` (the token a correctly-folded router presents). Combined with an
-// interleaving interaction that left a ++-guessing router's token stale, this is the exact RH-01
-// failure: the stale token spuriously conflicts on attempt 0, so the genuine race lands on attempt 1
-// with no retry budget left → wrongly rejected; under the fix attempt 0 IS the genuine race and the
-// single retry arbitrates it → accepted.
 type staleTokenRaceStore struct {
 	*fakeStore
 	subject    string
@@ -438,11 +419,6 @@ func (s *staleTokenRaceStore) Append(ctx context.Context, subject string, data [
 }
 
 // @spec:router.occ.committed-stream-seq
-// The single retry budget must remain available to arbitrate a GENUINE same-subject race. A's start
-// advances the shared stream, so B's correct OCC token after its OWN start is 2, not 1. When a
-// genuine concurrent writer commits to B at that token, a correctly-folded router spends its one
-// retry on the real race and accepts; the ++-guessing router instead wastes the retry on a spurious
-// staleness conflict first, then wrongly rejects the genuine race as "lost concurrent append".
 func TestCore_StaleTokenDoesNotBurnRetryBudget(t *testing.T) {
 	racer := &Event{Schema: SchemaV1, EventType: "message.created", EventId: "racer-ev", Sequence: 2, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "racer", CausedBy: "racer"}
 	st := &staleTokenRaceStore{fakeStore: newFakeStore(), subject: logSubjectFor("t1", "B"), triggerSeq: 2, racer: racer}

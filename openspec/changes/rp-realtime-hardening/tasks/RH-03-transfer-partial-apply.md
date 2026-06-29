@@ -2,7 +2,7 @@
 id: RH-03
 slice: RH
 title: HIGH — partially-applied participant.transfer must re-drive idempotently (subset, not exact-equality)
-status: todo
+status: done
 specs: [router.transfer.partial-apply-idempotent]
 ---
 
@@ -28,4 +28,4 @@ still a member = over-delivery) recoverable only by a fresh `command_id`.
 `// @spec:router.transfer.partial-apply-idempotent`
 
 ## Log
-- todo
+- done — replaced the exact-equality `sameSet` precheck with subset check `recordedSubsetOf` (every recorded sub-id ∈ want) so a partial transfer (joined committed, left failed) re-drives the missing `participant.left` on the same `command_id` while a divergent payload is still rejected; added failing-first test `TestRouter_TransferPartialApplyReDrives` (`@spec:router.transfer.partial-apply-idempotent`). build/vet/`-race ./internal/signaling/...` green.

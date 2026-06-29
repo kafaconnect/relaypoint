@@ -400,8 +400,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return res
 	}
 	st.seq++
-	// OCC token = the broker-committed stream seq, not prev+1: INTERACTION_LOGS is SHARED, so an
-	// interleaving interaction can advance this subject's global last-seq by >1 (RH-01).
+	// OCC token = committed stream seq, not prev+1: shared stream (RH-01)
 	st.streamSeq = committedSeq
 	applyTransition(st, cmd.Type)
 	st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
@@ -503,7 +502,8 @@ func (r *Router) handleParticipation(ctx context.Context, tenant, iid, actor str
 		for _, s := range subIDs {
 			want[s] = true
 		}
-		if !sameSet(b.subIDs, want) {
+		// subset not exact-equality: a partial transfer re-drives; divergent payload still rejected (RH-03)
+		if !recordedSubsetOf(b.subIDs, want) {
 			st.mu.Unlock()
 			res.Status, res.Reason = statusRejected, "conflict: command_id reused with a different payload"
 			return res
@@ -546,12 +546,9 @@ func (r *Router) handleParticipation(ctx context.Context, tenant, iid, actor str
 	return res
 }
 
-func sameSet(a, b map[string]bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if !b[k] {
+func recordedSubsetOf(recorded, want map[string]bool) bool {
+	for k := range recorded {
+		if !want[k] {
 			return false
 		}
 	}
@@ -626,7 +623,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 			return res
 		}
 		st.seq++
-		st.streamSeq = cseq // broker-committed shared-stream seq, not prev+1 (RH-01)
+		st.streamSeq = cseq
 		applyTransition(st, fcmd.Type)
 		st.part.ApplyFact(ev)
 		res.Status, res.CausedBy = statusAccepted, fcmd.CommandId

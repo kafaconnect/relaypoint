@@ -147,11 +147,6 @@ func TestOCC_LoserRefoldsAndRetries(t *testing.T) {
 }
 
 // @spec:router.occ.committed-stream-seq
-// Two DISTINCT interactions interleave on the live shared INTERACTION_LOGS stream: each clean append
-// must echo the broker-committed ack.Sequence as its next OCC token, not prev+1. A ++-guessed token
-// goes stale the moment the OTHER interaction advances the shared global stream sequence, raising a
-// spurious ErrOCCConflict on ~every append. Asserts zero broker conflicts (counted on the real
-// store) and dense, gapless per-interaction sequences.
 func TestOCC_InterleavedInteractionsNoSpuriousConflict(t *testing.T) {
 	rnc, err := nats.Connect(urlOr("NATS_URL_ROUTER", "nats://router:router-dev@localhost:14222"))
 	if err != nil {

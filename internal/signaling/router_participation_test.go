@@ -3,6 +3,8 @@ package signaling
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -374,6 +376,68 @@ func TestRouter_PrivilegedParentIdempotency(t *testing.T) {
 	}
 	if !FoldParticipation(factsOf(st, "t1", "iI")).IsParticipantNow("bob") || FoldParticipation(factsOf(st, "t1", "iI")).IsParticipantNow("carol") {
 		t.Fatal("divergent retry must not have joined carol")
+	}
+}
+
+type failLeftOnceStore struct {
+	*fakeStore
+	failed bool
+}
+
+func (s *failLeftOnceStore) Append(ctx context.Context, subject string, data []byte, dedupID string, exp uint64) (bool, uint64, error) {
+	if !s.failed && strings.Contains(dedupID, "participant.left") {
+		s.failed = true
+		return false, 0, errors.New("append boom")
+	}
+	return s.fakeStore.Append(ctx, subject, data, dedupID, exp)
+}
+
+// @spec:router.transfer.partial-apply-idempotent
+func TestRouter_TransferPartialApplyReDrives(t *testing.T) {
+	st := &failLeftOnceStore{fakeStore: newFakeStore()}
+	r := NewRouter(st)
+	startWithDesk(t, r, "t1", "iPA", "desk")
+	if got := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iPA", "desk"),
+		privCmd("a0", "t1", "desk", "participant.assign", participationData{Agent: "alice", Reason: "init", RequestID: "q0"})); got.Status != statusAccepted {
+		t.Fatalf("setup assign alice: %+v", got)
+	}
+
+	partial := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iPA", "desk"),
+		privCmd("x1", "t1", "desk", "participant.transfer", participationData{From: "alice", Agent: "bob", Reason: "escalate", RequestID: "q1"}))
+	if partial.Status != statusRejected {
+		t.Fatalf("first transfer must surface the failed leave, got %+v", partial)
+	}
+	v := FoldParticipation(factsOf(st.fakeStore, "t1", "iPA"))
+	if !v.IsParticipantNow("bob") || !v.IsParticipantNow("alice") {
+		t.Fatalf("after partial apply want bob joined AND alice still a member (over-delivery); bob=%v alice=%v", v.IsParticipantNow("bob"), v.IsParticipantNow("alice"))
+	}
+
+	div := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iPA", "desk"),
+		privCmd("x1", "t1", "desk", "participant.transfer", participationData{From: "alice", Agent: "dave", Reason: "escalate", RequestID: "q1"}))
+	if div.Status != statusRejected || div.Reason != "conflict: command_id reused with a different payload" {
+		t.Fatalf("divergent payload retry must still be a command_id-reuse conflict, got %+v", div)
+	}
+
+	retry := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iPA", "desk"),
+		privCmd("x1", "t1", "desk", "participant.transfer", participationData{From: "alice", Agent: "bob", Reason: "escalate", RequestID: "q1"}))
+	if retry.Status != statusAccepted {
+		t.Fatalf("partial-apply retry must re-drive and complete, got %+v", retry)
+	}
+	v = FoldParticipation(factsOf(st.fakeStore, "t1", "iPA"))
+	if !v.IsParticipantNow("bob") || v.IsParticipantNow("alice") {
+		t.Fatalf("after retry want bob in / alice out; bob=%v alice=%v", v.IsParticipantNow("bob"), v.IsParticipantNow("alice"))
+	}
+	var joinedBob, leftAlice int
+	for _, f := range factsOf(st.fakeStore, "t1", "iPA") {
+		if f.EventType == "participant.joined" && f.ActorId == "bob" {
+			joinedBob++
+		}
+		if f.EventType == "participant.left" && f.ActorId == "alice" {
+			leftAlice++
+		}
+	}
+	if joinedBob != 1 || leftAlice != 1 {
+		t.Fatalf("want exactly one joined(bob) and one left(alice); joined=%d left=%d", joinedBob, leftAlice)
 	}
 }
 
