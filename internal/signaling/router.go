@@ -292,6 +292,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	// A loser re-folds and retries ONCE: a concurrent writer may have advanced the subject, ended
 	// the interaction, or already committed THIS command_id. See openspec change router-occ.
 	var dup bool
+	var committedSeq uint64
 	for attempt := 0; ; attempt++ {
 		// A command_id is bound to its first payload (re-checked each attempt: a re-fold can reveal
 		// a concurrent writer committed it).
@@ -330,7 +331,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		payload, _ := proto.Marshal(ev)
 		// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even
 		// if a prior append's ack was lost.
-		d, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
+		d, cseq, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
 			// Lost the race: another writer advanced the subject. Re-fold once from the log and
 			// retry; if we still lose, surface a retryable rejection (never append behind a stale seq).
@@ -367,7 +368,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			res.Status, res.Reason = statusRejected, "log append failed — retry"
 			return res
 		}
-		dup = d
+		dup, committedSeq = d, cseq
 		break
 	}
 	res.Status, res.CausedBy = statusAccepted, cmd.CommandId
@@ -399,7 +400,9 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return res
 	}
 	st.seq++
-	st.streamSeq++ // we committed exactly one fact under OCC: the subject advanced by one
+	// OCC token = the broker-committed stream seq, not prev+1: INTERACTION_LOGS is SHARED, so an
+	// interleaving interaction can advance this subject's global last-seq by >1 (RH-01).
+	st.streamSeq = committedSeq
 	applyTransition(st, cmd.Type)
 	st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
 
@@ -599,7 +602,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 			CausedBy: parentID, CommandedBy: commandedBy, Reason: pd.Reason, RequestId: pd.RequestID,
 		}
 		payload, _ := proto.Marshal(ev)
-		_, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
+		_, cseq, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
 			fresh, ferr := r.rebuild(tenant, iid)
 			if ferr != nil || attempt >= 1 {
@@ -623,7 +626,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 			return res
 		}
 		st.seq++
-		st.streamSeq++
+		st.streamSeq = cseq // broker-committed shared-stream seq, not prev+1 (RH-01)
 		applyTransition(st, fcmd.Type)
 		st.part.ApplyFact(ev)
 		res.Status, res.CausedBy = statusAccepted, fcmd.CommandId

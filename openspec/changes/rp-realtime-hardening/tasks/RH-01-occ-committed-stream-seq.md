@@ -2,7 +2,7 @@
 id: RH-01
 slice: RH
 title: CRITICAL — OCC token is the broker-committed stream seq, not ++ on the shared stream
-status: todo
+status: done
 specs: [router.occ.committed-stream-seq]
 ---
 
@@ -31,4 +31,4 @@ append, which also burns the single retry budget and wrongly rejects a coinciden
 `// @spec:router.occ.committed-stream-seq`
 
 ## Log
-- todo
+- `LogStore.Append` now returns the broker-committed stream seq (`ack.Sequence`); router records it as `streamSeq` after a clean append instead of `++`, so an interleaving interaction on the shared stream no longer makes the OCC token stale; fake reworked to model one global stream seq; failing-first unit tests (no-spurious-conflict + retry-budget) + a live-JetStream interleaved regression added, tagged `// @spec:router.occ.committed-stream-seq`.

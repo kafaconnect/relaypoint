@@ -3,47 +3,75 @@ package signaling
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
 )
 
-// fakeStore is an in-memory LogStore — proves the router core needs no NATS.
+// fakeStore is an in-memory LogStore — proves the router core needs no NATS. It models the SHARED
+// INTERACTION_LOGS stream: ONE global stream sequence advanced by a commit on ANY subject, plus each
+// subject's last committed global seq as its OCC token (exactly JetStream's
+// ExpectLastSequencePerSubject semantics). A per-subject COUNT would hide RH-01 — the spurious
+// conflict only appears once an interleaving subject advances the shared seq by more than one.
 type fakeStore struct {
-	mu    sync.Mutex
-	facts map[string][]*Event
-	dedup map[string]bool
+	mu        sync.Mutex
+	facts     map[string][]*Event
+	dedup     map[string]bool
+	streamSeq uint64            // the one shared stream's global last sequence
+	lastSeq   map[string]uint64 // subject -> its last committed global seq (the OCC token)
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{facts: map[string][]*Event{}, dedup: map[string]bool{}}
+	return &fakeStore{facts: map[string][]*Event{}, dedup: map[string]bool{}, lastSeq: map[string]uint64{}}
 }
 
-// streamSeq is the fake's per-subject STREAM sequence — the in-memory analogue of JetStream's
-// per-subject last-sequence the router echoes for OCC. Append enforces it like the real store.
-func (s *fakeStore) Append(_ context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+func (s *fakeStore) Append(_ context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dedup[dedupID] {
-		return true, nil
+		return true, s.lastSeq[subject], nil
 	}
-	if uint64(len(s.facts[subject])) != expectedLastSubjSeq {
-		return false, ErrOCCConflict
+	if s.lastSeq[subject] != expectedLastSubjSeq {
+		return false, 0, ErrOCCConflict
 	}
 	s.dedup[dedupID] = true
+	s.streamSeq++ // a commit on ANY subject advances the one shared stream sequence
+	s.lastSeq[subject] = s.streamSeq
 	e := &Event{}
 	_ = proto.Unmarshal(data, e)
 	s.facts[subject] = append(s.facts[subject], e)
-	return false, nil
+	return false, s.streamSeq, nil
 }
 
 func (s *fakeStore) Replay(subject string) ([]*Event, uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := append([]*Event(nil), s.facts[subject]...)
-	return out, uint64(len(out)), nil
+	return out, s.lastSeq[subject], nil // the subject's last GLOBAL seq, like meta.Sequence.Stream
 }
+
+// countingStore wraps a LogStore and tallies appends the broker rejected with ErrOCCConflict — i.e.
+// how often the router presented a stale OCC token. With the RH-01 fix, distinct interactions
+// interleaving on the shared stream present exact (broker-committed) tokens, so this stays 0.
+type countingStore struct {
+	LogStore
+	mu        sync.Mutex
+	conflicts int
+}
+
+func (s *countingStore) Append(ctx context.Context, subject string, data []byte, dedupID string, exp uint64) (bool, uint64, error) {
+	dup, seq, err := s.LogStore.Append(ctx, subject, data, dedupID, exp)
+	if errors.Is(err, ErrOCCConflict) {
+		s.mu.Lock()
+		s.conflicts++
+		s.mu.Unlock()
+	}
+	return dup, seq, err
+}
+
+func (s *countingStore) occConflicts() int { s.mu.Lock(); defer s.mu.Unlock(); return s.conflicts }
 
 // chatData marshals chat message text into the `data` payload (the registry: medium=chat).
 func chatData(text string) []byte {
@@ -161,8 +189,8 @@ type concurrentWriterStore struct {
 	replays int
 }
 
-func (s *concurrentWriterStore) Append(context.Context, string, []byte, string, uint64) (bool, error) {
-	return true, nil
+func (s *concurrentWriterStore) Append(context.Context, string, []byte, string, uint64) (bool, uint64, error) {
+	return true, 0, nil
 }
 func (s *concurrentWriterStore) Replay(string) ([]*Event, uint64, error) {
 	s.replays++
@@ -246,8 +274,8 @@ func TestCore_NovelVerbIsOpaqueAnnotation(t *testing.T) {
 // duplicate; the dup-path rebuild then fails — the router must NOT keep stale in-memory seq.
 type dupRebuildFailStore struct{ calls int }
 
-func (s *dupRebuildFailStore) Append(context.Context, string, []byte, string, uint64) (bool, error) {
-	return true, nil
+func (s *dupRebuildFailStore) Append(context.Context, string, []byte, string, uint64) (bool, uint64, error) {
+	return true, 0, nil
 }
 func (s *dupRebuildFailStore) Replay(string) ([]*Event, uint64, error) {
 	s.calls++
@@ -286,9 +314,9 @@ type occBeforeDedupStore struct {
 	appends int
 }
 
-func (s *occBeforeDedupStore) Append(context.Context, string, []byte, string, uint64) (bool, error) {
+func (s *occBeforeDedupStore) Append(context.Context, string, []byte, string, uint64) (bool, uint64, error) {
 	s.appends++
-	return false, ErrOCCConflict
+	return false, 0, ErrOCCConflict
 }
 func (s *occBeforeDedupStore) Replay(string) ([]*Event, uint64, error) {
 	s.replays++
@@ -339,5 +367,105 @@ func TestCore_RejectedReuseConflict(t *testing.T) {
 	r.HandleCommand(context.Background(), subj, cmd("s1", "t1", "interaction.started", ""))
 	if got := r.HandleCommand(context.Background(), subj, cmd("k1", "t1", "message.created", "A")); got.Status != statusAccepted {
 		t.Fatalf("same-payload retry once legal should be accepted, got %+v", got)
+	}
+}
+
+// @spec:router.occ.committed-stream-seq
+// Two distinct interactions A and B append ALTERNATELY on the SHARED INTERACTION_LOGS stream, so the
+// global stream sequence on each subject advances by more than one between that subject's own
+// appends. Each clean append must record the broker-committed stream seq as its next OCC token, not
+// prev+1 — otherwise the ++ guess is stale and ~every append after the first raises a SPURIOUS
+// ErrOCCConflict. Asserts zero broker conflicts on correctly-folded appends and a dense, gapless
+// per-interaction sequence.
+func TestCore_InterleavedSharedStreamNoSpuriousOCC(t *testing.T) {
+	cs := &countingStore{LogStore: newFakeStore()}
+	r := NewRouter(cs, WithDevMode())
+	subjA := "tenant.t1.interaction.A.cmd.u1"
+	subjB := "tenant.t1.interaction.B.cmd.u1"
+
+	mustAccept := func(s, id, typ, text string) {
+		t.Helper()
+		if got := r.HandleCommand(context.Background(), s, cmd(id, "t1", typ, text)); got.Status != statusAccepted {
+			t.Fatalf("%s %s: %+v (want accepted)", s, id, got)
+		}
+	}
+	mustAccept(subjA, "a0", "interaction.started", "")
+	mustAccept(subjB, "b0", "interaction.started", "")
+	for i := 1; i <= 5; i++ {
+		mustAccept(subjA, fmt.Sprintf("a%d", i), "message.created", fmt.Sprintf("a-%d", i))
+		mustAccept(subjB, fmt.Sprintf("b%d", i), "message.created", fmt.Sprintf("b-%d", i))
+	}
+	if n := cs.occConflicts(); n != 0 {
+		t.Fatalf("stale ++-guessed OCC token caused %d spurious broker conflict(s) on interleaved interactions; want 0", n)
+	}
+	fake := cs.LogStore.(*fakeStore)
+	for _, iid := range []string{"A", "B"} {
+		facts, _, _ := fake.Replay(logSubjectFor("t1", iid))
+		if len(facts) != 6 {
+			t.Fatalf("interaction %s: want 6 facts, got %d", iid, len(facts))
+		}
+		for i, f := range facts {
+			if f.Sequence != int64(i+1) {
+				t.Fatalf("interaction %s: dense per-interaction sequence broke at index %d: seq=%d", iid, i, f.Sequence)
+			}
+		}
+	}
+}
+
+// staleTokenRaceStore commits ONE genuine competing fact the first time a real append arrives on
+// `subject` carrying `triggerSeq` (the token a correctly-folded router presents). Combined with an
+// interleaving interaction that left a ++-guessing router's token stale, this is the exact RH-01
+// failure: the stale token spuriously conflicts on attempt 0, so the genuine race lands on attempt 1
+// with no retry budget left → wrongly rejected; under the fix attempt 0 IS the genuine race and the
+// single retry arbitrates it → accepted.
+type staleTokenRaceStore struct {
+	*fakeStore
+	subject    string
+	triggerSeq uint64
+	racer      *Event
+	injected   bool
+}
+
+func (s *staleTokenRaceStore) Append(ctx context.Context, subject string, data []byte, dedupID string, exp uint64) (bool, uint64, error) {
+	if !s.injected && subject == s.subject && exp == s.triggerSeq {
+		s.injected = true
+		raw, _ := proto.Marshal(s.racer)
+		if _, _, err := s.fakeStore.Append(ctx, subject, raw, "racer-"+dedupID, exp); err != nil {
+			return false, 0, err
+		}
+	}
+	return s.fakeStore.Append(ctx, subject, data, dedupID, exp)
+}
+
+// @spec:router.occ.committed-stream-seq
+// The single retry budget must remain available to arbitrate a GENUINE same-subject race. A's start
+// advances the shared stream, so B's correct OCC token after its OWN start is 2, not 1. When a
+// genuine concurrent writer commits to B at that token, a correctly-folded router spends its one
+// retry on the real race and accepts; the ++-guessing router instead wastes the retry on a spurious
+// staleness conflict first, then wrongly rejects the genuine race as "lost concurrent append".
+func TestCore_StaleTokenDoesNotBurnRetryBudget(t *testing.T) {
+	racer := &Event{Schema: SchemaV1, EventType: "message.created", EventId: "racer-ev", Sequence: 2, TenantId: "t1", ActorId: "u1", Medium: "chat", CommandId: "racer", CausedBy: "racer"}
+	st := &staleTokenRaceStore{fakeStore: newFakeStore(), subject: logSubjectFor("t1", "B"), triggerSeq: 2, racer: racer}
+	r := NewRouter(st, WithDevMode())
+	subjA := "tenant.t1.interaction.A.cmd.u1"
+	subjB := "tenant.t1.interaction.B.cmd.u1"
+
+	if got := r.HandleCommand(context.Background(), subjA, cmd("a0", "t1", "interaction.started", "")); got.Status != statusAccepted {
+		t.Fatalf("A start: %+v", got)
+	}
+	if got := r.HandleCommand(context.Background(), subjB, cmd("b0", "t1", "interaction.started", "")); got.Status != statusAccepted {
+		t.Fatalf("B start: %+v", got)
+	}
+	if got := r.HandleCommand(context.Background(), subjB, cmd("b1", "t1", "message.created", "b-1")); got.Status != statusAccepted {
+		t.Fatalf("genuine same-subject race wrongly rejected — the stale ++ token burned the retry budget: %+v", got)
+	}
+	facts, _, _ := st.Replay(logSubjectFor("t1", "B"))
+	if len(facts) != 3 {
+		t.Fatalf("B want 3 facts (start, racer, b1), got %d", len(facts))
+	}
+	for i, f := range facts {
+		if f.Sequence != int64(i+1) {
+			t.Fatalf("B dense per-interaction sequence broke at index %d: seq=%d", i, f.Sequence)
+		}
 	}
 }

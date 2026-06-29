@@ -25,6 +25,13 @@ type LogStore interface {
 	// (0 = the subject is expected empty). dedupID makes the append idempotent: a retry with the
 	// same dedupID returns duplicate=true and writes no second fact.
 	//
+	// On a clean commit Append returns committedSeq — the broker-committed STREAM sequence of the
+	// fact just written (`ack.Sequence`). INTERACTION_LOGS is SHARED, so the next same-subject append
+	// MUST echo this exact value as its OCC token, never prev+1: an interleaving interaction advances
+	// the subject's global last-sequence by more than one (RH-01). committedSeq is meaningful only on
+	// a clean commit; the duplicate and error paths return 0 and self-correct by rebuilding from the
+	// log.
+	//
 	// dedup-vs-OCC ordering is BROKER-DEPENDENT, not guaranteed: on a single-server (R1) JetStream
 	// the expected-subject check runs BEFORE dedup, so a genuine retry of an already-committed
 	// command_id can surface as ErrOCCConflict instead of duplicate=true (a clustered broker may
@@ -33,7 +40,7 @@ type LogStore interface {
 	// this (its re-fold reveals the committed command_id and replays the cached accepted result).
 	// ctx carries the inbound command's W3C trace: the fact is published with a `traceparent` header
 	// so a trace spans the router→.log→projector→agent-feed hops (F5b trace continuity).
-	Append(ctx context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (duplicate bool, err error)
+	Append(ctx context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (duplicate bool, committedSeq uint64, err error)
 	// Replay MUST error (not return a short slice) if the log can't be fully read, so callers
 	// fail closed. It also returns the subject's current last STREAM sequence (0 if empty) — the
 	// OCC token a subsequent Append must echo, distinct from the dense per-interaction sequence.
@@ -44,7 +51,7 @@ type jetstreamStore struct{ js nats.JetStreamContext }
 
 func NewJetStreamStore(js nats.JetStreamContext) LogStore { return &jetstreamStore{js: js} }
 
-func (s *jetstreamStore) Append(ctx context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, error) {
+func (s *jetstreamStore) Append(ctx context.Context, subject string, data []byte, dedupID string, expectedLastSubjSeq uint64) (bool, uint64, error) {
 	// Publish via a message so the inbound trace rides onto the fact as a `traceparent` header
 	// (F5b). MsgId + ExpectLastSequencePerSubject keep the same dedup + OCC semantics as before.
 	msg := nats.NewMsg(subject)
@@ -55,11 +62,12 @@ func (s *jetstreamStore) Append(ctx context.Context, subject string, data []byte
 	if err != nil {
 		var apiErr *nats.APIError
 		if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
-			return false, ErrOCCConflict
+			return false, 0, ErrOCCConflict
 		}
-		return false, err
+		return false, 0, err
 	}
-	return ack.Duplicate, nil
+	// ack.Sequence is the committed STREAM seq — the OCC token the next same-subject append echoes.
+	return ack.Duplicate, ack.Sequence, nil
 }
 
 func (s *jetstreamStore) Replay(subject string) ([]*Event, uint64, error) {

@@ -145,3 +145,58 @@ func TestOCC_LoserRefoldsAndRetries(t *testing.T) {
 		t.Fatalf("sequences not 1,2,3 (a duplicate or gap): %d,%d,%d", facts[0].Sequence, facts[1].Sequence, facts[2].Sequence)
 	}
 }
+
+// @spec:router.occ.committed-stream-seq
+// Two DISTINCT interactions interleave on the live shared INTERACTION_LOGS stream: each clean append
+// must echo the broker-committed ack.Sequence as its next OCC token, not prev+1. A ++-guessed token
+// goes stale the moment the OTHER interaction advances the shared global stream sequence, raising a
+// spurious ErrOCCConflict on ~every append. Asserts zero broker conflicts (counted on the real
+// store) and dense, gapless per-interaction sequences.
+func TestOCC_InterleavedInteractionsNoSpuriousConflict(t *testing.T) {
+	rnc, err := nats.Connect(urlOr("NATS_URL_ROUTER", "nats://router:router-dev@localhost:14222"))
+	if err != nil {
+		t.Skipf("no NATS: %v", err)
+	}
+	rjs, err := rnc.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := ResetLogStream(rjs); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	t.Cleanup(func() { rnc.Drain() })
+
+	cs := &countingStore{LogStore: NewJetStreamStore(rjs)}
+	r := NewRouter(cs, WithDevMode())
+	const tn = "t1"
+	iidA := fmt.Sprintf("ilA%d", time.Now().UnixNano())
+	iidB := fmt.Sprintf("ilB%d", time.Now().UnixNano())
+
+	mustAccept := func(iid string, c *Command) {
+		t.Helper()
+		if got := handle(r, tn, iid, c); got.Status != statusAccepted {
+			t.Fatalf("%s/%s: %+v (want accepted)", iid, c.CommandId, got)
+		}
+	}
+	mustAccept(iidA, &Command{CommandId: "a-start", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"})
+	mustAccept(iidB, &Command{CommandId: "b-start", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"})
+	const rounds = 8
+	for i := 0; i < rounds; i++ {
+		mustAccept(iidA, &Command{CommandId: fmt.Sprintf("a%d", i), TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatBytes(fmt.Sprintf("a-%d", i))})
+		mustAccept(iidB, &Command{CommandId: fmt.Sprintf("b%d", i), TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatBytes(fmt.Sprintf("b-%d", i))})
+	}
+	if n := cs.occConflicts(); n != 0 {
+		t.Fatalf("stale ++-guessed OCC token caused %d spurious broker conflict(s) on interleaved interactions; want 0", n)
+	}
+	for _, iid := range []string{iidA, iidB} {
+		facts := readLog(t, rjs, tn, iid)
+		if len(facts) != rounds+1 {
+			t.Fatalf("interaction %s: want %d facts, got %d", iid, rounds+1, len(facts))
+		}
+		for i, f := range facts {
+			if f.Sequence != int64(i+1) {
+				t.Fatalf("interaction %s: dense sequence broke at index %d: seq=%d", iid, i, f.Sequence)
+			}
+		}
+	}
+}
