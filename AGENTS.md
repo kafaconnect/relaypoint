@@ -50,9 +50,14 @@ is a documented, justified one, confined to an adapter/edge — never the domain
 
 ## Code style
 
-Full conventions: **`docs/conventions.md`**. **Comments are RARE** — only when code can't
-self-explain (a non-obvious why/constraint/trade-off) or to reference a change/issue. Never
-restate the code; filler comments are a review defect.
+Full conventions: **`docs/conventions.md`**. **Comments — DEFAULT ZERO.** Exactly TWO kinds
+are allowed: a **WHY** comment (a non-obvious rationale/constraint/trade-off/gotcha the code
+cannot express — may cite a change/issue) and a **TODO**. Nothing else: no "what"/how
+comments, no doc-essays restating a signature/type/test, no step narration, no banners, no
+commented-out code. A non-WHY/non-TODO comment is a review DEFECT that BLOCKS merge — delete
+it or fix the code (rename/extract). Machine tags (`// @spec:<id>`, `//go:…`, build/struct
+tags) are exempt. Applies to every file and language; when delegating, state this rule and
+`grep '^\+\s*//'` the diff before committing — sub-agents are the repeat offenders.
 
 ## Licensing
 

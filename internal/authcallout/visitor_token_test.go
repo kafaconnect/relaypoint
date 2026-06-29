@@ -16,9 +16,7 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-// deskMinter mirrors desk's internal/ingress Ed25519Issuer ENOUGH to mint a real `vis_` for these tests:
-// EdDSA, iss=desk-ingress, aud=relaypoint, kid header, claims tid/cid + subject. It also exposes its public
-// key(s) as a JWKS so the verifier's JWKS path is exercised end-to-end against a real signature.
+// deskMinter mirrors desk's Ed25519 issuer enough to mint a real `vis_` (EdDSA, iss/aud, kid, tid/cid) + expose a JWKS, so the verifier's JWKS path runs against a real signature.
 type deskMinter struct {
 	kid  string
 	priv ed25519.PrivateKey
@@ -106,8 +104,7 @@ func (m *deskMinter) mint(t *testing.T, o mintOpts) string {
 	return string(signed)
 }
 
-// fakeJWKS is the in-memory JWKSSource: it serves bytes, counts fetches (to assert caching/refetch), and can
-// be made to fail (unreachable) to prove fail-closed. NO network is touched in these unit tests.
+// fakeJWKS is the in-memory JWKSSource: counts fetches (to assert caching/refetch) and can fail (to prove fail-closed); NO network is touched.
 type fakeJWKS struct {
 	mu      sync.Mutex
 	body    []byte
@@ -158,7 +155,6 @@ func TestVisitorValidVerifies(t *testing.T) {
 	if id.Role != signaling.RoleVisitor || id.TenantID != tidOK || id.ConversationID != cidA || id.UserID != subOK {
 		t.Fatalf("unexpected identity: %+v", id)
 	}
-	// The vis_ exp must be threaded onto the Identity so the responder can cap the minted credential.
 	if id.ExpiresAt.Unix() != exp.Unix() {
 		t.Fatalf("ExpiresAt = %v, want the vis_ exp %v", id.ExpiresAt, exp)
 	}
@@ -235,8 +231,6 @@ func TestVisitorJWKSUnreachableFailsClosed(t *testing.T) {
 }
 
 // @spec:authcallout.visitor.jwks-unreachable-fail-closed
-// Even with a previously-cached good key set, a refetch triggered by an unknown kid that then FAILS must
-// reject — we never fall back to a stale set we could not re-confirm.
 func TestVisitorStaleCacheNotTrustedOnRefetchFailure(t *testing.T) {
 	m := newDeskMinter(t, "k1")
 	src := &fakeJWKS{}
@@ -244,11 +238,9 @@ func TestVisitorStaleCacheNotTrustedOnRefetchFailure(t *testing.T) {
 	clk := &fakeClock{now: time.Now()}
 	v := NewVisitorVerifier(src, time.Minute, WithVisitorClock(clk.Now))
 
-	// Prime the cache with a good verify.
 	if _, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
 		t.Fatalf("prime: %v", err)
 	}
-	// Rotate desk to a new kid the cache lacks, but make the JWKS endpoint fail: refetch fails ⇒ reject.
 	src.set(nil, errors.New("unreachable"))
 	tok := m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, kid: "k2"})
 	if _, err := v.Verify(tok); err == nil {
@@ -257,7 +249,6 @@ func TestVisitorStaleCacheNotTrustedOnRefetchFailure(t *testing.T) {
 }
 
 // @spec:authcallout.visitor.rotation-refetch
-// A `vis_` signed by a freshly rotated desk key (new kid) triggers exactly one refetch and then verifies.
 func TestVisitorRotationRefetch(t *testing.T) {
 	old := newDeskMinter(t, "k1")
 	src := &fakeJWKS{}
@@ -265,14 +256,12 @@ func TestVisitorRotationRefetch(t *testing.T) {
 	clk := &fakeClock{now: time.Now()}
 	v := NewVisitorVerifier(src, time.Hour, WithVisitorClock(clk.Now)) // long ttl: only an unknown kid forces refetch
 
-	// Verify against the old key, caching it.
 	if _, err := v.Verify(old.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
 		t.Fatalf("old key verify: %v", err)
 	}
 	fetchesAfterPrime := src.count()
 
-	// Desk rotates: a new kid signs. The endpoint now serves BOTH keys (publish-before-sign overlap).
-	rotated := newDeskMinter(t, "k2") // a distinct key + kid
+	rotated := newDeskMinter(t, "k2")
 	src.set(twoKeyJWKS(t, old, rotated), nil)
 
 	id, err := v.Verify(rotated.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA}))
@@ -287,7 +276,6 @@ func TestVisitorRotationRefetch(t *testing.T) {
 	}
 }
 
-// twoKeyJWKS serves both minters' public keys (rotation overlap).
 func twoKeyJWKS(t *testing.T, a, b *deskMinter) []byte {
 	t.Helper()
 	set := jwk.NewSet()
@@ -311,7 +299,6 @@ func twoKeyJWKS(t *testing.T, a, b *deskMinter) []byte {
 }
 
 // @spec:authcallout.visitor.cache-ttl
-// Within the TTL a known kid is served from cache (no refetch); past the TTL the next verify refetches.
 func TestVisitorCacheTTL(t *testing.T) {
 	m := newDeskMinter(t, "k1")
 	src := &fakeJWKS{}
@@ -344,9 +331,6 @@ func TestVisitorCacheTTL(t *testing.T) {
 }
 
 // @spec:authcallout.visitor.unknown-kid-flood-throttled
-// A flood of forged tokens carrying ever-changing unknown kids must NOT fan out into one JWKS fetch each:
-// the per-kid refetch cooldown caps unknown-kid-driven refetches to one per window, so an attacker cannot
-// hammer desk's endpoint or stall verification (cross-review BLOCKER).
 func TestVisitorUnknownKidFloodThrottled(t *testing.T) {
 	m := newDeskMinter(t, "k1")
 	src := &fakeJWKS{}
@@ -354,14 +338,11 @@ func TestVisitorUnknownKidFloodThrottled(t *testing.T) {
 	clk := &fakeClock{now: time.Now()}
 	v := NewVisitorVerifier(src, time.Hour, WithVisitorClock(clk.Now), WithVisitorRefetchCooldown(5*time.Second))
 
-	// Prime a fresh cache (1 fetch).
 	if _, err := v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA})); err != nil {
 		t.Fatalf("prime: %v", err)
 	}
 	base := src.count()
 
-	// Spam 100 forged unknown-kid tokens with the clock frozen inside the cooldown window: at most ONE
-	// extra refetch may occur (the first unknown kid), the rest are throttled.
 	for i := 0; i < 100; i++ {
 		_, _ = v.Verify(m.mint(t, mintOpts{sub: subOK, tid: tidOK, cid: cidA, kid: "forged"}))
 	}
@@ -369,7 +350,6 @@ func TestVisitorUnknownKidFloodThrottled(t *testing.T) {
 		t.Fatalf("unknown-kid flood must trigger at most one refetch in the cooldown, got %d", extra)
 	}
 
-	// After the cooldown elapses, a genuine new kid (rotation) still verifies — the throttle is not a permanent block.
 	clk.now = clk.now.Add(6 * time.Second)
 	rotated := newDeskMinter(t, "k2")
 	src.set(twoKeyJWKS(t, m, rotated), nil)
@@ -379,10 +359,6 @@ func TestVisitorUnknownKidFloodThrottled(t *testing.T) {
 }
 
 // @spec:authcallout.agent.token-verifies-grants-feed
-// The F1 desk-agent path end-to-end: a desk-minted AGENT connect token (role=agent, tid embedded, NO
-// cid) is verified through the SAME EdDSA/desk-JWKS trust as a `vis_`, yields a RoleAgent identity, and
-// GrantsFor mints the agent's own-feed ACL — its own `…feed.>` subscribe + `interaction.*.cmd.<self>`
-// publish, never a `.log` read nor another agent's feed. (codex M1.5 review: was live-verified, untested.)
 func TestAgentTokenVerifiesViaJWKSAndGrantsOwnFeed(t *testing.T) {
 	m := newDeskMinter(t, "desk-ingress-1")
 	src := &fakeJWKS{}
@@ -397,7 +373,6 @@ func TestAgentTokenVerifiesViaJWKSAndGrantsOwnFeed(t *testing.T) {
 	if id.Role != signaling.RoleAgent || id.TenantID != tidOK || id.UserID != agentSub {
 		t.Fatalf("unexpected agent identity: %+v", id)
 	}
-	// An agent carries NO conversation binding (unlike a visitor) — it is not pinned to one chat.
 	if id.ConversationID != "" {
 		t.Fatalf("agent identity must not carry a ConversationID, got %q", id.ConversationID)
 	}
@@ -421,8 +396,6 @@ func TestAgentTokenVerifiesViaJWKSAndGrantsOwnFeed(t *testing.T) {
 }
 
 // @spec:authcallout.agent.requires-tid-sub
-// tid/sub are interpolated into the minted ACL subjects — an agent token missing either is rejected
-// closed (an empty token would otherwise widen the grant to `tenant..agent..feed.>`).
 func TestAgentTokenMissingTidRejected(t *testing.T) {
 	m := newDeskMinter(t, "k1")
 	src := &fakeJWKS{}

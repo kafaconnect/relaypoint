@@ -55,6 +55,49 @@ func TestDeskRoster_FetchesAndCaches(t *testing.T) {
 	}
 }
 
+// @spec:projector.roster.empty-not-cached
+func TestDeskRoster_EmptyNotCachedNonEmptyCached(t *testing.T) {
+	var agents []string
+	var hits int
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		_ = json.NewEncoder(w).Encode(agentsResponse{TenantID: "t1", Agents: agents})
+	}))
+	defer stub.Close()
+
+	dr, _ := NewDeskRoster(stub.URL, "svc-tok", time.Minute, stub.Client())
+	now := time.Unix(0, 0)
+	dr.now = func() time.Time { return now }
+
+	for i := 0; i < 3; i++ {
+		got, err := dr.Agents(context.Background(), "t1")
+		if err != nil {
+			t.Fatalf("Agents (empty): %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("want empty agents, got %v", got)
+		}
+	}
+	if hits != 3 {
+		t.Fatalf("empty-roster upstream hits = %d, want 3 (an empty result must not be cached)", hits)
+	}
+
+	agents = []string{"sub-a"} // roster rebuild completes
+	if _, err := dr.Agents(context.Background(), "t1"); err != nil {
+		t.Fatalf("Agents (non-empty): %v", err)
+	}
+	before := hits
+	for i := 0; i < 3; i++ {
+		got, _ := dr.Agents(context.Background(), "t1")
+		if len(got) != 1 || got[0] != "sub-a" {
+			t.Fatalf("want 1 cached agent, got %v", got)
+		}
+	}
+	if hits != before {
+		t.Fatalf("non-empty upstream hits = %d, want %d (a non-empty result must be cached within the TTL)", hits, before)
+	}
+}
+
 func TestDeskRoster_Non200IsError(t *testing.T) {
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-// traceparentOf reads the inbound .log message's W3C trace header (nil-safe — a header-less message
-// yields ""), so the projector can re-inject it onto the agent feed (F5b trace continuity).
 func traceparentOf(m *nats.Msg) string {
 	if m == nil || m.Header == nil {
 		return ""
@@ -24,8 +23,7 @@ func traceparentOf(m *nats.Msg) string {
 	return m.Header.Get("traceparent")
 }
 
-// The NATS adapters — the only code here importing nats.go — implement the owned ports so the core
-// never sees a NATS type (loose-coupling HARD RULE).
+// NATS adapters implement the owned ports so the core never imports a NATS type (loose-coupling HARD RULE).
 
 const (
 	feedStream   = "AGENT_FEED"
@@ -36,10 +34,7 @@ const (
 	kvSnapName   = "projector-snapshot"
 )
 
-// EnsureFeedStream creates/updates the EPHEMERAL agent-feed stream: a short max_age live
-// disconnect-gap bridge (NOT the audit store — the canonical .log is). Per-subject dedup over a
-// window >= the redelivery/restart horizon makes the deterministic Nats-Msg-Id at-most-once per
-// (agent, interaction, sequence). Decision 8.
+// EPHEMERAL gap-bridge stream (NOT the audit store — .log is); the dedup window >= the redelivery/restart horizon makes the Nats-Msg-Id at-most-once per (agent, interaction, sequence). Decision 8.
 func EnsureFeedStream(js nats.JetStreamContext, maxAge, dedupWindow time.Duration) error {
 	if maxAge <= 0 {
 		maxAge = time.Hour
@@ -71,9 +66,7 @@ type jsLogSource struct {
 	durable string
 }
 
-// NewLogSource binds the durable pull consumer with MaxAckPending=1 (one in-flight fact, no
-// prefetch) so the stateful fold is strictly serial and a lease takeover never overlaps in-flight
-// processing. maxDeliver bounds redelivery before the core DLQs the poison fact.
+// MaxAckPending=1 (no prefetch) keeps the fold strictly serial so a lease takeover never overlaps in-flight processing.
 func NewLogSource(js nats.JetStreamContext, maxDeliver int, ackWait time.Duration) (LogSource, error) {
 	if ackWait <= 0 {
 		ackWait = 30 * time.Second
@@ -105,8 +98,7 @@ func (s *jsLogSource) Deliver(ctx context.Context) (Fact, error) {
 			return Fact{}, fmt.Errorf("delivery metadata: %w", merr)
 		}
 		e := &signaling.Event{}
-		// A corrupt envelope is still a delivered fact: carry a nil Event so the core DLQs it past
-		// max_deliver rather than wedging the consumer.
+		// A corrupt envelope is still a delivered fact: carry a nil Event so the core DLQs it past max_deliver instead of wedging the consumer.
 		if uerr := proto.Unmarshal(m.Data, e); uerr != nil {
 			e = nil
 		}
@@ -118,6 +110,9 @@ func (s *jsLogSource) Ack(f Fact) error {
 	return ack(f, func(m *nats.Msg) error { return m.AckSync() })
 }
 func (s *jsLogSource) Nak(f Fact) error { return ack(f, func(m *nats.Msg) error { return m.Nak() }) }
+func (s *jsLogSource) InProgress(f Fact) error {
+	return ack(f, func(m *nats.Msg) error { return m.InProgress() })
+}
 
 func (s *jsLogSource) Delivered(f Fact) int {
 	m, ok := f.msg.(*nats.Msg)
@@ -139,8 +134,7 @@ func (s *jsLogSource) AckFloor(_ context.Context) (uint64, error) {
 	return info.AckFloor.Stream, nil
 }
 
-// FoldRange replays (lo, hi] by stream sequence with an ephemeral AckNone reader — read-only, no
-// cursor mutation — so hydration rebuilds the tail above the snapshot without touching the durable.
+// Ephemeral AckNone reader: read-only, no cursor mutation, so hydration rebuilds the tail without touching the durable.
 func (s *jsLogSource) FoldRange(_ context.Context, lo, hi uint64) ([]Fact, error) {
 	if hi <= lo {
 		return nil, nil
@@ -205,12 +199,11 @@ func NewFeedSink(js nats.JetStreamContext) FeedSink { return &jsFeedSink{js: js}
 
 func (s *jsFeedSink) Publish(ctx context.Context, tenant, agent, iid, dedupID string, payload []byte) error {
 	subj := fmt.Sprintf("tenant.%s.agent.%s.feed.%s", tenant, agent, iid)
-	// Publish via a message so the fact's trace rides onto the feed event (F5b). MsgId keeps the
-	// at-most-once dedup; the traceparent header is outside the dedup identity.
 	msg := nats.NewMsg(subj)
 	msg.Data = payload
 	obs.InjectTraceparent(ctx, func(k, v string) { msg.Header.Set(k, v) })
-	_, err := s.js.PublishMsg(msg, nats.MsgId(dedupID))
+	// WHY: ctx-bound the publish so a fence cancelling the data ctx aborts an in-flight fan-out (RH-02).
+	_, err := s.js.PublishMsg(msg, nats.MsgId(dedupID), nats.Context(ctx))
 	return err
 }
 
@@ -222,25 +215,31 @@ func (s *jsFeedSink) Dlq(_ context.Context, tenant, reason, eventID string, seq 
 }
 
 type kvLease struct {
-	kv     nats.KeyValue
+	kv     jetstream.KeyValue
 	key    string
-	holder string // this worker's unique id
+	holder string
 	rev    uint64
 }
 
-// NewLeaseStore opens (or creates) the lease KV with a per-key TTL and returns a lease for `holder`.
-// Acquire wins by Create (key absent) or Update (the holder is already us); the TTL expiry lets a
-// standby take over after the prior holder dies.
-func NewLeaseStore(js nats.JetStreamContext, holder string, ttl time.Duration) (LeaseStore, error) {
+func NewLeaseStore(js jetstream.JetStream, holder string, ttl time.Duration) (LeaseStore, error) {
 	if ttl <= 0 {
 		ttl = 5 * time.Second
 	}
-	kv, err := js.KeyValue(kvLeaseName)
+	ctx := context.Background()
+	kv, err := js.KeyValue(ctx, kvLeaseName)
 	if err != nil {
-		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: kvLeaseName, TTL: ttl, History: 1})
+		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: kvLeaseName, TTL: ttl, History: 1})
 		if err != nil {
 			return nil, err
 		}
+	}
+	st, err := kv.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// WHY: the renew budget derives from the configured TTL, so a drifted bucket TTL must fail closed.
+	if st.TTL() != ttl {
+		return nil, fmt.Errorf("projector: lease bucket %q TTL %v != configured %v; recreate the bucket or align LeaseTTL", kvLeaseName, st.TTL(), ttl)
 	}
 	return &kvLease{kv: kv, key: "leader", holder: holder}, nil
 }
@@ -250,14 +249,12 @@ func (l *kvLease) Acquire(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rev, err := l.kv.Create(l.key, []byte(l.holder))
+		rev, err := l.kv.Create(ctx, l.key, []byte(l.holder))
 		if err == nil {
 			l.rev = rev
 			return nil
 		}
-		// Key present: the prior holder may have died (TTL not yet expired) or it's us. Read it; if
-		// it's us, adopt the revision; otherwise wait out the TTL and retry.
-		entry, gerr := l.kv.Get(l.key)
+		entry, gerr := l.kv.Get(ctx, l.key)
 		if gerr == nil && string(entry.Value()) == l.holder {
 			l.rev = entry.Revision()
 			return nil
@@ -270,31 +267,31 @@ func (l *kvLease) Acquire(ctx context.Context) error {
 	}
 }
 
-func (l *kvLease) Renew(_ context.Context) error {
-	rev, err := l.kv.Update(l.key, []byte(l.holder), l.rev)
+// @spec:RDL-03
+func (l *kvLease) Renew(ctx context.Context) error {
+	rev, err := l.kv.Update(ctx, l.key, []byte(l.holder), l.rev)
 	if err != nil {
-		return err // lost the lease (expired + reclaimed, or a wrong-revision write)
+		return err
 	}
 	l.rev = rev
 	return nil
 }
 
-func (l *kvLease) Release(_ context.Context) error {
-	entry, err := l.kv.Get(l.key)
+func (l *kvLease) Release(ctx context.Context) error {
+	entry, err := l.kv.Get(ctx, l.key)
 	if err != nil || string(entry.Value()) != l.holder {
-		return nil // not ours (or already gone) — nothing to release
+		return nil
 	}
-	return l.kv.Delete(l.key)
+	return l.kv.Delete(ctx, l.key)
 }
 
-type kvSnapshot struct{ kv nats.KeyValue }
+type kvSnapshot struct{ kv jetstream.KeyValue }
 
-// NewSnapshotStore opens (or creates) the snapshot KV. History>1 keeps a few prior snapshots so a
-// failed-mid-save worker can still hydrate from an older acked-prefix snapshot.
-func NewSnapshotStore(js nats.JetStreamContext) (SnapshotStore, error) {
-	kv, err := js.KeyValue(kvSnapName)
+func NewSnapshotStore(js jetstream.JetStream) (SnapshotStore, error) {
+	ctx := context.Background()
+	kv, err := js.KeyValue(ctx, kvSnapName)
 	if err != nil {
-		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: kvSnapName, History: 8})
+		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: kvSnapName, History: 8})
 		if err != nil {
 			return nil, err
 		}
@@ -302,34 +299,30 @@ func NewSnapshotStore(js nats.JetStreamContext) (SnapshotStore, error) {
 	return &kvSnapshot{kv: kv}, nil
 }
 
-// snapEnvelope is the wire form of a stored snapshot (the seq + the serialized view).
 type snapEnvelope struct {
 	Seq  uint64    `json:"seq"`
 	View *Snapshot `json:"view"`
 }
 
-func (s *kvSnapshot) Save(_ context.Context, seq uint64, snap *Snapshot) error {
+func (s *kvSnapshot) Save(ctx context.Context, seq uint64, snap *Snapshot) error {
 	body, err := json.Marshal(snapEnvelope{Seq: seq, View: snap})
 	if err != nil {
 		return err
 	}
-	_, err = s.kv.Put("latest", body)
+	_, err = s.kv.Put(ctx, "latest", body)
 	return err
 }
 
-// Load returns the most recent snapshot whose Seq <= maxSeq. The KV history is walked newest-first
-// so a snapshot saved AHEAD of a rolled-back ack floor (should not happen, but defensively) is
-// skipped in favour of an older acked-prefix one.
-func (s *kvSnapshot) Load(_ context.Context, maxSeq uint64) (*Snapshot, uint64, error) {
-	hist, err := s.kv.History("latest")
+func (s *kvSnapshot) Load(ctx context.Context, maxSeq uint64) (*Snapshot, uint64, error) {
+	hist, err := s.kv.History(ctx, "latest")
 	if err != nil {
-		if errors.Is(err, nats.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, 0, nil
 		}
 		return nil, 0, err
 	}
 	for i := len(hist) - 1; i >= 0; i-- {
-		if hist[i].Operation() != nats.KeyValuePut {
+		if hist[i].Operation() != jetstream.KeyValuePut {
 			continue
 		}
 		var env snapEnvelope

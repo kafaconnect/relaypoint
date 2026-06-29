@@ -20,9 +20,7 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/obs"
 )
 
-// Router is the sole authoritative writer of every `.log` fact. Pure logic over the LogStore
-// port (no NATS); per-interaction state is rebuilt lazily from the durable log on first access
-// or after a restart.
+// Router is the SOLE authoritative writer of every `.log` fact; pure logic over the LogStore port (no NATS), state rebuilt lazily from the durable log.
 type Router struct {
 	store   LogStore
 	now     func() time.Time
@@ -38,16 +36,14 @@ type interactionState struct {
 	mu        sync.Mutex
 	seq       int64
 	streamSeq uint64 // subject's last STREAM sequence — the OCC token for the next append (≠ seq)
-	status    string // "" | started | ended
+	status    string
 	results   map[string]storedResult
 	part      *ParticipationView       // folded membership, re-checked after every OCC rebuild (A3)
 	parents   map[string]parentBinding // privileged parent command_id -> the sub-facts it produced (A5/A7)
 	poisoned  bool                     // seq untrustworthy → callers must rebuild, not reuse it
 }
 
-// parentBinding records the sub-facts a privileged participation command committed, so a retry of
-// the same parent command_id carrying a divergent payload is rejected before any sub-fact is
-// re-emitted (A5). Reconstructed on rebuild from each sub-fact's CausedBy (= the parent id).
+// parentBinding records a privileged command's sub-facts so a divergent retry of the same parent command_id is rejected before re-emitting any sub-fact (A5); rebuilt from each sub-fact's CausedBy.
 type parentBinding struct {
 	subIDs map[string]bool
 }
@@ -62,10 +58,7 @@ type Option func(*Router)
 func WithClock(now func() time.Time) Option { return func(r *Router) { r.now = now } }
 func WithIDGen(gen func() string) Option    { return func(r *Router) { r.id = gen } }
 
-// WithDevMode enables the permissive shared-`client` posture: an unauthenticated command is
-// accepted with the subject suffix as an advisory author and the participation/role gates off. It
-// MUST be opt-in (cmd/router only sets it from RP_DEV_NO_AUTH); production leaves it off so an
-// unauthenticated command fails closed (A1).
+// WithDevMode opts into the permissive shared-`client` posture (subject suffix as advisory author, role/participation gates off); MUST stay opt-in so production fails closed (A1).
 func WithDevMode() Option { return func(r *Router) { r.devMode = true } }
 
 func defaultID() string {
@@ -87,11 +80,7 @@ func legalTransition(status, cmdType string) bool {
 	case "interaction.ended":
 		return status == "started"
 	default:
-		// RP gates on delivery STRUCTURE, not a domain-verb census: any annotation
-		// (message.*, call.*, routing.*, and future Desk/Router verbs) is an opaque type RP
-		// logs and the projector fans out — legal only on an open (started, not-yet-ended)
-		// interaction. Lifecycle (started/ended), ordering, dedup, tenancy and the
-		// participation carve-out above are the only structural gates RP owns.
+		// RP gates on delivery STRUCTURE, not a domain-verb census: any annotation is an opaque type, legal only on an open (started, not-yet-ended) interaction.
 		return status == "started"
 	}
 }
@@ -105,8 +94,7 @@ func applyTransition(st *interactionState, cmdType string) {
 	}
 }
 
-// NOT proto.Marshal: its deterministic output isn't stable across protobuf-lib upgrades, and this
-// hash is persisted on the fact then recompared after a restart/upgrade.
+// NOT proto.Marshal: its output isn't stable across protobuf-lib upgrades, and this hash is persisted then recompared after a restart/upgrade.
 func hashPayload(c *Command) string {
 	h := sha256.New()
 	put := func(b []byte) {
@@ -128,8 +116,7 @@ func logSubjectFor(tenant, iid string) string {
 	return fmt.Sprintf("tenant.%s.interaction.%s.log", tenant, iid)
 }
 
-// Rebuild runs under singleflight so concurrent callers share one state object (no stale
-// re-insert after a concurrent eviction); a replay failure propagates so callers fail closed.
+// Rebuild runs under singleflight so concurrent callers share one state object (no stale re-insert); a replay failure propagates so callers fail closed.
 func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 	key := tenant + "/" + iid
 	r.mu.Lock()
@@ -191,10 +178,9 @@ func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 	return st, nil
 }
 
-// HandleCommand validates the subject/payload against the authenticated Identity on ctx (never
-// trusting them on their own), then appends the resulting fact under per-subject OCC.
+// HandleCommand validates subject/payload against the authenticated Identity on ctx (never trusting them alone), then appends under per-subject OCC.
 func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte) (res *CommandResult) {
-	// one boundary line per command, carrying ctx's trace correlation (ADR-0011)
+	// one boundary log line per command, carrying ctx trace correlation (ADR-0011)
 	defer func() {
 		obs.Logger(ctx).Info("router.command",
 			"subject", subject, "command_id", res.GetCommandId(),
@@ -211,8 +197,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return &CommandResult{Status: statusRejected, Reason: "bad payload"}
 	}
 
-	// Outside dev mode an unauthenticated command is rejected: the suffix alone is not a trusted
-	// author, so accepting it would skip the role/participation gates entirely (A1).
+	// Outside dev mode an unauthenticated command is rejected: the suffix alone is not a trusted author, accepting it would skip the role/participation gates (A1).
 	if !isAuthenticated(id) && !r.devMode {
 		return &CommandResult{CommandId: cmd.CommandId, Status: statusRejected, Reason: "unauthenticated"}
 	}
@@ -234,11 +219,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return res
 	}
 
-	// Actor binding. The subject suffix is the authenticated author and the payload actor must equal
-	// it (forged-author rejected, A1) — EXCEPT a trusted backend acts on behalf of others, so it may
-	// carry an arbitrary actor_id and a missing one (interaction.started carries none). On the
-	// anonymous dev bus the suffix carries no minted identity, but an operator-listed service suffix
-	// is still folded as a trusted backend (see identityFromSubject / RP_TRUSTED_BACKENDS).
+	// Actor binding: the payload actor must equal the authenticated suffix (forged-author rejected, A1), EXCEPT a trusted backend acts for others so may carry an arbitrary or empty actor_id.
 	if RoleOf(id) != RoleTrustedBackend {
 		switch {
 		case cmd.ActorId == "":
@@ -257,18 +238,13 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return r.handleParticipation(ctx, tenant, iid, suffix, RoleOf(id), cmd)
 	}
 
-	// Participation FACTS may ONLY be produced by the privileged assign/unassign/transfer path
-	// (handleParticipation), never as a direct command — otherwise an agent could forge an
-	// unaudited join/leave/assignment (A2b).
+	// Participation FACTS may ONLY come from the privileged path, never a direct command — else an agent could forge an unaudited join/leave/assign (A2b).
 	if isParticipationFact(cmd.Type) {
 		res.Status, res.Reason = statusRejected, "participation fact requires a privileged command"
 		return res
 	}
 
-	// Every agent write except interaction.started (the start path precedes any participant) requires
-	// an OPEN membership interval — re-checked inside the append loop after every OCC rebuild so a
-	// racing participant.left cannot slip a post-revocation command through (A2a/A3). A trusted
-	// backend is exempt; the dev posture leaves the suffix advisory.
+	// Every agent write except interaction.started requires an OPEN membership interval, re-checked after every OCC rebuild so a racing participant.left can't slip through (A2a/A3); trusted backend exempt.
 	gateParticipation := isAuthenticated(id) && RoleOf(id) == RoleAgent && cmd.Type != "interaction.started"
 
 	st, err := r.getState(tenant, iid)
@@ -279,8 +255,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	// A concurrent goroutine poisoned this state (an append/reconcile failure left its seq
-	// untrustworthy) — fail closed so the caller retries against a fresh rebuild.
+	// A concurrent goroutine poisoned this state (seq untrustworthy) — fail closed so the caller retries against a fresh rebuild.
 	if st.poisoned {
 		res.Status, res.Reason = statusRejected, "state unavailable — retry"
 		return res
@@ -288,13 +263,11 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 
 	ph := hashPayload(cmd)
 
-	// Append under per-subject OCC (store rejects unless st.streamSeq is still the subject's last).
-	// A loser re-folds and retries ONCE: a concurrent writer may have advanced the subject, ended
-	// the interaction, or already committed THIS command_id. See openspec change router-occ.
+	// Append under per-subject OCC; a loser re-folds and retries ONCE (a concurrent writer may have advanced the subject, ended the interaction, or committed this command_id). See router-occ.
 	var dup bool
+	var committedSeq uint64
 	for attempt := 0; ; attempt++ {
-		// A command_id is bound to its first payload (re-checked each attempt: a re-fold can reveal
-		// a concurrent writer committed it).
+		// A command_id is bound to its first payload, re-checked each attempt (a re-fold can reveal a concurrent writer committed it).
 		if prev, seen := st.results[cmd.CommandId]; seen {
 			switch {
 			case prev.payloadHash == "": // legacy fact, hash unknown
@@ -304,8 +277,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 				return res
 			case prev.result.Status == statusAccepted:
 				return proto.Clone(prev.result).(*CommandResult)
-				// a previously-rejected same payload falls through: a transient rejection
-				// (e.g. an illegal transition) may now be legal
+				// a previously-rejected same payload falls through: a transient rejection (e.g. illegal transition) may now be legal
 			}
 		}
 
@@ -328,12 +300,10 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			PayloadHash: ph, CausedBy: cmd.CommandId, RefId: cmd.RefId, Data: cmd.Data,
 		}
 		payload, _ := proto.Marshal(ev)
-		// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even
-		// if a prior append's ack was lost.
-		d, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
+		// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even if a prior ack was lost.
+		d, cseq, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
-			// Lost the race: another writer advanced the subject. Re-fold once from the log and
-			// retry; if we still lose, surface a retryable rejection (never append behind a stale seq).
+			// Lost the race: re-fold once and retry; if we still lose, surface a retryable rejection (never append behind a stale seq).
 			fresh, ferr := r.rebuild(tenant, iid)
 			if ferr != nil || attempt >= 1 {
 				st.poisoned = true
@@ -352,8 +322,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			continue
 		}
 		if aerr != nil {
-			// The append may have committed before the ack was lost — reconcile from the log and
-			// accept if the fact is now present.
+			// The append may have committed before the ack was lost — reconcile from the log and accept if the fact is now present.
 			if fresh, ferr := r.rebuild(tenant, iid); ferr == nil {
 				if prev, committed := fresh.results[cmd.CommandId]; committed {
 					st.seq, st.streamSeq, st.status = fresh.seq, fresh.streamSeq, fresh.status
@@ -367,14 +336,12 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			res.Status, res.Reason = statusRejected, "log append failed — retry"
 			return res
 		}
-		dup = d
+		dup, committedSeq = d, cseq
 		break
 	}
 	res.Status, res.CausedBy = statusAccepted, cmd.CommandId
 	if dup {
-		// The store already had this command_id (a retry, or a concurrent writer). Reconcile from
-		// the log and compare the COMMITTED fact's payload hash: a divergent reuse is a conflict;
-		// a matching one replays the committed result. Never clobber the committed entry.
+		// Store already had this command_id: reconcile and compare the COMMITTED payload hash — a divergent reuse conflicts, a match replays; never clobber the committed entry.
 		fresh, ferr := r.rebuild(tenant, iid)
 		if ferr != nil {
 			st.poisoned = true // seq may be stale; force a rebuild rather than append behind it
@@ -399,7 +366,8 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return res
 	}
 	st.seq++
-	st.streamSeq++ // we committed exactly one fact under OCC: the subject advanced by one
+	// OCC token = committed stream seq, not prev+1: shared stream (RH-01)
+	st.streamSeq = committedSeq
 	applyTransition(st, cmd.Type)
 	st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
 
@@ -411,8 +379,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 	return res
 }
 
-// isAuthenticated reports whether the transport bound a real identity (auth-callout minted). The
-// shared-`client` dev posture leaves both fields empty.
+// Both Identity fields are empty only in the shared-`client` dev posture, so either being set means a real auth-callout-minted identity.
 func isAuthenticated(id Identity) bool { return id.UserID != "" || id.Role != "" }
 
 func isParticipationCommand(t string) bool {
@@ -438,11 +405,7 @@ type participationData struct {
 	RequestID string `json:"request_id"`
 }
 
-// handleParticipation lands participant.* / interaction.assigned facts from a privileged command,
-// role-gated to a trusted backend. participant.transfer writes participant.joined(new) BEFORE
-// participant.left(old) so the interaction is never absent from both agents' membership at once
-// (no-gap, Decision 2a / Decision 6). Audit fields (actor=suffix, reason, request_id) ride on each
-// fact via the Command payload.
+// handleParticipation lands participation facts from a role-gated trusted-backend command; transfer writes joined(new) BEFORE left(old) so the interaction is never absent from both memberships (no-gap, Decision 2a/6).
 func (r *Router) handleParticipation(ctx context.Context, tenant, iid, actor string, role Role, cmd *Command) *CommandResult {
 	res := &CommandResult{CommandId: cmd.CommandId}
 	if role != RoleTrustedBackend {
@@ -500,7 +463,8 @@ func (r *Router) handleParticipation(ctx context.Context, tenant, iid, actor str
 		for _, s := range subIDs {
 			want[s] = true
 		}
-		if !sameSet(b.subIDs, want) {
+		// subset, not exact-equality: a partial transfer re-drives; a divergent payload is still rejected (RH-03)
+		if !recordedSubsetOf(b.subIDs, want) {
 			st.mu.Unlock()
 			res.Status, res.Reason = statusRejected, "conflict: command_id reused with a different payload"
 			return res
@@ -509,8 +473,7 @@ func (r *Router) handleParticipation(ctx context.Context, tenant, iid, actor str
 	st.mu.Unlock()
 
 	for i, f := range facts {
-		// Each fact is its own command_id so dedup/OCC stay per-fact; the transfer's two facts must
-		// land in order (joined then left), so a partial failure on the second is surfaced.
+		// Each fact is its own command_id so dedup/OCC stay per-fact; the transfer's two must land in order (joined then left), so a partial failure on the second is surfaced.
 		fcmd := &Command{
 			CommandId: subIDs[i],
 			TenantId:  tenant,
@@ -543,22 +506,16 @@ func (r *Router) handleParticipation(ctx context.Context, tenant, iid, actor str
 	return res
 }
 
-func sameSet(a, b map[string]bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if !b[k] {
+func recordedSubsetOf(recorded, want map[string]bool) bool {
+	for k := range recorded {
+		if !want[k] {
 			return false
 		}
 	}
 	return true
 }
 
-// appendParticipationFact writes ONE participation fact (participant.joined/left,
-// interaction.assigned) under the same per-subject OCC + dedup discipline as ordinary commands,
-// carrying audit fields (commanded_by/reason/request_id). It re-folds and retries once on an OCC
-// conflict, then fails closed — never appends behind a stale sequence.
+// appendParticipationFact writes ONE participation fact under the same per-subject OCC+dedup as ordinary commands; it re-folds and retries once, then fails closed (never appends behind a stale sequence).
 func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, commandedBy, parentID string, pd *participationData, fcmd *Command) *CommandResult {
 	res := &CommandResult{CommandId: fcmd.CommandId}
 	st, err := r.getState(tenant, iid)
@@ -599,7 +556,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 			CausedBy: parentID, CommandedBy: commandedBy, Reason: pd.Reason, RequestId: pd.RequestID,
 		}
 		payload, _ := proto.Marshal(ev)
-		_, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
+		_, cseq, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
 			fresh, ferr := r.rebuild(tenant, iid)
 			if ferr != nil || attempt >= 1 {
@@ -623,7 +580,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 			return res
 		}
 		st.seq++
-		st.streamSeq++
+		st.streamSeq = cseq
 		applyTransition(st, fcmd.Type)
 		st.part.ApplyFact(ev)
 		res.Status, res.CausedBy = statusAccepted, fcmd.CommandId

@@ -12,23 +12,17 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-// Verifier is the SECURE source of the connection identity the responder pins ACLs to — an owned
-// port so the token format is swappable (a real deployment backs it with the issuer's JWKS/OIDC).
-// Never trust the client-asserted subject/payload, only what Verify returns.
+// Verifier is the owned port for the SECURE connection identity (swappable token format); never trust the client-asserted payload, only what Verify returns.
 type Verifier interface {
 	Verify(token string) (signaling.Identity, error)
 }
 
-// ChainVerifier is the F1 verify ladder: RP is the SOLE responder, so one connection token may be an
-// agent/trusted-backend token OR a desk visitor `vis_` token. It tries each Verifier in order and returns
-// the first success; if every link rejects, the LAST error is returned (the responder turns it into a
-// signed DENY). The order is fixed at construction — put the cheapest/most-common first. No link's failure
-// short-circuits the others, but a success is final (fail closed only when ALL reject).
+// ChainVerifier is the F1 verify ladder (one token may be agent/backend OR a desk vis_): tries each in order, first success wins, returns the LAST error if all reject (fail closed).
 type ChainVerifier struct {
 	links []Verifier
 }
 
-// NewChainVerifier builds the ladder. With zero links every Verify denies (fail closed).
+// With zero links every Verify denies (fail closed).
 func NewChainVerifier(links ...Verifier) *ChainVerifier {
 	return &ChainVerifier{links: links}
 }
@@ -45,8 +39,7 @@ func (c *ChainVerifier) Verify(token string) (signaling.Identity, error) {
 	return signaling.Identity{}, lastErr
 }
 
-// claims is the dev token body, an HMAC-signed `<base64(json)>.<base64(hmac)>` bearer. The expiry is
-// server-validated against Now, never a client wall-clock (signaling-core time-authority rule).
+// claims is the dev token body; expiry is server-validated against Now, never the client wall-clock (signaling-core time-authority rule).
 type claims struct {
 	Tenant  string `json:"tenant"`
 	User    string `json:"user"`
@@ -54,8 +47,7 @@ type claims struct {
 	ExpUnix int64  `json:"exp"`
 }
 
-// HMACVerifier validates the dev bearer with an operator-supplied shared secret (env, never
-// committed) — the trust root that makes `<self>` airtight.
+// HMACVerifier validates the dev bearer with an operator-supplied shared secret (env, never committed) — the trust root that makes `<self>` airtight.
 type HMACVerifier struct {
 	Secret []byte
 	Now    func() time.Time
@@ -110,9 +102,7 @@ func (v *HMACVerifier) Verify(token string) (signaling.Identity, error) {
 	return signaling.Identity{TenantID: c.Tenant, UserID: c.User, Role: role}, nil
 }
 
-// validSubjectToken rejects a tenant/user that cannot safely be a single NATS subject token: the
-// claims are interpolated into ACL subjects, so a `.`/`*`/`>`/whitespace/control value would inject
-// extra tokens or wildcards and break the `<self>`-pinned grants (openspec change agent-feed-fanout, A6).
+// Rejects a tenant/user that isn't a single safe NATS subject token: it's interpolated into ACL subjects, so a metachar would inject tokens/wildcards past the `<self>` pin (A6).
 func validSubjectToken(s string) error {
 	if s == "" {
 		return fmt.Errorf("empty")
@@ -128,8 +118,7 @@ func validSubjectToken(s string) error {
 	return nil
 }
 
-// MintDevToken builds a dev bearer for tests/tooling, NOT production issuance (that is the issuer's
-// signed JWT).
+// MintDevToken builds a dev bearer for tests/tooling, NOT production issuance (that is the issuer's signed JWT).
 func MintDevToken(secret []byte, id signaling.Identity, ttl time.Duration) (string, error) {
 	c := claims{Tenant: id.TenantID, User: id.UserID, Role: string(signaling.RoleOf(id))}
 	if ttl > 0 {

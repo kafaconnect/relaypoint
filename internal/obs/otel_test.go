@@ -30,8 +30,6 @@ func TestStartSpanExportsAndPreservesTraceID(t *testing.T) {
 	tracer = tp.Tracer("test")
 	t.Cleanup(func() { tracer = prev; _ = tp.Shutdown(context.Background()) })
 
-	// A trace seeded from an inbound traceparent (a .cmd / .log NATS hop): the exported span must
-	// CONTINUE that trace_id, and the returned context's TraceContext must match the exported span.
 	parent := TraceContext{TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef", Sampled: true}
 	ctx := WithTrace(context.Background(), parent)
 	ctx, end := StartSpan(ctx, "router")

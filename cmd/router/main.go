@@ -19,8 +19,7 @@ import (
 func main() {
 	slog.SetDefault(obs.New("relaypoint-router"))
 
-	// OTLP trace export (M1.5 F5b) behind the obs.StartSpan seam — no-op when the OTLP endpoint is
-	// unset; a setup error is logged and the service continues log-only (fail-open).
+	// OTLP trace export (M1.5 F5b) — no-op when the OTLP endpoint is unset; fail-open on a setup error.
 	tracerShutdown, terr := obs.InitTracer(context.Background(), "relaypoint-router")
 	if terr != nil {
 		slog.Default().Warn("otel.init_failed_continuing_log_only", "err", terr)
@@ -38,17 +37,14 @@ func main() {
 
 	js, err := nc.JetStream()
 	must("jetstream", err)
-	// ADR-0002 protobuf cutover: a one-shot, destructive reset of INTERACTION_LOGS that purges any
-	// JSON-era facts (a protobuf router fails closed on them). Opt-in so a normal restart never
-	// wipes the log.
+	// ADR-0002: opt-in destructive reset purges JSON-era facts a protobuf router can't read; off by default so a normal restart never wipes the log.
 	if os.Getenv("RP_RESET_LOG_STREAM") == "1" {
 		must("reset-stream", signaling.ResetLogStream(js))
 		slog.Warn("router.log-stream-reset", "stream", "INTERACTION_LOGS")
 	}
 	must("stream", signaling.EnsureLogStream(js))
 
-	// RP_DEV_NO_AUTH=1 runs the permissive pre-auth-callout posture (no identity → suffix advisory,
-	// gates off). Production leaves it unset: an unauthenticated command fails closed (A1).
+	// RP_DEV_NO_AUTH=1 is the permissive pre-auth-callout posture; unset (prod) fails an unauthenticated command closed (A1).
 	devMode := os.Getenv("RP_DEV_NO_AUTH") == "1"
 	var ropts []signaling.Option
 	if devMode {
@@ -57,17 +53,13 @@ func main() {
 	}
 	r := signaling.NewRouter(signaling.NewJetStreamStore(js), ropts...)
 
-	// The auth-callout ACL pins each connection to publish only `…cmd.<self>`, so the subject suffix
-	// IS the authenticated user; trusted-backend identities are operator-listed in RP_TRUSTED_BACKENDS
-	// (anything else is RoleAgent). See openspec change agent-feed-fanout, Decision 1 / A1.
+	// the auth-callout ACL pins each connection to publish only `…cmd.<self>`, so the subject suffix IS the authenticated user; trusted backends are operator-listed (agent-feed-fanout Decision 1 / A1).
 	trusted := trustedSet(os.Getenv("RP_TRUSTED_BACKENDS"))
 	_, err = nc.QueueSubscribe("tenant.*.interaction.*.cmd.*", "router", func(m *nats.Msg) {
 		ctx := obs.ContextFromTraceparent(context.Background(), traceparentOf(m))
 		ctx = obs.WithCorrelation(ctx, slog.Default())
 		if devMode {
-			// Anonymous bus: agents stay unauthenticated (suffix advisory, participation gate off), but
-			// an operator-listed service suffix (e.g. desk-svc) is folded as a trusted backend so it may
-			// publish on behalf of agents (actor_id != suffix) before auth-callout mints identities.
+			// dev anonymous bus: an operator-listed service suffix (e.g. desk-svc) is folded as a trusted backend so it may publish for agents (actor_id != suffix) before auth-callout mints identities.
 			if id := devTrustedIdentity(m.Subject, trusted); id.Role != "" {
 				ctx = signaling.WithIdentity(ctx, id)
 			}
@@ -88,11 +80,7 @@ func main() {
 	<-stop
 }
 
-// identityFromSubject derives the authenticated identity from tenant.<tid>.interaction.<iid>.cmd.<self>:
-// the auth-callout ACL guarantees a connection can only publish its own `<self>` suffix, so the suffix
-// is the trusted user and p[1] the trusted tenant. A malformed subject yields a zero Identity, which
-// the router rejects as unauthenticated. The role is RoleTrustedBackend only for an operator-listed
-// identity; everything else is RoleAgent.
+// the auth-callout ACL guarantees a connection can only publish its own `<self>` suffix, so the subject suffix is trusted as the user; a malformed subject yields a zero Identity (rejected as unauthenticated).
 func identityFromSubject(subject string, trusted map[string]bool) signaling.Identity {
 	p := strings.Split(subject, ".")
 	if len(p) != 6 || p[1] == "" || p[5] == "" {
@@ -105,9 +93,6 @@ func identityFromSubject(subject string, trusted map[string]bool) signaling.Iden
 	return signaling.Identity{TenantID: p[1], UserID: p[5], Role: role}
 }
 
-// devTrustedIdentity returns a RoleTrustedBackend identity ONLY when the subject's suffix is an
-// operator-listed backend; otherwise a zero Identity, leaving the caller in the anonymous dev
-// fallback (suffix advisory, participation gate off). Dev-only — prod uses identityFromSubject.
 func devTrustedIdentity(subject string, trusted map[string]bool) signaling.Identity {
 	p := strings.Split(subject, ".")
 	if len(p) != 6 || p[1] == "" || p[5] == "" || !trusted[p[5]] {
@@ -126,8 +111,7 @@ func trustedSet(csv string) map[string]bool {
 	return set
 }
 
-// traceparentOf reads the inbound W3C trace header; nats.Msg.Header is nil for a header-less
-// publish, so guard it rather than dereference.
+// nats.Msg.Header is nil for a header-less publish, so guard rather than dereference.
 func traceparentOf(m *nats.Msg) string {
 	if m.Header == nil {
 		return ""

@@ -1,39 +1,43 @@
-// Package projector is the Participation/Fan-out service core: a leased single-active worker that
-// tails the canonical `tenant.*.interaction.*.log`, folds participation, and projects every fact
-// into the feed of each currently-participating agent — effectively-once (at-least-once delivery +
-// idempotent feed publish). It depends only on owned ports (ports.go); NATS is the adapter
-// (nats.go). See openspec change agent-feed-fanout, Decisions 3/6/7/8.
+// Package projector is the leased single-active fan-out worker: it tails the canonical .log, folds participation, and projects each fact into participants' feeds effectively-once (Decisions 3/6/7/8).
 package projector
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
+var errRosterUnavailable = errors.New("projector: roster unavailable after in-process retry window")
+
 const (
 	feedControlSchema = signaling.SchemaV1
 	controlRevoked    = "feed.revoked"
+
+	// fanoutConcurrency collapses N sequential publish RTTs into ~one; only one fact is in flight (MaxAckPending=1) so it also caps total concurrent publishes. @spec: RDL-01
+	fanoutConcurrency = 32
+
+	// @spec:RDL-03
+	leaseRenewAttempts     = 3
+	leaseRenewRetryBackoff = 300 * time.Millisecond
 )
 
-// Snapshot is the participation view serialized by stream sequence — an ACKED-PREFIX state (its
-// Seq <= the durable ack floor when stored). On takeover the worker loads the latest snapshot at/
-// below the ack floor, then read-only-folds (snapshot_seq, ack_floor] to go live.
+// ACKED-PREFIX state (Seq <= durable ack floor when stored); takeover loads it then read-only-folds (snap_seq, ack_floor] to go live.
 type Snapshot struct {
-	// interaction id -> agent -> its membership intervals in .log order.
 	Intervals map[string]map[string][]signaling.Interval
 }
 
-// state is the in-memory participation across all interactions; the serial MaxAckPending=1 discipline
-// protects this fold from concurrent mutation.
+// The serial MaxAckPending=1 discipline protects this fold from concurrent mutation.
 type state struct {
-	views map[string]*signaling.ParticipationView // keyed by interaction id
+	views map[string]*signaling.ParticipationView
 }
 
 func newState() *state { return &state{views: map[string]*signaling.ParticipationView{}} }
@@ -71,27 +75,19 @@ func (s *state) restore(snap *Snapshot) {
 	}
 }
 
-// Config tunes the worker; zero values fall back to sane defaults.
 type Config struct {
-	MaxDeliver    int           // DLQ a fact past this delivery count (default 5)
-	SnapshotEvery int           // save a snapshot every N acked facts (default 50)
-	PublishRetry  int           // per-feed publish attempts before Nak (default 4)
-	RetryBackoff  time.Duration // base backoff between publish attempts (default 50ms)
-	LeaseRenew    time.Duration // lease heartbeat interval (default 2s; lease TTL ~5s)
+	MaxDeliver        int
+	SnapshotEvery     int
+	PublishRetry      int
+	RetryBackoff      time.Duration
+	LeaseRenew        time.Duration
+	LeaseTTL          time.Duration
+	RosterRetryWindow time.Duration
 
-	// TenantWideAgents is a DEV/TEST shortcut, off by default (nil): for a tenant present here, every
-	// fact of that tenant fans out to the listed agents' feeds, bypassing the participation gate. This
-	// exists because desk M1 emits no participation facts yet, so the stock per-participation fan-out
-	// leaves every feed empty. Participation is still folded (snapshots stay correct); only the
-	// recipient set is overridden. Production leaves this nil → strict per-participation fan-out.
+	// DEV/TEST fan-out override (nil in prod): desk M1 emits no participation facts yet, so the stock per-participation fan-out would leave every feed empty; participation is still folded.
 	TenantWideAgents map[string][]string
 
-	// Roster is the PRODUCTION tenant-shared fan-out source (off by default, nil): when set, every
-	// fact of a tenant fans out to ALL agents the roster reports for that tenant (sourced from desk's
-	// real Zitadel roster, no hardcode). It is the authoritative successor to TenantWideAgents and
-	// takes precedence over it. Participation is still folded (snapshots stay correct); only the
-	// recipient set is overridden, exactly like TenantWideAgents. Future per-participation mode leaves
-	// this nil. A roster lookup error Naks the fact (redelivery), never drops it.
+	// Production tenant-shared fan-out source; takes precedence over TenantWideAgents; a roster lookup error Naks the fact (redelivery), never drops it.
 	Roster Roster
 }
 
@@ -111,12 +107,18 @@ func (c Config) withDefaults() Config {
 	if c.LeaseRenew <= 0 {
 		c.LeaseRenew = 2 * time.Second
 	}
+	if c.LeaseTTL <= 0 {
+		c.LeaseTTL = 5 * time.Second
+	}
+	if c.LeaseRenew >= c.LeaseTTL {
+		c.LeaseRenew = c.LeaseTTL / 2 // keep a positive fencing slack
+	}
+	if c.RosterRetryWindow <= 0 {
+		c.RosterRetryWindow = 90 * time.Second
+	}
 	return c
 }
 
-// Projector is the single-active worker core. Constructed against the owned ports and driven by
-// Run; the fold/project/revoke/hydrate logic is exercised directly in unit tests via the same
-// ports backed by in-memory fakes (no live NATS).
 type Projector struct {
 	src   LogSource
 	sink  FeedSink
@@ -133,51 +135,45 @@ func New(src LogSource, sink FeedSink, lease LeaseStore, snaps SnapshotStore, cf
 	return &Projector{src: src, sink: sink, lease: lease, snaps: snaps, cfg: cfg.withDefaults(), st: newState()}
 }
 
-// Run acquires the leader lease, hydrates from the acked-prefix snapshot, then serially processes
-// facts until ctx is cancelled. Exactly one fact is in flight at a time (MaxAckPending=1), so the
-// stateful fold is never concurrent. Lease renewal runs in the background; on its failure Run
-// returns so a standby can take over.
+// On lease-renewal failure Run returns so a standby can take over.
 func (p *Projector) Run(ctx context.Context) error {
 	if err := p.lease.Acquire(ctx); err != nil {
 		return fmt.Errorf("acquire lease: %w", err)
 	}
 	defer p.lease.Release(context.WithoutCancel(ctx))
 
-	// Takeover ordering (PINNED): lease acquired → the prior holder's in-flight delivery settles
-	// (MaxAckPending=1 makes Deliver itself wait for redelivery) → read ack_floor + hydrate → live.
-	// Reading the floor before that settle is forbidden; here Hydrate reads it only after Acquire,
-	// and the next Deliver blocks until the single un-acked fact is redelivered.
+	// PINNED takeover order: acquire lease → the prior holder's in-flight delivery settles (MaxAckPending=1) → read ack_floor + hydrate → live; reading the floor before that settle is forbidden.
 	if err := p.Hydrate(ctx); err != nil {
 		return fmt.Errorf("hydrate: %w", err)
 	}
 
+	fence := newFence(ctx)
 	renewCtx, stopRenew := context.WithCancel(ctx)
 	defer stopRenew()
-	renewErr := make(chan error, 1)
-	go p.renewLoop(renewCtx, renewErr)
+	go p.renewLoop(renewCtx, fence)
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-renewErr:
-			return fmt.Errorf("lease lost: %w", err)
-		default:
+		dctx := fence.begin()
+		if dctx == nil {
+			return fence.exitErr()
 		}
-		f, err := p.src.Deliver(ctx)
+		f, err := p.src.Deliver(dctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return ctx.Err()
+			if dctx.Err() != nil {
+				continue // fenced (paused/lost) or shutting down mid-deliver — re-evaluate via begin
 			}
 			return fmt.Errorf("deliver: %w", err)
 		}
-		if err := p.process(ctx, f); err != nil {
+		if err := p.process(dctx, f); err != nil {
+			if dctx.Err() != nil {
+				continue // fenced mid-process — the fact stays un-acked (Nak) for redelivery
+			}
 			return err
 		}
 	}
 }
 
-func (p *Projector) renewLoop(ctx context.Context, out chan<- error) {
+func (p *Projector) renewLoop(ctx context.Context, fence *fence) {
 	t := time.NewTicker(p.cfg.LeaseRenew)
 	defer t.Stop()
 	for {
@@ -185,16 +181,146 @@ func (p *Projector) renewLoop(ctx context.Context, out chan<- error) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := p.lease.Renew(ctx); err != nil {
-				out <- err
+			if err := p.renewWithRetry(ctx, fence); err != nil {
+				if ctx.Err() != nil {
+					return // shutting down, not a lease loss
+				}
+				fence.fail(err) // confirmed loss → the data loop exits and a standby takes over
 				return
 			}
 		}
 	}
 }
 
-// Hydrate loads the latest snapshot whose seq <= durable ack floor and read-only-folds
-// (snapshot_seq, ack_floor] to rebuild the live participation view — never a replay from zero.
+// @spec:RDL-03
+func (p *Projector) renewWithRetry(ctx context.Context, fence *fence) error {
+	perAttempt, attempts, backoff := renewBudget(p.cfg.LeaseTTL, p.cfg.LeaseRenew)
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		actx, cancel := context.WithTimeout(ctx, perAttempt)
+		err = p.lease.Renew(actx)
+		cancel()
+		if err == nil {
+			fence.resume()
+			return nil
+		}
+		fence.pause()
+		obs.Logger(ctx).Warn("projector.lease-renew-retry", "attempt", attempt+1, "err", err.Error())
+	}
+	return err
+}
+
+// @spec:RDL-03
+func renewBudget(ttl, renewInterval time.Duration) (perAttempt time.Duration, attempts int, backoff time.Duration) {
+	slack := ttl - renewInterval
+	if slack <= 0 {
+		return time.Millisecond, 1, 0
+	}
+	attempts, backoff = leaseRenewAttempts, leaseRenewRetryBackoff
+	budget := slack * 9 / 10
+	if time.Duration(attempts-1)*backoff >= budget {
+		backoff = budget / time.Duration(attempts) / 2
+	}
+	perAttempt = (budget - time.Duration(attempts-1)*backoff) / time.Duration(attempts)
+	if perAttempt <= 0 {
+		return budget, 1, 0
+	}
+	return perAttempt, attempts, backoff
+}
+
+// @spec:RDL-03
+type fence struct {
+	parent context.Context
+	mu     sync.Mutex
+	paused bool
+	lost   error
+	cancel context.CancelFunc
+	wakeup chan struct{}
+}
+
+func newFence(parent context.Context) *fence {
+	return &fence{parent: parent, wakeup: make(chan struct{})}
+}
+
+func (f *fence) begin() context.Context {
+	for {
+		f.mu.Lock()
+		if f.lost != nil || f.parent.Err() != nil {
+			f.mu.Unlock()
+			return nil
+		}
+		if !f.paused {
+			if f.cancel != nil {
+				f.cancel()
+			}
+			dctx, cancel := context.WithCancel(f.parent)
+			f.cancel = cancel
+			f.mu.Unlock()
+			return dctx
+		}
+		wake := f.wakeup
+		f.mu.Unlock()
+		select {
+		case <-f.parent.Done():
+		case <-wake:
+		}
+	}
+}
+
+func (f *fence) pause() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.paused || f.lost != nil {
+		return
+	}
+	f.paused = true
+	if f.cancel != nil {
+		f.cancel() // stop-the-world: cancel the in-flight Deliver/process
+	}
+}
+
+func (f *fence) resume() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.paused || f.lost != nil {
+		return
+	}
+	f.paused = false
+	close(f.wakeup)
+	f.wakeup = make(chan struct{})
+}
+
+func (f *fence) fail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lost != nil {
+		return
+	}
+	f.lost = err
+	if f.cancel != nil {
+		f.cancel()
+	}
+	close(f.wakeup) // wake a begin() blocked while paused so the loop can exit
+	f.wakeup = make(chan struct{})
+}
+
+func (f *fence) exitErr() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lost != nil {
+		return fmt.Errorf("lease lost: %w", f.lost)
+	}
+	return f.parent.Err()
+}
+
+// Loads the snapshot at <= ack floor then read-only-folds (snap_seq, ack_floor] — never a replay from zero.
 func (p *Projector) Hydrate(ctx context.Context) error {
 	floor, err := p.src.AckFloor(ctx)
 	if err != nil {
@@ -219,79 +345,118 @@ func (p *Projector) Hydrate(ctx context.Context) error {
 	return nil
 }
 
-// process folds ONE fact, fans it out to every participating agent, then acks ONLY after all
-// intended publishes succeed (ack-after-publish). A poison fact past max_deliver is DLQ'd + acked
-// so the consumer is not wedged; an open-interval revocation also writes the feed.revoked tombstone.
 func (p *Projector) process(ctx context.Context, f Fact) error {
-	// Continue the trace carried on the .log fact (F5b): every downstream publish (feed fan-out +
-	// the revoked tombstone) and log line for this fact stays on the originating command's trace.
-	// Only when the fact actually carries one — a trace-less fact is NOT given a fabricated trace.
 	if tp := f.Traceparent(); tp != "" {
 		ctx = obs.ContextFromTraceparent(ctx, tp)
 	}
 	log := obs.Logger(ctx)
 	e := f.Event
 	if e == nil || e.TenantId == "" || e.EventType == "" {
-		return p.poison(ctx, f, "malformed envelope")
+		return p.dlqOrNak(ctx, f, "malformed envelope")
 	}
 	iid := interactionOf(f)
 	if iid == "" {
-		return p.poison(ctx, f, "unresolved interaction id")
+		return p.dlqOrNak(ctx, f, "unresolved interaction id")
 	}
 	key := e.TenantId + "/" + iid
 	view := p.st.view(key)
 
-	// Fold FIRST so the closing left fact's own interval is consulted, then pick recipients by the
-	// interval covering S (epoch guard, Decision 6): join ≤ S ≤ left, so join@J and left@L each reach
-	// their agent but no fact at S > L reaches an already-left agent.
+	// Fold before picking recipients so a closing left@L is itself projected but no fact at S>L is.
 	view.ApplyFact(e)
 	recipients := coveredBy(view, e.Sequence)
 	switch {
 	case p.cfg.Roster != nil:
-		// Production tenant-shared fan-out: ALL agents of the tenant per desk's real roster. A
-		// roster outage Naks (redelivery) rather than dropping the fact or fanning to a stale set.
-		agents, rerr := p.cfg.Roster.Agents(ctx, e.TenantId)
+		agents, rerr := p.resolveRoster(ctx, f, e, iid, log)
 		if rerr != nil {
-			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
-				"sequence", e.Sequence, "err", rerr.Error())
 			return p.src.Nak(f)
 		}
 		recipients = agents
 		log.Info("projector.roster-fanout", "tenant", e.TenantId, "subject_iid", iid,
 			"sequence", e.Sequence, "agents", agents)
 	case len(p.cfg.TenantWideAgents[e.TenantId]) > 0:
-		recipients = p.cfg.TenantWideAgents[e.TenantId] // dev/test shortcut, no participation gate
+		recipients = p.cfg.TenantWideAgents[e.TenantId]
 	}
 
 	payload, err := proto.Marshal(e)
 	if err != nil {
-		return p.poison(ctx, f, "marshal event")
+		return p.dlqOrNak(ctx, f, "marshal event")
 	}
-	for _, agent := range recipients {
-		dedup := fmt.Sprintf("%s.%s.%s.%d", e.TenantId, agent, iid, e.Sequence)
-		if perr := p.publishWithRetry(ctx, e.TenantId, agent, iid, dedup, payload); perr != nil {
-			// Leave the source un-acked: Nak schedules redelivery; dedup makes the re-projection of
-			// already-published feeds a no-op (no drop, at-most-once per feed).
-			log.Warn("projector.publish-failed", "subject_iid", iid, "agent", agent,
-				"sequence", e.Sequence, "err", perr.Error())
+	if perr := p.fanout(ctx, e, iid, recipients, payload); perr != nil {
+		if ctx.Err() != nil {
 			return p.src.Nak(f)
 		}
+		return p.dlqOrNak(ctx, f, fmt.Sprintf("feed publish failed: %v", perr))
 	}
 
 	if e.EventType == "participant.left" {
 		if terr := p.tombstone(ctx, e.TenantId, e.ActorId, iid, e.Sequence); terr != nil {
-			log.Warn("projector.tombstone-failed", "subject_iid", iid, "agent", e.ActorId,
-				"sequence", e.Sequence, "err", terr.Error())
-			return p.src.Nak(f)
+			if ctx.Err() != nil {
+				return p.src.Nak(f)
+			}
+			return p.dlqOrNak(ctx, f, fmt.Sprintf("revoked tombstone failed: %v", terr))
 		}
 	}
 
+	// WHY: a fence (overdue/lost lease) cancels ctx mid-fact; a stale holder must Nak, never ack/snapshot (RH-02).
+	if ctx.Err() != nil {
+		return p.src.Nak(f)
+	}
 	if err := p.src.Ack(f); err != nil {
 		return fmt.Errorf("ack: %w", err)
 	}
 	p.lastAckSeq = f.StreamSeq
 	p.maybeSnapshot(ctx, f.StreamSeq)
 	return nil
+}
+
+// @spec:projector.roster.unbounded-retry
+func (p *Projector) resolveRoster(ctx context.Context, f Fact, e *signaling.Event, iid string, log *slog.Logger) ([]string, error) {
+	deadline := time.Now().Add(p.cfg.RosterRetryWindow)
+	backoff := p.cfg.RetryBackoff
+	for {
+		agents, err := p.cfg.Roster.Agents(ctx, e.TenantId)
+		switch {
+		case err == nil && len(agents) > 0:
+			return agents, nil
+		case err != nil:
+			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
+				"sequence", e.Sequence, "err", err.Error())
+		default:
+			log.Warn("projector.roster-empty", "tenant", e.TenantId, "subject_iid", iid, "sequence", e.Sequence)
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return nil, errRosterUnavailable
+		}
+		// WHY: hold the MaxAckPending=1 slot via InProgress so a roster blip doesn't burn the MaxDeliver budget (RH-04).
+		if ierr := p.src.InProgress(f); ierr != nil {
+			return nil, errRosterUnavailable
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errRosterUnavailable
+		case <-time.After(backoff):
+		}
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
+	}
+}
+
+// @spec: RDL-01
+func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, recipients []string, payload []byte) error {
+	if len(recipients) == 0 {
+		return nil
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(fanoutConcurrency)
+	for _, agent := range recipients {
+		agent := agent
+		dedup := fmt.Sprintf("%s.%s.%s.%d", e.TenantId, agent, iid, e.Sequence)
+		g.Go(func() error {
+			return p.publishWithRetry(gctx, e.TenantId, agent, iid, dedup, payload)
+		})
+	}
+	return g.Wait()
 }
 
 func (p *Projector) publishWithRetry(ctx context.Context, tenant, agent, iid, dedup string, payload []byte) error {
@@ -311,9 +476,6 @@ func (p *Projector) publishWithRetry(ctx context.Context, tenant, agent, iid, de
 	return err
 }
 
-// tombstone writes the terminal feed.revoked feed-control marker into the revoked agent's feed so a
-// reconnecting client deterministically drops the interaction even if it missed participant.left.
-// Deterministic dedup id keeps it at-most-once across redelivery.
 func (p *Projector) tombstone(ctx context.Context, tenant, agent, iid string, atSeq int64) error {
 	ctrl := &signaling.FeedControl{
 		Schema: feedControlSchema, Control: controlRevoked, InteractionId: iid, AtSequence: atSeq,
@@ -326,9 +488,10 @@ func (p *Projector) tombstone(ctx context.Context, tenant, agent, iid string, at
 	return p.publishWithRetry(ctx, tenant, agent, iid, dedup, payload)
 }
 
-func (p *Projector) poison(ctx context.Context, f Fact, reason string) error {
+// @spec:projector.delivery.exhausted-to-dlq
+func (p *Projector) dlqOrNak(ctx context.Context, f Fact, reason string) error {
 	if p.src.Delivered(f) < p.cfg.MaxDeliver {
-		obs.Logger(ctx).Warn("projector.poison-retry", "reason", reason, "delivered", p.src.Delivered(f))
+		obs.Logger(ctx).Warn("projector.delivery-retry", "reason", reason, "delivered", p.src.Delivered(f))
 		return p.src.Nak(f)
 	}
 	tenant, evID, seq := "", "", int64(0)
@@ -340,7 +503,7 @@ func (p *Projector) poison(ctx context.Context, f Fact, reason string) error {
 	}
 	obs.Logger(ctx).Error("projector.dlq", "reason", reason, "event_id", evID, "sequence", seq)
 	if err := p.src.Ack(f); err != nil { // ack so the consumer is not wedged
-		return fmt.Errorf("ack poison: %w", err)
+		return fmt.Errorf("ack dlq: %w", err)
 	}
 	p.lastAckSeq = f.StreamSeq
 	return nil
@@ -351,17 +514,13 @@ func (p *Projector) maybeSnapshot(ctx context.Context, seq uint64) {
 	if p.sinceSnap < p.cfg.SnapshotEvery {
 		return
 	}
-	// Save only AFTER the Ack that produced this seq → the snapshot is always an acked prefix
-	// (seq <= durable ack floor), never ahead of the cursor.
 	if err := p.snaps.Save(ctx, seq, p.st.snapshot()); err != nil {
 		obs.Logger(ctx).Warn("projector.snapshot-failed", "sequence", seq, "err", err.Error())
-		return // a failed snapshot is non-fatal: hydration falls back to an older snapshot + a longer tail fold
+		return
 	}
 	p.sinceSnap = 0
 }
 
-// coveredBy returns the agents whose membership interval covers sequence S (join ≤ S ≤ left, or
-// join ≤ S for an open interval) — the recipient set of the fact at S.
 func coveredBy(v *signaling.ParticipationView, s int64) []string {
 	var out []string
 	for _, a := range v.Agents() {
@@ -375,5 +534,4 @@ func coveredBy(v *signaling.ParticipationView, s int64) []string {
 	return out
 }
 
-// interactionOf returns the iid the adapter parsed from the delivery subject (the Event has no iid).
 func interactionOf(f Fact) string { return f.iid }

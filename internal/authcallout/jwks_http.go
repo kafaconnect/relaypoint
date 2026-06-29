@@ -7,17 +7,13 @@ import (
 	"net/http"
 )
 
-// HTTPJWKSSource fetches desk's published visitor JWKS over HTTP (the in-cluster desk-api Service's
-// GET /ingress/rp-jwks endpoint, design §3 / desk visitor_exchange.go JWKS()). It is the only network
-// adapter behind the JWKSSource port; the verifier's caching/rotation policy never touches the wire, so
-// unit tests inject a fake source and stay offline (loose-coupling HARD RULE).
+// HTTPJWKSSource is the only network adapter behind the JWKSSource port (loose-coupling HARD RULE); the verifier's caching/rotation never touches the wire, so tests inject a fake and stay offline.
 type HTTPJWKSSource struct {
 	url    string
 	client *http.Client
 }
 
-// NewHTTPJWKSSource builds the source for the configured URL (DESK_INGRESS_JWKS_URL). A nil client uses
-// http.DefaultClient; callers pass a timeout-bounded client in production.
+// A nil client uses http.DefaultClient; production callers pass a timeout-bounded one.
 func NewHTTPJWKSSource(url string, client *http.Client) *HTTPJWKSSource {
 	if client == nil {
 		client = http.DefaultClient
@@ -25,9 +21,7 @@ func NewHTTPJWKSSource(url string, client *http.Client) *HTTPJWKSSource {
 	return &HTTPJWKSSource{url: url, client: client}
 }
 
-// Fetch GETs the JWKS bytes. Any non-2xx, transport error, or read error returns a non-nil error so the
-// verifier fails the token closed. The body is NOT logged (it is public key material, but the no-material
-// logging rule applies regardless).
+// Any non-2xx/transport/read error returns non-nil so the verifier fails closed; the body is never logged (no-material logging rule).
 func (s *HTTPJWKSSource) Fetch(ctx context.Context) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
 	if err != nil {

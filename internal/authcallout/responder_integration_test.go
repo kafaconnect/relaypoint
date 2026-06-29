@@ -1,8 +1,6 @@
 //go:build integration
 
-// Integration test: an EPHEMERAL nats-server with auth_callout enabled + this responder, asserting
-// the minted per-connection ACLs are actually enforced by NATS (not just the pure policy). Brings
-// up nats-server via Docker (image NATS_IMAGE, default nats:2.10-alpine); skips if Docker is absent.
+// Integration test: an ephemeral Docker nats-server with auth_callout enforces the minted ACLs for real (not just the pure policy); skips if Docker is absent.
 package authcallout
 
 import (
@@ -21,9 +19,7 @@ import (
 
 const tokenSecret = "integration-secret"
 
-// natsConf renders an auth_callout config. account = APP account public key (where minted users
-// land + the responder lives); responderUserPass = the responder's static credential (an auth_user
-// exempt from the callout so cutover never locks it out).
+// account = APP account public key (where minted users land); responderPass = the responder's static auth_user credential, exempt from the callout so cutover never locks it out.
 func natsConf(account, responderPass string) string {
 	return fmt.Sprintf(`
 port: 4222
@@ -62,8 +58,6 @@ func writeConf(t *testing.T, body string) string {
 	return p
 }
 
-// startNATS launches nats-server in Docker with the given config and returns its client URL +
-// monitoring port. The account issuer keypair signs minted user JWTs.
 func startNATS(t *testing.T) (url string, accountKP nkeys.KeyPair, responderPass string) {
 	t.Helper()
 	if _, err := exec.LookPath("docker"); err != nil {
@@ -153,9 +147,7 @@ func dialResponder(t *testing.T, url, pass string, kp nkeys.KeyPair) {
 	t.Cleanup(func() { nc.Drain() })
 }
 
-// dialResponderChain wires the responder with the F1 verify ladder (HMAC → visitor over the supplied
-// JWKSSource), so the embedded NATS enforces the minted VISITOR ACL end-to-end — the authoritative proof
-// the one-conversation scoping holds, not just the pure policy.
+// Wires the responder with the F1 verify ladder (HMAC → visitor) so the embedded NATS enforces the minted VISITOR ACL end-to-end — authoritative, not just the pure policy.
 func dialResponderChain(t *testing.T, url, pass string, kp nkeys.KeyPair, vis Verifier) {
 	t.Helper()
 	seed, _ := kp.Seed()
@@ -175,9 +167,6 @@ func dialResponderChain(t *testing.T, url, pass string, kp nkeys.KeyPair, vis Ve
 }
 
 // @spec:authcallout.visitor.grant-scoped-one-conversation (enforced by real NATS)
-// A desk `vis_` for conversation C1 mints a credential that subscribes ONLY C1's `.log` + events,
-// is denied another conversation / the agent feed / the tenant-wide log / publish — the embedded
-// server, not the policy unit test, enforces it.
 func TestAuthCalloutMintsVisitorACL(t *testing.T) {
 	url, kp, pass := startNATS(t)
 
@@ -216,9 +205,6 @@ func TestAuthCalloutMintsVisitorACL(t *testing.T) {
 }
 
 // @spec:authcallout.visitor.subscribe-only-no-responses (enforced by real NATS)
-// A visitor receives an event carrying a `reply` subject and tries to answer it. Because the visitor JWT
-// has NO response permission, the reply publish is denied — the subscribe-only invariant holds even against
-// the dynamic response-permission path (cross-review HIGH).
 func TestAuthCalloutVisitorCannotReply(t *testing.T) {
 	url, kp, pass := startNATS(t)
 
@@ -242,17 +228,14 @@ func TestAuthCalloutVisitorCannotReply(t *testing.T) {
 	}
 	defer vc.Drain()
 
-	// The visitor subscribes its conversation and, on receipt, attempts to publish to the message's reply.
 	_, err = vc.Subscribe("tenant.T.conversation.C1.events", func(msg *nats.Msg) {
-		_ = vc.Publish(msg.Reply, []byte("answer")) // must be denied (no response permission)
+		_ = vc.Publish(msg.Reply, []byte("answer"))
 	})
 	if err != nil {
 		t.Fatalf("visitor subscribe: %v", err)
 	}
 	vc.Flush()
 
-	// The desk data-plane publisher (a static account user, auth_users-exempt) publishes an event WITH a
-	// reply pointing at a privileged subject — representing desk's kept conversation.events publisher (§3d).
 	dc, err := connectWithRetry(t, url, nats.UserInfo("deskpub", "deskpub-dev"))
 	if err != nil {
 		t.Fatalf("desk publisher connect: %v", err)
@@ -268,15 +251,12 @@ func TestAuthCalloutVisitorCannotReply(t *testing.T) {
 
 	select {
 	case <-denied:
-		// expected: the visitor's reply publish was rejected
 	case <-time.After(800 * time.Millisecond):
 		t.Error("visitor reply publish should have been denied (no response permission)")
 	}
 }
 
 // @spec:authcallout.responder.chain-no-regression (enforced by real NATS)
-// With the visitor link wired, an AGENT token still mints exactly its existing feed grant — the ladder
-// does not regress the agent path.
 func TestAuthCalloutChainAgentUnregressed(t *testing.T) {
 	url, kp, pass := startNATS(t)
 
@@ -320,9 +300,7 @@ func token(t *testing.T, id signaling.Identity) string {
 	return tok
 }
 
-// canSub reports whether subj may be subscribed under the minted ACLs. A denied SUB triggers an
-// async permission-violation on the connection (the sync sub stays "valid" locally), so we detect
-// it via a dedicated connection's error handler — the authoritative signal NATS gives.
+// A denied SUB is async (the sync sub stays "valid" locally), so detect it via a dedicated connection's error handler.
 func canSub(t *testing.T, url, tok, subj string) bool {
 	t.Helper()
 	denied := make(chan struct{}, 1)
@@ -349,8 +327,7 @@ func canSub(t *testing.T, url, tok, subj string) bool {
 	}
 }
 
-// canPub reports whether a publish to subj is permitted: a denied publish triggers an async
-// permission-violation error on the connection. We capture it via an error handler.
+// A denied publish triggers an async permission-violation; capture it via an error handler.
 func canPub(t *testing.T, url, tok, subj string) bool {
 	t.Helper()
 	denied := make(chan struct{}, 1)
@@ -416,17 +393,13 @@ func TestAuthCalloutMintsPinnedAgentACLs(t *testing.T) {
 }
 
 // @spec:signaling.feed.inbox-reads-own-feed-only (no JetStream API)
-// The agent holds NO $JS.API grant, so it cannot drive the JetStream consumer API to pull-read raw
-// .log or another agent's feed — the consumer-API path that would otherwise bypass the subject-level
-// denies. Its own feed is reachable only by a core subscribe (asserted above). (A4)
 func TestAuthCalloutAgentDeniedJetStreamConsumerAPI(t *testing.T) {
 	url, kp, pass := startNATS(t)
 	dialResponder(t, url, pass, kp)
 
 	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
 
-	// Creating/binding a pull consumer or fetching the next message goes over $JS.API.CONSUMER.*;
-	// every such publish must be denied.
+	// A pull consumer create/bind/next goes over $JS.API.CONSUMER.*; every such publish must be denied.
 	for _, subj := range []string{
 		"$JS.API.CONSUMER.CREATE.INTERACTION_LOGS",
 		"$JS.API.CONSUMER.DURABLE.CREATE.INTERACTION_LOGS.snoop",
@@ -454,11 +427,9 @@ func TestAuthCalloutMintsTrustedBackendACLs(t *testing.T) {
 	if canPub(t, url, deskTok, "tenant.T.interaction.i1.cmd.alice") {
 		t.Error("desk must NOT publish as another identity")
 	}
-	// Trusted backend reads interaction logs for routing (broader than an agent).
 	if !canSub(t, url, deskTok, "tenant.T.interaction.i1.log") {
 		t.Error("desk must read interaction logs")
 	}
-	// But still may not forge a .log fact.
 	if canPub(t, url, deskTok, "tenant.T.interaction.i1.log") {
 		t.Error("desk must NOT write .log directly (router-only)")
 	}
@@ -467,7 +438,6 @@ func TestAuthCalloutMintsTrustedBackendACLs(t *testing.T) {
 func TestAuthCalloutDeniesBadToken(t *testing.T) {
 	url, kp, pass := startNATS(t)
 	dialResponder(t, url, pass, kp)
-	// A garbage token must be rejected at connect (the responder signs a DENY).
 	if nc, err := nats.Connect(url, nats.Token("not-a-valid-token"),
 		nats.MaxReconnects(0), nats.Timeout(2*time.Second)); err == nil {
 		nc.Close()

@@ -8,7 +8,6 @@ import (
 )
 
 // @spec:wire.protobuf.round-trip
-// Each wire message survives a protobuf marshal/unmarshal round-trip unchanged (ADR-0002).
 func TestWireRoundTrip(t *testing.T) {
 	chat, _ := proto.Marshal(&ChatMessage{Text: "hello", AttachmentRefs: []string{"obj-1", "obj-2"}})
 

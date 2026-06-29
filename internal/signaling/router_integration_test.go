@@ -1,9 +1,5 @@
 //go:build integration
 
-// Integration tests for the chat-subset router against a live NATS (JetStream).
-//
-//	NATS_URL_ROUTER (default nats://router:router-dev@localhost:14222)
-//	NATS_URL_CLIENT (default nats://client:client-dev@localhost:14222)
 package signaling
 
 import (
@@ -24,7 +20,6 @@ func urlOr(k, d string) string {
 	return d
 }
 
-// startRouter wires the in-process router to the test NATS and returns a client conn.
 func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	rnc, err := nats.Connect(urlOr("NATS_URL_ROUTER", "nats://router:router-dev@localhost:14222"))
@@ -35,7 +30,6 @@ func startRouter(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	// ADR-0002 cutover: start from a clean stream so no JSON-era fact survives into the protobuf run.
 	if err := ResetLogStream(rjs); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -71,13 +65,11 @@ func sendCmd(t *testing.T, cnc *nats.Conn, tenant, iid string, c *Command) *Comm
 	return res
 }
 
-// chatBytes marshals chat text into the `data` payload (registry: medium=chat).
 func chatBytes(text string) []byte {
 	b, _ := proto.Marshal(&ChatMessage{Text: text})
 	return b
 }
 
-// readLog replays the durable facts for an interaction in order.
 func readLog(t *testing.T, js nats.JetStreamContext, tenant, iid string) []*Event {
 	t.Helper()
 	subj := fmt.Sprintf("tenant.%s.interaction.%s.log", tenant, iid)
@@ -161,12 +153,10 @@ func TestRouterChat(t *testing.T) {
 	// @spec:signaling.cmd.illegal-transition-rejected
 	t.Run("illegal-transition-rejected", func(t *testing.T) {
 		j2 := fmt.Sprintf("iz%d", time.Now().UnixNano())
-		// message.created before interaction.started → illegal
 		r := sendCmd(t, cnc, tn, j2, &Command{CommandId: "z1", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat"})
 		if r.Status != statusRejected {
 			t.Fatalf("message before start must be rejected, got %+v", r)
 		}
-		// start, end, then message → illegal (ended is terminal)
 		sendCmd(t, cnc, tn, j2, &Command{CommandId: "z2", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"})
 		sendCmd(t, cnc, tn, j2, &Command{CommandId: "z3", TenantId: tn, ActorId: "u1", Type: "interaction.ended", Medium: "chat"})
 		r = sendCmd(t, cnc, tn, j2, &Command{CommandId: "z4", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat"})
@@ -177,7 +167,6 @@ func TestRouterChat(t *testing.T) {
 
 	// @spec:signaling.log-durable
 	t.Run("log-durable", func(t *testing.T) {
-		// a fresh JetStream consumer re-reads the ordered facts (durability/replay)
 		facts := readLog(t, js, tn, iid)
 		if len(facts) < 2 {
 			t.Fatalf("log not durable/replayable: %d facts", len(facts))
@@ -199,9 +188,8 @@ func TestClientCannotWriteLog(t *testing.T) {
 	defer cnc.Drain()
 	permErr := make(chan error, 1)
 	cnc.SetErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) { permErr <- e })
-	// a client publishing a forged fact to `.log` must be denied by the NATS ACL.
 	if err := cnc.Publish("tenant.t1.interaction.iX.log", []byte(`{"forged":true}`)); err != nil {
-		return // synchronous deny
+		return
 	}
 	cnc.Flush()
 	select {
@@ -215,8 +203,6 @@ func TestClientCannotWriteLog(t *testing.T) {
 }
 
 // @spec:wire.protobuf.stream-reset
-// ResetLogStream deletes + recreates INTERACTION_LOGS so a protobuf router replays a clean log:
-// a pre-existing (JSON-era) fact does NOT survive the reset, and the recreated stream is empty.
 func TestResetLogStreamPurgesFacts(t *testing.T) {
 	rnc, err := nats.Connect(urlOr("NATS_URL_ROUTER", "nats://router:router-dev@localhost:14222"))
 	if err != nil {
@@ -232,7 +218,7 @@ func TestResetLogStreamPurgesFacts(t *testing.T) {
 	}
 	iid := fmt.Sprintf("ir%d", time.Now().UnixNano())
 	subj := logSubjectFor("t1", iid)
-	if _, err := js.Publish(subj, []byte(`{"legacy":"json"}`)); err != nil { // a JSON-era fact
+	if _, err := js.Publish(subj, []byte(`{"legacy":"json"}`)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 

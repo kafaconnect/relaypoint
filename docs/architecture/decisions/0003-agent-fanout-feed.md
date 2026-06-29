@@ -183,3 +183,17 @@ Spec delta ids: `signaling.feed.inbox-reads-own-feed-only`, `signaling.feed.cros
   rejected for ephemeral feed + canonical `.log` (RP audit) and desk REST (browser history).
 - **Tenant-wide `.log` read grant** (desk's provisional choice) — breaks per-interaction isolation.
   Rejected.
+
+## Amendment 2026-06-26 — concurrent per-fact fan-out
+
+The single-active leased worker still processes one `.log` fact at a time (`MaxAckPending=1`, the
+serial fold invariant is unchanged), but it now publishes that fact to its N recipient feeds
+**concurrently** (bounded errgroup, `fanoutConcurrency=32`) instead of one synchronous `PublishMsg`
+per agent in a loop. Motivation: a fact bound for N agents previously cost N sequential publish
+RTTs inside the serial consumer, multiplying tail latency under load; the concurrent fan-out
+collapses that to ~one RTT. Semantics are preserved exactly — ack only after **all** intended
+publishes succeed (ack-after-publish), per-`(agent, interaction, sequence)` dedup id, and any
+publish failure leaves the source un-acked (`Nak` → redelivery; already-published feeds dedup to a
+no-op). This does **not** change the still-deferred sharding decision above: cross-interaction
+concurrency (a partitioned consumer fleet) remains the lag-triggered scale-out path, gated on
+measured projector backlog under concurrent interactions. `@spec: RDL-01`.

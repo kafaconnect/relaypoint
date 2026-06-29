@@ -13,8 +13,7 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/obs"
 )
 
-// seedCtx replays the QueueSubscribe handler's context plumbing so the propagation rule is
-// exercised without a live NATS connection.
+// replays the QueueSubscribe handler's context plumbing so propagation is tested without a live NATS connection.
 func seedCtx(m *nats.Msg, base *slog.Logger) context.Context {
 	ctx := obs.ContextFromTraceparent(context.Background(), traceparentOf(m))
 	return obs.WithCorrelation(ctx, base)
@@ -36,7 +35,6 @@ func TestSubscribeTraceparentPropagated(t *testing.T) {
 		t.Error("handler should mint a child span, not reuse the publisher span")
 	}
 
-	// the correlated logger carries the publisher's trace_id onto every line
 	obs.Logger(ctx).Info("router.command")
 	if got := lineField(t, &buf, "trace_id"); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
 		t.Errorf("log trace_id = %q, want the publisher's", got)
@@ -46,7 +44,7 @@ func TestSubscribeTraceparentPropagated(t *testing.T) {
 // @spec:obs.nats-traceparent-propagated (missing header → fresh trace, not a drop)
 func TestSubscribeMissingHeaderFreshTrace(t *testing.T) {
 	var buf bytes.Buffer
-	m := nats.NewMsg("tenant.t1.interaction.iX.cmd.u1") // no traceparent header
+	m := nats.NewMsg("tenant.t1.interaction.iX.cmd.u1")
 	ctx := seedCtx(m, captureLogger(&buf))
 
 	tc, ok := obs.TraceFromContext(ctx)
@@ -63,14 +61,12 @@ func TestSubscribeMissingHeaderFreshTrace(t *testing.T) {
 	}
 }
 
-// TestTraceparentOfNilHeader guards the nil-Header publish path.
 func TestTraceparentOfNilHeader(t *testing.T) {
 	if got := traceparentOf(&nats.Msg{}); got != "" {
 		t.Errorf("traceparentOf(nil header) = %q, want empty", got)
 	}
 }
 
-// captureLogger builds a JSON slog logger writing to buf with the canonical schema.
 func captureLogger(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(buf, nil))
 }

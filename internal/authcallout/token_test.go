@@ -8,8 +8,6 @@ import (
 )
 
 // @spec:signaling.feed.cmd-identity-pinned (verify rejects unsafe claims)
-// Verify rejects a signed token whose tenant/user is not a single safe NATS subject token, even
-// though the HMAC is valid — the claim is interpolated into ACL subjects (A6).
 func TestVerifyRejectsUnsafeClaims(t *testing.T) {
 	secret := []byte("s")
 	v := NewHMACVerifier(secret)

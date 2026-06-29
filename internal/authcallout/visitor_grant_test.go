@@ -7,9 +7,6 @@ import (
 )
 
 // @spec:authcallout.visitor.grant-scoped-one-conversation
-// A visitor grant subscribes EXACTLY its one conversation's `.log` (the SDK chat slice) + the transitional
-// events plane plus its minted inbox, publishes nothing, and is denied every OTHER conversation's log/events,
-// the agent feed, and the raw tenant-wide log. cid == interaction id (ADR-0009).
 func TestGrantsForVisitor(t *testing.T) {
 	id := signaling.Identity{TenantID: "T", UserID: "sess9", Role: signaling.RoleVisitor, ConversationID: "C1"}
 	g, err := GrantsFor(id, "v1")
@@ -52,8 +49,6 @@ func TestGrantsForVisitor(t *testing.T) {
 }
 
 // @spec:authcallout.visitor.subscribe-only-no-responses
-// A visitor grant carries NO response permission, so an inbound event's `reply` subject can never become a
-// one-shot publish path past the static PubDeny. Agent + trusted-backend keep responses (request/reply).
 func TestVisitorGrantHasNoResponsePermission(t *testing.T) {
 	vis, _ := GrantsFor(signaling.Identity{TenantID: "T", UserID: "s", Role: signaling.RoleVisitor, ConversationID: "C1"}, "v1")
 	if vis.AllowResponses {
@@ -67,8 +62,6 @@ func TestVisitorGrantHasNoResponsePermission(t *testing.T) {
 }
 
 // @spec:authcallout.visitor.grant-binds-cid
-// A visitor for conversation A cannot subscribe conversation B: the grant binds the cid, so swapping the
-// Identity's ConversationID changes ONLY which conversation literal is permitted.
 func TestVisitorGrantBindsConversation(t *testing.T) {
 	a, err := GrantsFor(signaling.Identity{TenantID: "T", UserID: "s", Role: signaling.RoleVisitor, ConversationID: "A"}, "v1")
 	if err != nil {
@@ -83,7 +76,6 @@ func TestVisitorGrantBindsConversation(t *testing.T) {
 }
 
 // @spec:authcallout.visitor.grant-binds-cid
-// An unsafe/empty conversation id is rejected at the grant boundary (it is interpolated into ACL subjects).
 func TestVisitorGrantRejectsUnsafeConversation(t *testing.T) {
 	for _, cid := range []string{"", "A.B", "A*", "A>"} {
 		id := signaling.Identity{TenantID: "T", UserID: "s", Role: signaling.RoleVisitor, ConversationID: cid}
@@ -94,7 +86,6 @@ func TestVisitorGrantRejectsUnsafeConversation(t *testing.T) {
 }
 
 // @spec:authcallout.responder.chain-no-regression
-// The verify ladder (agent/backend HMAC → visitor) leaves the agent and trusted-backend paths unchanged.
 func TestChainVerifierUnregressedAndVisitor(t *testing.T) {
 	secret := []byte("s")
 	hmac := NewHMACVerifier(secret)

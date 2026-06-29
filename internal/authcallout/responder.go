@@ -14,8 +14,7 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-// traceparentOf reads the auth request message's W3C trace header, nil-safe (a header-less message
-// yields ""), so the auth decision can join an inbound trace if one is propagated.
+// traceparentOf is nil-safe (a header-less message yields "") so the auth decision can join an inbound trace if one is propagated.
 func traceparentOf(m *nats.Msg) string {
 	if m == nil || m.Header == nil {
 		return ""
@@ -23,34 +22,26 @@ func traceparentOf(m *nats.Msg) string {
 	return m.Header.Get("traceparent")
 }
 
-// AuthRequestSubject is the NATS auth-callout request subject the server publishes to.
 const AuthRequestSubject = "$SYS.REQ.USER.AUTH"
 
-// authQueue is the responder's queue group: with replicas>=2 all responders subscribe under it so
-// exactly one answers each $SYS.REQ.USER.AUTH (HA without double-minting).
+// authQueue: replicas>=2 share this queue group so exactly one responder answers each request (HA without double-minting).
 const authQueue = "authsvc"
 
-// defaultVisitorTTLCap bounds a minted VISITOR credential's lifetime regardless of the vis_ token's
-// own exp — a defense-in-depth ceiling (ADR-0012 §4: visitor creds are short-lived + revocable). NATS
-// drops the connection at expiry; the client re-exchanges a fresh vis_.
+// defaultVisitorTTLCap bounds a minted visitor credential regardless of the vis_ exp — defense-in-depth ceiling (ADR-0012 §4: short-lived + revocable).
 const defaultVisitorTTLCap = time.Hour
 
-// Responder is the NATS adapter for the auth-callout: it answers $SYS.REQ.USER.AUTH by verifying the
-// token (Verifier port) and minting a per-connection user JWT whose ACLs are pinned to that identity
-// (GrantsFor policy). It mints the reply prefix `<conn>` itself, so `_INBOX_<conn>` is bound to this
-// connection and not client-chosen. The NATS signing/decoding lives ONLY here (loose-coupling HARD RULE).
+// Responder mints the reply prefix `<conn>` itself so `_INBOX_<conn>` is bound to the connection, not client-chosen; NATS signing/decoding lives ONLY here (loose-coupling HARD RULE).
 type Responder struct {
 	verify        Verifier
-	issuer        nkeys.KeyPair // account signing-key seed — the auth_callout issuer
-	account       string        // named account minted users land in (user JWT aud)
+	issuer        nkeys.KeyPair
+	account       string
 	connID        func() string
-	visitorTTLCap time.Duration    // ceiling on a minted visitor credential's lifetime
-	now           func() time.Time // clock (injectable for tests)
-	log           *slog.Logger     // structured decisions (allow/deny), correlated to the request trace
+	visitorTTLCap time.Duration
+	now           func() time.Time
+	log           *slog.Logger
 }
 
-// NewResponder builds the responder. issuerSeed is the account signing-key SEED (the trust root; from
-// a secret, never committed); account is the NAME of the account minted users are placed in.
+// issuerSeed is the account signing-key SEED (trust root; from a secret, never committed); account is the NAME minted users are placed in.
 func NewResponder(v Verifier, issuerSeed []byte, account string, opts ...ResponderOption) (*Responder, error) {
 	kp, err := nkeys.FromSeed(issuerSeed)
 	if err != nil {
@@ -71,7 +62,6 @@ func NewResponder(v Verifier, issuerSeed []byte, account string, opts ...Respond
 	return r, nil
 }
 
-// WithLogger overrides the structured logger the responder records auth decisions on (tests capture it).
 func WithLogger(l *slog.Logger) ResponderOption {
 	return func(r *Responder) {
 		if l != nil {
@@ -82,12 +72,10 @@ func WithLogger(l *slog.Logger) ResponderOption {
 
 type ResponderOption func(*Responder)
 
-// WithConnIDGen overrides the per-connection reply-prefix minter (tests inject a deterministic one).
 func WithConnIDGen(gen func() string) ResponderOption {
 	return func(r *Responder) { r.connID = gen }
 }
 
-// WithVisitorTTLCap overrides the ceiling on a minted visitor credential's lifetime.
 func WithVisitorTTLCap(d time.Duration) ResponderOption {
 	return func(r *Responder) {
 		if d > 0 {
@@ -96,7 +84,6 @@ func WithVisitorTTLCap(d time.Duration) ResponderOption {
 	}
 }
 
-// WithClock overrides the responder clock (tests assert the TTL cap without sleeping).
 func WithClock(now func() time.Time) ResponderOption {
 	return func(r *Responder) {
 		if now != nil {
@@ -107,16 +94,10 @@ func WithClock(now func() time.Time) ResponderOption {
 
 func defaultConnID() string { return nats.NewInbox()[len("_INBOX."):] }
 
-// Subscribe wires the responder to the auth-callout request subject. The connection MUST be one of
-// the config's `auth_users` (a trusted identity exempt from the callout) so the responder itself is
-// not locked out at cutover.
+// The connection MUST be one of the config's `auth_users` (exempt from the callout) or the responder locks itself out at cutover.
 func (r *Responder) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
-	// QueueSubscribe (not Subscribe): replicas>=2 share the `authsvc` queue so exactly one answers
-	// each request — HA without two responders minting for the same connect.
 	return nc.QueueSubscribe(AuthRequestSubject, authQueue, func(m *nats.Msg) {
-		// Extract any OTLP trace context the auth request carries and open a span, so each auth
-		// decision is observable and correlates with the connection's downstream activity (a no-op
-		// export when no OTLP endpoint is configured / no inbound trace is present).
+		// Open a span correlated to any inbound trace so each auth decision is observable (no-op export when no OTLP endpoint / inbound trace).
 		ctx := obs.WithCorrelation(obs.ContextFromTraceparent(context.Background(), traceparentOf(m)), r.log)
 		ctx, end := obs.StartSpan(ctx, "authcallout.handle")
 		defer end()
@@ -136,8 +117,7 @@ func (r *Responder) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 	})
 }
 
-// handle returns the signed authorization-response JWT for the minted per-connection user; a
-// verify/grant failure returns an error the caller turns into a signed DENY (not a timeout).
+// A verify/grant failure returns an error the caller turns into a signed DENY, not a timeout.
 func (r *Responder) handle(reqJWT []byte) (string, signaling.Identity, error) {
 	req, err := jwt.DecodeAuthorizationRequestClaims(string(reqJWT))
 	if err != nil {
@@ -160,9 +140,7 @@ func (r *Responder) handle(reqJWT []byte) (string, signaling.Identity, error) {
 	uc.Pub.Deny = grant.PubDeny
 	uc.Sub.Allow = grant.SubAllow
 	uc.Sub.Deny = grant.SubDeny
-	// answer requests on the minted reply-prefix without widening publish to broad subjects — ONLY for
-	// roles that do request/reply. A visitor is strictly subscribe-only: a response permission would let
-	// an inbound event's `reply` subject become a one-shot publish path past the static PubDeny (cross-review).
+	// Response perm only for roles that do request/reply: a visitor is subscribe-only, else an inbound reply becomes a one-shot publish path past PubDeny (cross-review).
 	if grant.AllowResponses {
 		uc.Resp = &jwt.ResponsePermission{MaxMsgs: 1}
 	}
@@ -177,18 +155,14 @@ func (r *Responder) handle(reqJWT []byte) (string, signaling.Identity, error) {
 	return token, id, err
 }
 
-// cappedExpiry returns the Unix expiry a minted credential should carry. It keys off ROLE, not
-// ExpiresAt: a VISITOR credential MUST always be time-bounded (ADR-0012 §4 short-lived + revocable)
-// and can never bypass the cap — bounded by the RP ceiling and further by the vis_ token's exp WHEN
-// present. Non-visitors (agents/backends) get 0 (no RP-imposed expiry); their own token auth gates
-// the connect.
+// Keys off ROLE not ExpiresAt: a VISITOR is ALWAYS capped (ADR-0012 §4), never bypassed; non-visitors get 0 (their own token auth gates the connect).
 func (r *Responder) cappedExpiry(id signaling.Identity) int64 {
 	if id.Role != signaling.RoleVisitor {
 		return 0
 	}
 	exp := r.now().Add(r.visitorTTLCap)
 	if !id.ExpiresAt.IsZero() && id.ExpiresAt.Before(exp) {
-		exp = id.ExpiresAt // the vis_ exp is tighter than the ceiling
+		exp = id.ExpiresAt
 	}
 	return exp.Unix()
 }
@@ -201,8 +175,7 @@ func (r *Responder) deny(reqJWT []byte, reason string) (string, error) {
 	return r.respond(req, "", reason)
 }
 
-// respond signs the AuthorizationResponse to the server NKEY (the request subject of the response is
-// the server's id, per the auth-callout protocol).
+// Signs the AuthorizationResponse to the server NKEY — Audience is the server's id, per the auth-callout protocol.
 func (r *Responder) respond(req *jwt.AuthorizationRequestClaims, userJWT, errMsg string) (string, error) {
 	rc := jwt.NewAuthorizationResponseClaims(req.UserNkey)
 	rc.Audience = req.Server.ID
