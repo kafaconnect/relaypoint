@@ -2,7 +2,7 @@
 id: RH-02
 slice: RH
 title: CRITICAL — fence lease renewal within the TTL budget, stop-the-world on overdue renew, and review the 2 folded perf commits
-status: todo
+status: done
 specs: [RDL-01, RDL-02, RDL-03]
 ---
 
@@ -34,4 +34,4 @@ lease tolerance `467c1c8` = corrected by `RDL-03`).
 `// @spec:RDL-01`, `// @spec:RDL-02`, `// @spec:RDL-03`
 
 ## Log
-- todo
+- `Renew` now honours `ctx` (reconstructs the revision-guarded KV update as a `nats.Context(ctx)`-bounded `PublishMsg`, since `kv.Update` ignores ctx); `renewWithRetry` derives a per-attempt budget from `(LeaseTTL − LeaseRenew)` (`renewBudget`, 10% margin: default 5s/2s → 3×700ms + 2×300ms = 2.7s < 3s) and an overdue renew immediately pauses the data path via a stop-the-world `fence` (cancels the in-flight fact, resumes if the renew recovers, exits on confirmed loss). `LeaseTTL` surfaced on `Config` + fed from `cmd/projector/main.go` so lease and budget can't drift. Tests: `fakeLease` now configurable; added `RDL-03` budget (math + bounded-when-stalled), fence stop/resume/fail, and Run-stops-on-lease-loss; `RDL-01`/`RDL-02` concurrent-fanout test retained. The bounded-when-stalled test fails (4.2s ≥ 3s) without the per-attempt ctx, passes (2.7s) with it.

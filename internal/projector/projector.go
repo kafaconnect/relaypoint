@@ -7,8 +7,8 @@ package projector
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -27,10 +27,11 @@ const (
 	// small, so it mainly collapses N sequential publish RTTs into ~one. @spec: RDL-01
 	fanoutConcurrency = 32
 
-	// A single lease-renew failure must NOT crash the single-active projector: a crash costs a
-	// restart + lease re-acquire + hydrate = several seconds of stalled fact delivery (observed live:
-	// a transient `nats: timeout` on renew dropped ~18s of call facts). Tolerate a brief NATS blip by
-	// retrying the renew within the lease TTL window before declaring the lease genuinely lost.
+	// A transient lease-renew blip must neither crash the single-active projector (a restart costs
+	// re-acquire + hydrate) NOR keep it fanning out unfenced. renewWithRetry retries within a budget
+	// DERIVED from the lease TTL (renewBudget) so total retry time stays under the (TTL−renewInterval)
+	// fencing window, and an overdue renew pauses the data path immediately (ADR-0007). These are the
+	// retry shape only; the per-attempt timeout is derived from the TTL, never pinned. @spec:RDL-03
 	leaseRenewAttempts     = 3
 	leaseRenewRetryBackoff = 300 * time.Millisecond
 )
@@ -91,6 +92,7 @@ type Config struct {
 	PublishRetry  int           // per-feed publish attempts before Nak (default 4)
 	RetryBackoff  time.Duration // base backoff between publish attempts (default 50ms)
 	LeaseRenew    time.Duration // lease heartbeat interval (default 2s; lease TTL ~5s)
+	LeaseTTL      time.Duration // lease expiry; the renew budget derives from (LeaseTTL − LeaseRenew) (default 5s)
 
 	// TenantWideAgents is a DEV/TEST shortcut, off by default (nil): for a tenant present here, every
 	// fact of that tenant fans out to the listed agents' feeds, bypassing the participation gate. This
@@ -123,6 +125,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.LeaseRenew <= 0 {
 		c.LeaseRenew = 2 * time.Second
+	}
+	if c.LeaseTTL <= 0 {
+		c.LeaseTTL = 5 * time.Second
+	}
+	if c.LeaseRenew >= c.LeaseTTL {
+		c.LeaseRenew = c.LeaseTTL / 2 // keep a positive fencing slack
 	}
 	return c
 }
@@ -164,33 +172,36 @@ func (p *Projector) Run(ctx context.Context) error {
 		return fmt.Errorf("hydrate: %w", err)
 	}
 
+	// The fence gates the data path on lease health: an overdue renew pauses it (cancelling the
+	// in-flight fact), a renew that recovers within budget resumes it, a confirmed loss exits — so a
+	// former holder stops fanning out/snapshotting BEFORE a standby could re-acquire (ADR-0007).
+	fence := newFence(ctx)
 	renewCtx, stopRenew := context.WithCancel(ctx)
 	defer stopRenew()
-	renewErr := make(chan error, 1)
-	go p.renewLoop(renewCtx, renewErr)
+	go p.renewLoop(renewCtx, fence)
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-renewErr:
-			return fmt.Errorf("lease lost: %w", err)
-		default:
+		dctx := fence.begin()
+		if dctx == nil {
+			return fence.exitErr() // parent cancelled or lease confirmed lost
 		}
-		f, err := p.src.Deliver(ctx)
+		f, err := p.src.Deliver(dctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return ctx.Err()
+			if dctx.Err() != nil {
+				continue // fenced (paused/lost) or shutting down mid-deliver — re-evaluate via begin
 			}
 			return fmt.Errorf("deliver: %w", err)
 		}
-		if err := p.process(ctx, f); err != nil {
+		if err := p.process(dctx, f); err != nil {
+			if dctx.Err() != nil {
+				continue // fenced mid-process — the fact stays un-acked (Nak) for redelivery
+			}
 			return err
 		}
 	}
 }
 
-func (p *Projector) renewLoop(ctx context.Context, out chan<- error) {
+func (p *Projector) renewLoop(ctx context.Context, fence *fence) {
 	t := time.NewTicker(p.cfg.LeaseRenew)
 	defer t.Stop()
 	for {
@@ -198,34 +209,156 @@ func (p *Projector) renewLoop(ctx context.Context, out chan<- error) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := p.renewWithRetry(ctx); err != nil {
-				out <- err
+			if err := p.renewWithRetry(ctx, fence); err != nil {
+				if ctx.Err() != nil {
+					return // shutting down, not a lease loss
+				}
+				fence.fail(err) // confirmed loss → the data loop exits and a standby takes over
 				return
 			}
 		}
 	}
 }
 
-// renewWithRetry tolerates a transient lease-renew failure (e.g. a brief `nats: timeout`) by retrying
-// a few times before reporting the lease lost — so a momentary NATS blip no longer crash-exits the
-// single-active projector. A sustained outage still surfaces (the caller exits and a standby/restart
-// takes over after the TTL).
-func (p *Projector) renewWithRetry(ctx context.Context) error {
+// renewWithRetry renews the lease within a budget DERIVED from the TTL so total retry time stays
+// under the (TTL − renewInterval) fencing window — a TTL change re-derives it, it cannot silently
+// re-open the unfenced window. Each attempt is bounded by a per-attempt context (the bug being fixed:
+// Renew ignored ctx and rode the NATS default timeout). The instant an attempt is overdue the data
+// path is paused (stop-the-world), NOT after exhausting every attempt; a renew that recovers within
+// budget resumes it. @spec:RDL-03
+func (p *Projector) renewWithRetry(ctx context.Context, fence *fence) error {
+	perAttempt, attempts, backoff := renewBudget(p.cfg.LeaseTTL, p.cfg.LeaseRenew)
 	var err error
-	for attempt := 0; attempt < leaseRenewAttempts; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(leaseRenewRetryBackoff):
+			case <-time.After(backoff):
 			}
 		}
-		if err = p.lease.Renew(ctx); err == nil {
+		actx, cancel := context.WithTimeout(ctx, perAttempt)
+		err = p.lease.Renew(actx)
+		cancel()
+		if err == nil {
+			fence.resume()
 			return nil
 		}
+		fence.pause() // overdue: fence the data path now, before a standby could re-acquire the lease
 		obs.Logger(ctx).Warn("projector.lease-renew-retry", "attempt", attempt+1, "err", err.Error())
 	}
 	return err
+}
+
+// renewBudget derives the per-attempt renew timeout from the lease fencing slack (TTL −
+// renewInterval) so total = attempts×perAttempt + (attempts−1)×backoff stays strictly under the
+// slack (a 10% margin). Deriving it from the TTL means a TTL change cannot silently re-open the
+// unfenced-processing window. @spec:RDL-03
+func renewBudget(ttl, renewInterval time.Duration) (perAttempt time.Duration, attempts int, backoff time.Duration) {
+	slack := ttl - renewInterval
+	if slack <= 0 {
+		return time.Millisecond, 1, 0 // misconfig (renewInterval >= ttl): one immediately-bounded attempt
+	}
+	attempts, backoff = leaseRenewAttempts, leaseRenewRetryBackoff
+	budget := slack * 9 / 10
+	if time.Duration(attempts-1)*backoff >= budget {
+		backoff = budget / time.Duration(attempts) / 2 // shrink the pinned backoff to fit a small TTL
+	}
+	perAttempt = (budget - time.Duration(attempts-1)*backoff) / time.Duration(attempts)
+	if perAttempt <= 0 {
+		return budget, 1, 0
+	}
+	return perAttempt, attempts, backoff
+}
+
+// fence gates the projector's data path on lease health. pause (an overdue renew) cancels the
+// in-flight data context and holds the path; resume (a renew that recovered within budget) re-arms
+// it; fail (a confirmed loss) exits the loop. This keeps a former holder's fenced window strictly
+// containing its fan-out/snapshot writes, so it never races a standby (ADR-0007). @spec:RDL-03
+type fence struct {
+	parent context.Context
+	mu     sync.Mutex
+	paused bool
+	lost   error
+	cancel context.CancelFunc // cancels the live data context on pause/fail
+	wakeup chan struct{}      // closed to wake a begin() blocked while paused
+}
+
+func newFence(parent context.Context) *fence {
+	return &fence{parent: parent, wakeup: make(chan struct{})}
+}
+
+// begin blocks while the lease is paused and returns a fresh data context for the next fact, or nil
+// when the loop must exit (parent cancelled or lease confirmed lost — exitErr reports which).
+func (f *fence) begin() context.Context {
+	for {
+		f.mu.Lock()
+		if f.lost != nil || f.parent.Err() != nil {
+			f.mu.Unlock()
+			return nil
+		}
+		if !f.paused {
+			if f.cancel != nil {
+				f.cancel() // release the previous epoch's context
+			}
+			dctx, cancel := context.WithCancel(f.parent)
+			f.cancel = cancel
+			f.mu.Unlock()
+			return dctx
+		}
+		wake := f.wakeup
+		f.mu.Unlock()
+		select {
+		case <-f.parent.Done():
+		case <-wake:
+		}
+	}
+}
+
+func (f *fence) pause() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.paused || f.lost != nil {
+		return
+	}
+	f.paused = true
+	if f.cancel != nil {
+		f.cancel() // stop-the-world: cancel the in-flight Deliver/process
+	}
+}
+
+func (f *fence) resume() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.paused || f.lost != nil {
+		return
+	}
+	f.paused = false
+	close(f.wakeup)
+	f.wakeup = make(chan struct{})
+}
+
+func (f *fence) fail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lost != nil {
+		return
+	}
+	f.lost = err
+	if f.cancel != nil {
+		f.cancel()
+	}
+	close(f.wakeup) // wake a begin() blocked while paused so the loop can exit
+	f.wakeup = make(chan struct{})
+}
+
+func (f *fence) exitErr() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lost != nil {
+		return fmt.Errorf("lease lost: %w", f.lost)
+	}
+	return f.parent.Err()
 }
 
 // Hydrate loads the latest snapshot whose seq <= durable ack floor and read-only-folds

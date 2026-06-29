@@ -222,7 +222,9 @@ func (s *jsFeedSink) Dlq(_ context.Context, tenant, reason, eventID string, seq 
 }
 
 type kvLease struct {
+	js     nats.JetStreamContext
 	kv     nats.KeyValue
+	bucket string
 	key    string
 	holder string // this worker's unique id
 	rev    uint64
@@ -242,7 +244,7 @@ func NewLeaseStore(js nats.JetStreamContext, holder string, ttl time.Duration) (
 			return nil, err
 		}
 	}
-	return &kvLease{kv: kv, key: "leader", holder: holder}, nil
+	return &kvLease{js: js, kv: kv, bucket: kvLeaseName, key: "leader", holder: holder}, nil
 }
 
 func (l *kvLease) Acquire(ctx context.Context) error {
@@ -270,12 +272,19 @@ func (l *kvLease) Acquire(ctx context.Context) error {
 	}
 }
 
-func (l *kvLease) Renew(_ context.Context) error {
-	rev, err := l.kv.Update(l.key, []byte(l.holder), l.rev)
+// Renew heartbeats the lease HONOURING ctx. nats.KeyValue.Update ignores context and rides the NATS
+// default request timeout (~5s) — far longer than the lease TTL — so a stalled broker would leave the
+// worker fanning out unfenced past the TTL. We issue the SAME revision-guarded KV update (its $KV
+// subject + expected-last-subject-sequence header) as a context-bounded JetStream publish, so the
+// caller's per-attempt timeout actually bounds the renew and shutdown can cancel it. @spec:RDL-03
+func (l *kvLease) Renew(ctx context.Context) error {
+	m := nats.NewMsg(fmt.Sprintf("$KV.%s.%s", l.bucket, l.key))
+	m.Data = []byte(l.holder)
+	pa, err := l.js.PublishMsg(m, nats.ExpectLastSequencePerSubject(l.rev), nats.Context(ctx))
 	if err != nil {
-		return err // lost the lease (expired + reclaimed, or a wrong-revision write)
+		return err // ctx timeout/cancel, or lost the lease (expired + reclaimed, or a wrong-revision write)
 	}
-	l.rev = rev
+	l.rev = pa.Sequence
 	return nil
 }
 

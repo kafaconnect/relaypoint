@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -119,11 +121,27 @@ func (s *fakeSink) feedsFor(agent, iid string) []pub {
 	return out
 }
 
-type fakeLease struct{}
+// fakeLease is the in-memory lease: a nil renew always succeeds (the healthy default the existing
+// fan-out tests rely on); a non-nil renew can return an error or BLOCK past a per-attempt budget
+// (honouring its ctx, like the fixed adapter) to exercise the fencing/budget paths.
+type fakeLease struct {
+	mu      sync.Mutex
+	renew   func(context.Context) error
+	renewed int
+}
 
-func (fakeLease) Acquire(context.Context) error { return nil }
-func (fakeLease) Renew(context.Context) error   { return nil }
-func (fakeLease) Release(context.Context) error { return nil }
+func (l *fakeLease) Acquire(context.Context) error { return nil }
+func (l *fakeLease) Renew(ctx context.Context) error {
+	l.mu.Lock()
+	l.renewed++
+	fn := l.renew
+	l.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(ctx)
+}
+func (l *fakeLease) Release(context.Context) error { return nil }
 
 type fakeSnaps struct {
 	mu    sync.Mutex
@@ -211,7 +229,7 @@ func runAll(t *testing.T, src *fakeSource, sink *fakeSink, snaps *fakeSnaps, cfg
 	if snaps == nil {
 		snaps = newFakeSnaps()
 	}
-	p := New(src, sink, fakeLease{}, snaps, cfg)
+	p := New(src, sink, &fakeLease{}, snaps, cfg)
 	// Run drains the fake source then returns context.Canceled when facts are exhausted.
 	err := p.Run(context.Background())
 	if err != nil && !errors.Is(err, context.Canceled) {
@@ -594,6 +612,134 @@ func TestHydrateFromSnapshotNoDropNoDup(t *testing.T) {
 	if e.Sequence != 4 {
 		t.Fatalf("worker2 projected seq %d, want 4", e.Sequence)
 	}
+}
+
+// @spec:RDL-03
+// The renew budget is DERIVED from the lease window: total retry time = attempts×perAttempt +
+// (attempts−1)×backoff stays strictly under the fencing slack (TTL − renewInterval) for any TTL, so
+// a TTL change cannot silently re-open the unfenced-processing window.
+func TestRenewBudgetDerivedUnderSlack(t *testing.T) {
+	for _, tc := range []struct{ ttl, interval time.Duration }{
+		{5 * time.Second, 2 * time.Second}, // production default
+		{10 * time.Second, 3 * time.Second},
+		{3 * time.Second, 1 * time.Second},
+		{500 * time.Millisecond, 200 * time.Millisecond}, // small TTL → backoff must shrink to fit
+	} {
+		perAttempt, attempts, backoff := renewBudget(tc.ttl, tc.interval)
+		if perAttempt <= 0 || attempts <= 0 {
+			t.Fatalf("ttl=%v interval=%v: non-positive budget perAttempt=%v attempts=%d", tc.ttl, tc.interval, perAttempt, attempts)
+		}
+		total := time.Duration(attempts)*perAttempt + time.Duration(attempts-1)*backoff
+		slack := tc.ttl - tc.interval
+		if total >= slack {
+			t.Fatalf("ttl=%v interval=%v: renew budget total %v must be < fencing slack %v", tc.ttl, tc.interval, total, slack)
+		}
+	}
+}
+
+// @spec:RDL-03
+// A stalled broker must not blow the fencing window: with a Renew that blocks (honouring its ctx,
+// like the fixed adapter), renewWithRetry's per-attempt timeouts must return the whole retry within
+// the (TTL − renewInterval) slack — the bug rode the NATS ~5s default per attempt (~15.6s total).
+func TestRenewWithRetryBoundedWhenLeaseStalls(t *testing.T) {
+	const ttl, interval = 5 * time.Second, 2 * time.Second
+	slack := ttl - interval
+	// Renew blocks ~1.2s/attempt unless its ctx fires first; the per-attempt budget (~700ms) must cut
+	// each attempt short. (Without the fix — passing the loop ctx, no per-attempt deadline — the full
+	// 1.2s rides every attempt and the total exceeds the slack.)
+	lease := &fakeLease{renew: func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1200 * time.Millisecond):
+			return errors.New("nats: timeout")
+		}
+	}}
+	p := New(newFakeSource(), newFakeSink(), lease, newFakeSnaps(), Config{LeaseTTL: ttl, LeaseRenew: interval})
+
+	start := time.Now()
+	err := p.renewWithRetry(context.Background(), newFence(context.Background()))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("a permanently-stalled renew must fail, not succeed")
+	}
+	if elapsed >= slack {
+		t.Fatalf("renewWithRetry took %v, must stay under the fencing slack %v — per-attempt ctx did not bound the stalled renew", elapsed, slack)
+	}
+}
+
+// @spec:RDL-03
+// The fence is the stop-the-world primitive: pause cancels the in-flight data context (so an
+// in-flight fan-out stops the instant the renew is overdue), holds the next begin, resume re-arms a
+// fresh context, and a confirmed fail exits the loop — never letting the data path run while the
+// lease cannot be proven held.
+func TestFencePauseStopsResumeFail(t *testing.T) {
+	f := newFence(context.Background())
+
+	c1 := f.begin()
+	if c1 == nil || c1.Err() != nil {
+		t.Fatal("a healthy fence must yield a live data context")
+	}
+	f.pause()
+	if c1.Err() == nil {
+		t.Fatal("pause must cancel the in-flight data context (stop-the-world)")
+	}
+
+	blocked := make(chan context.Context, 1)
+	go func() { blocked <- f.begin() }()
+	select {
+	case <-blocked:
+		t.Fatal("begin must block while the lease is paused (data path fenced)")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	f.resume()
+	select {
+	case c2 := <-blocked:
+		if c2 == nil || c2.Err() != nil {
+			t.Fatal("resume must yield a fresh live data context")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resume must unblock a paused begin")
+	}
+
+	f.fail(errors.New("renew exhausted"))
+	if f.begin() != nil {
+		t.Fatal("a failed (lost-lease) fence must not yield a data context")
+	}
+	if err := f.exitErr(); err == nil || !strings.Contains(err.Error(), "lease lost") {
+		t.Fatalf("exitErr after fail = %v, want a lease-lost error", err)
+	}
+}
+
+// @spec:RDL-03
+// End-to-end: a confirmed lease loss stops the worker — Run returns "lease lost" and the data path
+// halts (no more fan-out once the lease can no longer be proven held), so a standby can take over.
+func TestRunStopsOnLeaseLoss(t *testing.T) {
+	lease := &fakeLease{renew: func(context.Context) error { return errors.New("nats: timeout") }}
+	// The source blocks (no facts) so the loop sits live while the renew loop runs; on the confirmed
+	// loss begin() returns nil and Run exits with the lease-lost error.
+	p := New(blockingSource{}, newFakeSink(), lease, newFakeSnaps(),
+		Config{LeaseTTL: 200 * time.Millisecond, LeaseRenew: 60 * time.Millisecond})
+
+	err := p.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "lease lost") {
+		t.Fatalf("Run must return a lease-lost error on a confirmed renew failure, got %v", err)
+	}
+}
+
+// blockingSource yields no facts: Deliver blocks until its (fenced) context is cancelled, so a test
+// can keep the data loop live while the renew loop drives the fence.
+type blockingSource struct{}
+
+func (blockingSource) Deliver(ctx context.Context) (Fact, error) { <-ctx.Done(); return Fact{}, ctx.Err() }
+func (blockingSource) Ack(Fact) error                            { return nil }
+func (blockingSource) Nak(Fact) error                            { return nil }
+func (blockingSource) Delivered(Fact) int                        { return 0 }
+func (blockingSource) AckFloor(context.Context) (uint64, error)  { return 0, nil }
+func (blockingSource) FoldRange(context.Context, uint64, uint64) ([]Fact, error) {
+	return nil, nil
 }
 
 // --- small assertions ---

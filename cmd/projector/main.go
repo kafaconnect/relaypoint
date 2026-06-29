@@ -47,15 +47,16 @@ func main() {
 	must("feed-stream", projector.EnsureFeedStream(js, time.Hour, 10*time.Minute))
 
 	const maxDeliver = 5
+	const leaseTTL = 5 * time.Second // shared by the lease and the renew budget so they cannot drift
 	src, err := projector.NewLogSource(js, maxDeliver, 30*time.Second)
 	must("log-source", err)
 	sink := projector.NewFeedSink(js)
-	lease, err := projector.NewLeaseStore(js, workerID(), 5*time.Second)
+	lease, err := projector.NewLeaseStore(js, workerID(), leaseTTL)
 	must("lease", err)
 	snaps, err := projector.NewSnapshotStore(js)
 	must("snapshot-store", err)
 
-	cfg := projector.Config{MaxDeliver: maxDeliver}
+	cfg := projector.Config{MaxDeliver: maxDeliver, LeaseTTL: leaseTTL}
 	switch os.Getenv("PROJECTOR_FANOUT_MODE") {
 	case "tenant-roster":
 		// PRODUCTION tenant-shared fan-out: resolve a tenant's agents from desk's REAL roster (its
