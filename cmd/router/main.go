@@ -35,7 +35,7 @@ func main() {
 
 	url := envOr("NATS_URL", nats.DefaultURL)
 	user := envOr("NATS_USER", "router")
-	pass := envOr("NATS_PASSWORD", "router-dev")
+	pass := mustEnv("NATS_PASSWORD") // RH-11h: fail loud, never default to a shared dev credential
 
 	nc, err := nats.Connect(url, nats.UserInfo(user, pass), nats.Name("relaypoint-router"))
 	must("connect", err)
@@ -145,6 +145,15 @@ func envOr(k, d string) string {
 		return v
 	}
 	return d
+}
+
+func mustEnv(k string) string {
+	v := os.Getenv(k)
+	if v == "" {
+		slog.Error("fatal", "at", "env", "missing", k)
+		os.Exit(1)
+	}
+	return v
 }
 
 func must(label string, err error) {

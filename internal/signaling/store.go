@@ -108,25 +108,47 @@ func (s *jetstreamStore) Replay(subject string) ([]*Event, uint64, error) {
 // LogStreamName is the JetStream stream capturing every `tenant.*.interaction.*.log` fact; exported so least-privilege callers (e.g. the auth-callout trusted-backend JS.API grant, RH-08) scope to exactly this stream, not account-wide `$JS.API.>`.
 const LogStreamName = "INTERACTION_LOGS"
 
+// Operability backstop ceilings (RH-11c), defaulted in code, never env. The `.log` is the SOURCE OF
+// TRUTH that Replay/OCC rebuild from, so these are sized to never trigger in normal SME→ME operation
+// — only to cap a pathological runaway (a fact-spam bug or never-ended interactions accumulating
+// forever) before it can fill a single-node disk. A monitor MUST alert well before either is reached
+// (see docs/runbooks): hitting them with DiscardOld would drop the OLDEST whole-stream facts and
+// corrupt an open interaction's replay, so the alert — not the ceiling — is the real safeguard.
+const (
+	logStreamMaxAge   = 365 * 24 * time.Hour    // > any realistic open-interaction lifetime
+	logStreamMaxBytes = 50 * 1024 * 1024 * 1024 // 50 GiB total across all interactions
+)
+
 func logStreamConfig() *nats.StreamConfig {
 	return &nats.StreamConfig{
-		Name:              LogStreamName,
-		Subjects:          []string{"tenant.*.interaction.*.log"},
-		Storage:           nats.FileStorage,
-		Retention:         nats.LimitsPolicy,
-		Discard:           nats.DiscardOld,
+		Name:      LogStreamName,
+		Subjects:  []string{"tenant.*.interaction.*.log"},
+		Storage:   nats.FileStorage,
+		Retention: nats.LimitsPolicy,
+		Discard:   nats.DiscardOld, // whole-stream, NEVER DiscardNewPerSubject: per-subject discard would drop an open interaction's head facts
+		MaxAge:    logStreamMaxAge,
+		MaxBytes:  logStreamMaxBytes,
+		// -1 = unlimited per subject: a single interaction's `.log` is never capped (its head must survive for replay)
 		MaxMsgsPerSubject: -1,
 	}
 }
 
-func EnsureLogStream(js nats.JetStreamContext) error {
-	cfg := logStreamConfig()
-	if _, err := js.AddStream(cfg); err != nil {
-		if _, uerr := js.UpdateStream(cfg); uerr != nil {
-			return err
+type addUpdateStreamFn func(*nats.StreamConfig, ...nats.JSOpt) (*nats.StreamInfo, error)
+
+// ensureStream creates-or-reconfigures the stream; when BOTH the create and the reconcile fail it
+// returns the UpdateStream error — that is the one describing why the EXISTING stream couldn't be
+// brought to spec, the actionable failure (a create error on an already-present stream is just "exists").
+func ensureStream(add, update addUpdateStreamFn, cfg *nats.StreamConfig) error {
+	if _, err := add(cfg); err != nil {
+		if _, uerr := update(cfg); uerr != nil {
+			return uerr
 		}
 	}
 	return nil
+}
+
+func EnsureLogStream(js nats.JetStreamContext) error {
+	return ensureStream(js.AddStream, js.UpdateStream, logStreamConfig())
 }
 
 // ResetLogStream is the ADR-0002 protobuf-cutover step: deletes+recreates INTERACTION_LOGS so no JSON-era fact survives (a protobuf router unmarshalling a JSON fact bricks that interaction); destructive dev-only, gated by RP_RESET_LOG_STREAM.

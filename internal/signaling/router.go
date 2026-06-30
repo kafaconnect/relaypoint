@@ -477,14 +477,22 @@ func isParticipationCommand(t string) bool {
 	return false
 }
 
+// RP carries membership as delivery STRUCTURE, not a domain-verb census (RH-11a): an assign and a
+// transfer both structurally OPEN a membership interval, so both land as `participant.joined`. The
+// domain distinction (assign vs transfer) is desk's, conveyed by the participation COMMAND type, not
+// by a distinct RP fact — so the never-emitted `interaction.assigned` fact type is dropped, not added.
 func isParticipationFact(t string) bool {
 	switch t {
-	case "participant.joined", "participant.left", "interaction.assigned":
+	case "participant.joined", "participant.left":
 		return true
 	}
 	return false
 }
 
+// participationData is the CONTRACT for a privileged participation command's `Command.Data` (RH-11b):
+// JSON, not protobuf — a deliberate exception to the protobuf-everywhere wire because this payload
+// crosses only the trusted-backend boundary (desk → router), never an untrusted client. A protobuf
+// participation message is a TODO if a second producer ever needs it; until then this struct is the schema.
 type participationData struct {
 	Agent     string `json:"agent"` // assign/unassign target; transfer = the NEW agent
 	From      string `json:"from"`  // transfer only: the agent being transferred away

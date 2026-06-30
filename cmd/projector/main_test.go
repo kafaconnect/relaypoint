@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,9 +13,37 @@ func TestProjectorNATSUserDefaultIsProjector(t *testing.T) {
 	if defaultNATSUser != "projector" {
 		t.Errorf("default NATS_USER = %q, want projector (router was the diverged wrong default)", defaultNATSUser)
 	}
-	if defaultNATSPassword == "router-dev" {
-		t.Errorf("default NATS_PASSWORD still the router credential %q", defaultNATSPassword)
+}
+
+// @spec:router.config.fail-loud-password
+func TestNATSPasswordFailLoud(t *testing.T) {
+	if os.Getenv("RH11_FAILLOUD") == "1" {
+		mustEnv("NATS_PASSWORD") // child: NATS_PASSWORD unset → must os.Exit(1)
+		return
 	}
+	if got := runFailLoudChild(t); got == nil {
+		t.Fatal("mustEnv(NATS_PASSWORD) with the var unset must exit non-zero, but the child exited 0")
+	}
+}
+
+// runFailLoudChild re-execs this test binary running only the fail-loud test, with NATS_PASSWORD
+// stripped and RH11_FAILLOUD=1 so the child takes the os.Exit branch; it returns the non-nil exit error.
+func runFailLoudChild(t *testing.T) error {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestNATSPasswordFailLoud")
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "NATS_PASSWORD=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = append(env, "RH11_FAILLOUD=1")
+	err := cmd.Run()
+	if exitErr, ok := err.(*exec.ExitError); ok && !exitErr.Success() {
+		return exitErr
+	}
+	return nil
 }
 
 // @spec:deploy.nats.projector-user

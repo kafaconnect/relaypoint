@@ -22,10 +22,7 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/projector"
 )
 
-const (
-	defaultNATSUser     = "projector"
-	defaultNATSPassword = "projector-dev"
-)
+const defaultNATSUser = "projector"
 
 func main() {
 	if health.IsProbe(os.Args) {
@@ -43,7 +40,7 @@ func main() {
 
 	url := envOr("NATS_URL", nats.DefaultURL)
 	user := envOr("NATS_USER", defaultNATSUser)
-	pass := envOr("NATS_PASSWORD", defaultNATSPassword)
+	pass := mustEnv("NATS_PASSWORD") // RH-11h: fail loud, never default to a shared dev credential
 
 	nc, err := nats.Connect(url, nats.UserInfo(user, pass), nats.Name("relaypoint-projector"))
 	must("connect", err)

@@ -27,8 +27,7 @@ const (
 	feedControlSchema = signaling.SchemaV1
 	controlRevoked    = "feed.revoked"
 
-	// fanoutConcurrency collapses N sequential publish RTTs into ~one; only one fact is in flight (MaxAckPending=1) so it also caps total concurrent publishes. @spec: RDL-01
-	fanoutConcurrency = 32
+	defaultFanoutConcurrency = 32
 
 	// @spec:RDL-03
 	leaseRenewAttempts     = 3
@@ -90,6 +89,9 @@ type Config struct {
 	RosterRetryWindow time.Duration
 	HealthAddr        string
 
+	// FanoutConcurrency collapses N sequential per-recipient publish RTTs into ~one; MaxAckPending=1 keeps a single fact in flight, so this also bounds total concurrent publishes. @spec: RDL-01
+	FanoutConcurrency int
+
 	// DEV/TEST fan-out override (nil in prod): desk M1 emits no participation facts yet, so the stock per-participation fan-out would leave every feed empty; participation is still folded.
 	TenantWideAgents map[string][]string
 
@@ -124,6 +126,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.HealthAddr == "" {
 		c.HealthAddr = ":8222"
+	}
+	if c.FanoutConcurrency <= 0 {
+		c.FanoutConcurrency = defaultFanoutConcurrency
 	}
 	return c
 }
@@ -486,7 +491,7 @@ func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, 
 	}
 	start := time.Now()
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(fanoutConcurrency)
+	g.SetLimit(p.cfg.FanoutConcurrency)
 	for _, agent := range recipients {
 		agent := agent
 		dedup := fmt.Sprintf("%s.%s.%s.%d", e.TenantId, agent, iid, e.Sequence)
