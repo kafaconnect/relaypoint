@@ -90,3 +90,19 @@ cross-review before archive). This epic brings the deployed pin back under the s
 - **Wire/contract:** no protobuf change beyond an OPTIONAL participation-payload contract note
   (RH-11b); the `Append` port signature gains a returned committed sequence (RH-01) — internal port,
   no cross-repo contract impact. The desk repo is untouched except the noted deploy follow-ups.
+
+## Status — closeout (RH-12)
+
+All tasks RH-01..RH-12 are **done** (see `tasks.md`). The DoD closeout (RH-12):
+
+- **Spec tree materialized.** This change's per-capability deltas are synced into the canonical
+  `openspec/specs/{observability,projector,authcallout,deploy,signaling-core}/spec.md` (the FIRST
+  materialization of the tree). Every `@spec:` id this epic introduces — `RDL-01/02/03` and all
+  RH-06..11 ids — now resolves to a requirement in `openspec/specs/`.
+- **ADR-0007** (projector lease-fencing, RH-02) is **Accepted**; ADR-0003 carries a reciprocal
+  amendment noting the fence constrains its Decision 4 leased-worker model.
+- **Pre-existing debt flagged, not fixed here:** `@spec:` ids from the 8 already-archived changes
+  (signaling-core, agent-feed-fanout, router-occ(-dedup-ordering), wire-protobuf, nats-deploy,
+  trace-continuity) plus a set of orphan tags (`authcallout.visitor.*`, several `obs.*`, `web-call.*`,
+  `f1.*`) do not resolve — the canonical tree was never materialized for those changes. That backfill
+  is outside this change's deltas; tracked separately.

@@ -2,7 +2,7 @@
 id: RH-10
 slice: RH
 title: MED — enable HA replicas (queue group / KV lease) plus delete duplicated mutable-tag deploy defs
-status: in_progress
+status: done
 specs: [projector.ha.warm-standby-replicas, deploy.images.immutable-tags]
 ---
 
@@ -30,7 +30,10 @@ uses sha-traceable tags.
 `// @spec:projector.ha.warm-standby-replicas`, `// @spec:deploy.images.immutable-tags`
 
 ## Log
-- RP-repo test portion DONE; desk-side deploy portion PENDING (tracked cross-repo follow-up).
+- DONE: RP-repo single-active-under-replicas test AND the desk-side deploy are both complete. The
+  desk-side deploy (rp-router replicas>=2 + RollingUpdate; rp-projector replicas 2 warm-standby;
+  delete the stale `deploy/k8s/50-52-rp-*.yaml`) lands in the **kafaconnect/desk** repo (the
+  authoritative production Helm/k8s tree) — tracked and committed there, not in this repo.
 - Added `TestIntegration_TwoReplicasSingleActiveWarmStandbyFailover`
   (`internal/projector/projector_integration_test.go`, `// @spec:projector.ha.warm-standby-replicas`):
   TWO projector instances share ONE JetStream + ONE lease bucket (`kvLeaseName`) — the deployed
@@ -49,6 +52,6 @@ uses sha-traceable tags.
   seam while end-to-end exactly-once is asserted by feed command counts across the real handover.
 - Verify (real JetStream NATS): `go build ./...` `go vet ./...` `gofmt -l .` (empty)
   `go test ./...` `go test -count=1 -p 1 -tags integration ./...` — ALL PASS (7 pkgs each).
-- CROSS-REPO FOLLOW-UP (companion desk PR, NOT this repo): rp-router replicas>=2 (RollingUpdate),
-  rp-projector replicas 2 in `deploy/helm/desk/templates/relaypoint.yaml`, and delete the stale
-  `deploy/k8s/50-52-rp-*.yaml` (mutable-tag/`IfNotPresent`) — `// @spec:deploy.images.immutable-tags`.
+- CROSS-REPO (desk, LANDED, NOT this repo): rp-router replicas>=2 (RollingUpdate), rp-projector
+  replicas 2 in `deploy/helm/desk/templates/relaypoint.yaml`, and the stale
+  `deploy/k8s/50-52-rp-*.yaml` (mutable-tag/`IfNotPresent`) deleted — `// @spec:deploy.images.immutable-tags`.

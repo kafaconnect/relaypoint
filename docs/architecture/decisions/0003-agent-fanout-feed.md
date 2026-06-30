@@ -197,3 +197,14 @@ publish failure leaves the source un-acked (`Nak` → redelivery; already-publis
 no-op). This does **not** change the still-deferred sharding decision above: cross-interaction
 concurrency (a partitioned consumer fleet) remains the lag-triggered scale-out path, gated on
 measured projector backlog under concurrent interactions. `@spec: RDL-01`.
+
+## Amendment 2026-06-30 — lease-renew fence (see ADR-0007)
+
+Decision 4's leased single-active worker (KV lease, TTL ~5s) is further constrained by
+**ADR-0007 (Accepted)**: the lease-renew path must honour `ctx`, bound total retry time to
+`< (TTL − renewInterval)` with attempts derived from the TTL, and **stop the data path the instant a
+renew is overdue** — before a standby could re-acquire the lease — so a former and a new holder never
+both fan out or both write the participation snapshot. ADR-0007 corrects the un-reviewed lease-renew
+tolerance perf commit (`467c1c8`) that had widened the unfenced window to ~3× the TTL; it amends, not
+supersedes, this decision (the single-active fold, `MaxAckPending=1`, and snapshot model are
+unchanged). `@spec: RDL-03`.
