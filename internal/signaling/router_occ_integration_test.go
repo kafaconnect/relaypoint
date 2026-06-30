@@ -185,3 +185,70 @@ func TestOCC_InterleavedInteractionsNoSpuriousConflict(t *testing.T) {
 		}
 	}
 }
+
+// @spec:router.rebuild.no-wait-fetch
+func TestReplay_DrainedSubjectNoMaxWaitTail(t *testing.T) {
+	rnc, err := nats.Connect(urlOr("NATS_URL_ROUTER", "nats://router:router-dev@localhost:14222"))
+	if err != nil {
+		t.Skipf("no NATS: %v", err)
+	}
+	rjs, err := rnc.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := ResetLogStream(rjs); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	t.Cleanup(func() { rnc.Drain() })
+	store := NewJetStreamStore(rjs)
+	r := NewRouter(store, WithDevMode())
+
+	const tn = "t1"
+	iid := fmt.Sprintf("rep%d", time.Now().UnixNano())
+
+	// A never-written subject must rebuild IMMEDIATELY — no 250ms MaxWait tail (the old Fetch paid it
+	// on every first access).
+	t0 := time.Now()
+	ev, last, err := store.Replay(logSubjectFor(tn, iid))
+	if err != nil {
+		t.Fatalf("replay empty: %v", err)
+	}
+	if len(ev) != 0 || last != 0 {
+		t.Fatalf("empty replay want 0 facts / 0 seq, got %d / %d", len(ev), last)
+	}
+	if d := time.Since(t0); d > 100*time.Millisecond {
+		t.Fatalf("empty-subject replay paid a MaxWait tail: %v (want <100ms)", d)
+	}
+
+	for _, c := range []*Command{
+		{CommandId: "s", TenantId: tn, ActorId: "u1", Type: "interaction.started", Medium: "chat"},
+		{CommandId: "m1", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatBytes("a")},
+		{CommandId: "m2", TenantId: tn, ActorId: "u1", Type: "message.created", Medium: "chat", Data: chatBytes("b")},
+	} {
+		if got := handle(r, tn, iid, c); got.Status != statusAccepted {
+			t.Fatalf("seed %s: %+v", c.CommandId, got)
+		}
+	}
+
+	// A populated-but-drained subject must ALSO return immediately and yield identical state.
+	t1 := time.Now()
+	ev, last, err = store.Replay(logSubjectFor(tn, iid))
+	if err != nil {
+		t.Fatalf("replay populated: %v", err)
+	}
+	if d := time.Since(t1); d > 100*time.Millisecond {
+		t.Fatalf("drained populated-subject replay paid a MaxWait tail: %v (want <100ms)", d)
+	}
+	if len(ev) != 3 || ev[0].Sequence != 1 || ev[2].Sequence != 3 || last == 0 {
+		t.Fatalf("replay state wrong: %d facts, lastSubjSeq %d (want 3 facts seq 1..3)", len(ev), last)
+	}
+
+	// Identical-state guarantee: a repeat replay returns the same facts + same OCC token.
+	ev2, last2, err := store.Replay(logSubjectFor(tn, iid))
+	if err != nil {
+		t.Fatalf("replay#2: %v", err)
+	}
+	if len(ev2) != len(ev) || last2 != last {
+		t.Fatalf("replay not deterministic: facts %d vs %d, seq %d vs %d", len(ev2), len(ev), last2, last)
+	}
+}

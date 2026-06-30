@@ -2,7 +2,7 @@
 id: RH-07
 slice: RH
 title: MED — no-wait rebuild fetch plus bounded in-process router state
-status: todo
+status: done
 specs: [router.rebuild.no-wait-fetch, router.state.idle-evict]
 ---
 
@@ -30,4 +30,25 @@ interactions grow router memory at ME multi-tenant scale (no router KV snapshot,
 `// @spec:router.rebuild.no-wait-fetch`, `// @spec:router.state.idle-evict`
 
 ## Log
-- todo
+- done. `store.go`: `Replay` no longer pays the ~250ms `Fetch(128, MaxWait)` tail. It now bounds the
+  drain by the subject's last STREAM seq via `GetLastMsg` (real-time, no lag) and re-checks it after
+  each drain pass — an empty subject returns before any consumer, a drained one stops the instant it
+  reads the last fact, and the re-check catches a straggler appended mid-drain so the OCC token stays
+  current under contention (every productive fetch returns immediately; `replayFetchMaxWait` is only a
+  hung-server safety bound). Chosen primitive: `GetLastMsg`-targeted drain + re-check (not a literal
+  pull no_wait, whose legacy resend re-blocks; not a subject-count, which lags under concurrent appends
+  and caused an OCC poison-storm).
+- `router.go`: `inter` gained idle-TTL + LRU eviction (`pruneLocked` on insert; `lastUsed` stamped on
+  every access; defaults `maxInter=4096`, `idleTTL=30m`) and `results` a per-interaction FIFO dedup
+  cache via `putResult` (default `maxResults=1024`). Both are rebuildable from the log, so eviction is
+  safe (broker dedup + re-fold cover an evicted command_id). Tunables are `WithStateLimits(...)` /
+  defaulted struct fields — no new env.
+- Companion (enabled by the now-cheap rebuild): the OCC loser re-folds up to `maxRefold` (default 32)
+  times before poisoning, restoring the liveness the old 250ms-rebuild tail provided as accidental
+  backoff; without it a tailless rebuild let tight single-subject contention exhaust the 1-retry budget
+  and poison-cascade. `TestOCC_ConcurrentSingleInteraction` stays 10/10.
+- New tests: `// @spec:router.rebuild.no-wait-fetch` `TestReplay_DrainedSubjectNoMaxWaitTail`
+  (integration: empty + populated-drained replay both <100ms, identical state, deterministic token);
+  `// @spec:router.state.idle-evict` `TestCore_IdleEvictionRebuildsOnNextAccess` and
+  `TestCore_LRUCapAndResultsBounded` (idle + LRU eviction, bounded results, transparent rebuild-on-
+  next-access with no double-append after eviction).

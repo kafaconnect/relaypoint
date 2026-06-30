@@ -27,20 +27,49 @@ type Router struct {
 	id      func() string
 	devMode bool // when true an unauthenticated command runs in the permissive shared-`client` posture; prod leaves this false → fail-closed (A1)
 
+	// Bounded in-process cache (RH-07): the durable log is the source of truth, so `inter` is an
+	// idle-TTL + LRU cache and each interaction's `results` a FIFO dedup cache. Both are rebuilt from
+	// the log on next access — that is why evicting either is safe (a retry re-folds + re-checks dedup,
+	// and the broker dedups the append regardless of the in-memory cache).
+	maxInter   int
+	idleTTL    time.Duration
+	maxResults int
+	// RH-07: the now-cheap rebuild lets an OCC loser re-fold this many times before poisoning. The
+	// old 250ms-rebuild tail was an accidental backoff that kept the 1-retry budget enough; a tailless
+	// rebuild removes it, so without a wider budget tight contention exhausts the retry and poisons.
+	maxRefold int
+
 	mu    sync.Mutex
 	inter map[string]*interactionState
 	load  singleflight.Group // one rebuild per key: concurrent callers share it, no stale re-insert
 }
 
 type interactionState struct {
-	mu        sync.Mutex
-	seq       int64
-	streamSeq uint64 // subject's last STREAM sequence — the OCC token for the next append (≠ seq)
-	status    string
-	results   map[string]storedResult
-	part      *ParticipationView       // folded membership, re-checked after every OCC rebuild (A3)
-	parents   map[string]parentBinding // privileged parent command_id -> the sub-facts it produced (A5/A7)
-	poisoned  bool                     // seq untrustworthy → callers must rebuild, not reuse it
+	mu          sync.Mutex
+	seq         int64
+	streamSeq   uint64 // subject's last STREAM sequence — the OCC token for the next append (≠ seq)
+	status      string
+	results     map[string]storedResult
+	resultOrder []string                 // FIFO of command_ids backing results' bounded eviction; rebuildable from the log
+	part        *ParticipationView       // folded membership, re-checked after every OCC rebuild (A3)
+	parents     map[string]parentBinding // privileged parent command_id -> the sub-facts it produced (A5/A7)
+	poisoned    bool                     // seq untrustworthy → callers must rebuild, not reuse it
+	lastUsed    time.Time                // r.mu-guarded access stamp driving idle-TTL + LRU eviction of inter
+}
+
+// putResult records a command's dedup entry, evicting the oldest by insertion order once the cache
+// exceeds max; the dropped entries are rebuildable from the log, so a later retry still dedups via
+// the broker + a re-fold.
+func (st *interactionState) putResult(id string, sr storedResult, max int) {
+	if _, exists := st.results[id]; !exists {
+		st.resultOrder = append(st.resultOrder, id)
+	}
+	st.results[id] = sr
+	for max > 0 && len(st.results) > max {
+		oldest := st.resultOrder[0]
+		st.resultOrder = st.resultOrder[1:]
+		delete(st.results, oldest)
+	}
 }
 
 // parentBinding records a privileged command's sub-facts so a divergent retry of the same parent command_id is rejected before re-emitting any sub-fact (A5); rebuilt from each sub-fact's CausedBy.
@@ -61,12 +90,39 @@ func WithIDGen(gen func() string) Option    { return func(r *Router) { r.id = ge
 // WithDevMode opts into the permissive shared-`client` posture (subject suffix as advisory author, role/participation gates off); MUST stay opt-in so production fails closed (A1).
 func WithDevMode() Option { return func(r *Router) { r.devMode = true } }
 
+// WithStateLimits overrides the bounded-cache tunables (RH-07): max cached interactions, max
+// per-interaction dedup entries, and the idle-eviction TTL. A non-positive value keeps the default.
+func WithStateLimits(maxInter, maxResults int, idleTTL time.Duration) Option {
+	return func(r *Router) {
+		if maxInter > 0 {
+			r.maxInter = maxInter
+		}
+		if maxResults > 0 {
+			r.maxResults = maxResults
+		}
+		if idleTTL > 0 {
+			r.idleTTL = idleTTL
+		}
+	}
+}
+
 func defaultID() string {
 	return uuid.Must(uuid.NewV7()).String()
 }
 
+const (
+	defaultMaxInter   = 4096
+	defaultMaxResults = 1024
+	defaultIdleTTL    = 30 * time.Minute
+	defaultMaxRefold  = 32
+)
+
 func NewRouter(store LogStore, opts ...Option) *Router {
-	r := &Router{store: store, now: time.Now, id: defaultID, inter: map[string]*interactionState{}}
+	r := &Router{
+		store: store, now: time.Now, id: defaultID, inter: map[string]*interactionState{},
+		maxInter: defaultMaxInter, maxResults: defaultMaxResults, idleTTL: defaultIdleTTL,
+		maxRefold: defaultMaxRefold,
+	}
 	for _, o := range opts {
 		o(r)
 	}
@@ -121,6 +177,9 @@ func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 	key := tenant + "/" + iid
 	r.mu.Lock()
 	st := r.inter[key]
+	if st != nil {
+		st.lastUsed = r.now()
+	}
 	r.mu.Unlock()
 	if st != nil {
 		return st, nil
@@ -128,6 +187,7 @@ func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 	v, err, _ := r.load.Do(key, func() (any, error) {
 		r.mu.Lock()
 		if e := r.inter[key]; e != nil {
+			e.lastUsed = r.now()
 			r.mu.Unlock()
 			return e, nil
 		}
@@ -137,7 +197,9 @@ func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 			return nil, berr
 		}
 		r.mu.Lock()
+		built.lastUsed = r.now()
 		r.inter[key] = built
+		r.pruneLocked()
 		r.mu.Unlock()
 		return built, nil
 	})
@@ -145,6 +207,30 @@ func (r *Router) getState(tenant, iid string) (*interactionState, error) {
 		return nil, err
 	}
 	return v.(*interactionState), nil
+}
+
+// pruneLocked bounds inter: it first evicts entries idle past idleTTL, then the least-recently-used
+// until at/under maxInter. The just-inserted entry carries the freshest lastUsed, so it is never the
+// one dropped. Caller holds r.mu.
+func (r *Router) pruneLocked() {
+	if r.idleTTL > 0 {
+		cutoff := r.now().Add(-r.idleTTL)
+		for k, st := range r.inter {
+			if st.lastUsed.Before(cutoff) {
+				delete(r.inter, k)
+			}
+		}
+	}
+	for r.maxInter > 0 && len(r.inter) > r.maxInter {
+		var lruKey string
+		var lruAt time.Time
+		for k, st := range r.inter {
+			if lruKey == "" || st.lastUsed.Before(lruAt) {
+				lruKey, lruAt = k, st.lastUsed
+			}
+		}
+		delete(r.inter, lruKey)
+	}
 }
 
 func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
@@ -162,9 +248,9 @@ func (r *Router) rebuild(tenant, iid string) (*interactionState, error) {
 		}
 		applyTransition(st, e.EventType)
 		if e.CommandId != "" {
-			st.results[e.CommandId] = storedResult{payloadHash: e.PayloadHash, result: &CommandResult{
+			st.putResult(e.CommandId, storedResult{payloadHash: e.PayloadHash, result: &CommandResult{
 				CommandId: e.CommandId, Status: statusAccepted, CausedBy: e.CommandId,
-			}}
+			}}, r.maxResults)
 		}
 		if isParticipationFact(e.EventType) && e.CausedBy != "" {
 			b, ok := st.parents[e.CausedBy]
@@ -288,7 +374,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 
 		if !legalTransition(st.status, cmd.Type) {
 			res.Status, res.Reason = statusRejected, fmt.Sprintf("illegal transition %q from state %q", cmd.Type, st.status)
-			st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
+			st.putResult(cmd.CommandId, storedResult{payloadHash: ph, result: res}, r.maxResults)
 			return res
 		}
 
@@ -303,9 +389,9 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		// dedupID is deterministic per (tenant,interaction,command) so a retry is exactly-once even if a prior ack was lost.
 		d, cseq, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+cmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
-			// Lost the race: re-fold once and retry; if we still lose, surface a retryable rejection (never append behind a stale seq).
+			// Lost the race: re-fold and retry (up to maxRefold); if we still lose, surface a retryable rejection (never append behind a stale seq).
 			fresh, ferr := r.rebuild(tenant, iid)
-			if ferr != nil || attempt >= 1 {
+			if ferr != nil || attempt >= r.maxRefold {
 				st.poisoned = true
 				r.mu.Lock()
 				delete(r.inter, tenant+"/"+iid)
@@ -316,7 +402,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			st.seq, st.streamSeq, st.status, st.part, st.parents = fresh.seq, fresh.streamSeq, fresh.status, fresh.part, fresh.parents
 			for k, v := range fresh.results {
 				if _, ok := st.results[k]; !ok {
-					st.results[k] = v
+					st.putResult(k, v, r.maxResults)
 				}
 			}
 			continue
@@ -353,7 +439,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		st.seq, st.streamSeq, st.status, st.part, st.parents = fresh.seq, fresh.streamSeq, fresh.status, fresh.part, fresh.parents
 		for k, v := range fresh.results {
 			if _, ok := st.results[k]; !ok {
-				st.results[k] = v
+				st.putResult(k, v, r.maxResults)
 			}
 		}
 		if committed, ok := st.results[cmd.CommandId]; ok {
@@ -362,14 +448,14 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			}
 			return committed.result
 		}
-		st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
+		st.putResult(cmd.CommandId, storedResult{payloadHash: ph, result: res}, r.maxResults)
 		return res
 	}
 	st.seq++
 	// OCC token = committed stream seq, not prev+1: shared stream (RH-01)
 	st.streamSeq = committedSeq
 	applyTransition(st, cmd.Type)
-	st.results[cmd.CommandId] = storedResult{payloadHash: ph, result: res}
+	st.putResult(cmd.CommandId, storedResult{payloadHash: ph, result: res}, r.maxResults)
 
 	if st.status == "ended" { // the durable log rebuilds state if a late command arrives
 		r.mu.Lock()
@@ -559,7 +645,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 		_, cseq, aerr := r.store.Append(ctx, logSubjectFor(tenant, iid), payload, tenant+"."+iid+"."+fcmd.CommandId, st.streamSeq)
 		if errors.Is(aerr, ErrOCCConflict) {
 			fresh, ferr := r.rebuild(tenant, iid)
-			if ferr != nil || attempt >= 1 {
+			if ferr != nil || attempt >= r.maxRefold {
 				st.poisoned = true
 				r.evict(tenant, iid)
 				res.Status, res.Reason = statusRejected, "lost concurrent append — retry"
@@ -568,7 +654,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 			st.seq, st.streamSeq, st.status, st.part, st.parents = fresh.seq, fresh.streamSeq, fresh.status, fresh.part, fresh.parents
 			for k, v := range fresh.results {
 				if _, ok := st.results[k]; !ok {
-					st.results[k] = v
+					st.putResult(k, v, r.maxResults)
 				}
 			}
 			continue
@@ -584,7 +670,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 		applyTransition(st, fcmd.Type)
 		st.part.ApplyFact(ev)
 		res.Status, res.CausedBy = statusAccepted, fcmd.CommandId
-		st.results[fcmd.CommandId] = storedResult{payloadHash: ph, result: res}
+		st.putResult(fcmd.CommandId, storedResult{payloadHash: ph, result: res}, r.maxResults)
 		if st.status == "ended" {
 			r.evict(tenant, iid)
 		}
