@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -16,7 +17,11 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-var errRosterUnavailable = errors.New("projector: roster unavailable after in-process retry window")
+var (
+	errRosterUnavailable = errors.New("projector: roster unavailable after in-process retry window")
+	errNotLeader         = errors.New("projector: not holding lease")
+	errPaused            = errors.New("projector: lease renew stalled")
+)
 
 const (
 	feedControlSchema = signaling.SchemaV1
@@ -83,6 +88,7 @@ type Config struct {
 	LeaseRenew        time.Duration
 	LeaseTTL          time.Duration
 	RosterRetryWindow time.Duration
+	HealthAddr        string
 
 	// DEV/TEST fan-out override (nil in prod): desk M1 emits no participation facts yet, so the stock per-participation fan-out would leave every feed empty; participation is still folded.
 	TenantWideAgents map[string][]string
@@ -116,6 +122,9 @@ func (c Config) withDefaults() Config {
 	if c.RosterRetryWindow <= 0 {
 		c.RosterRetryWindow = 90 * time.Second
 	}
+	if c.HealthAddr == "" {
+		c.HealthAddr = ":8222"
+	}
 	return c
 }
 
@@ -129,6 +138,7 @@ type Projector struct {
 	st         *state
 	sinceSnap  int
 	lastAckSeq uint64
+	fenceP     atomic.Pointer[fence]
 }
 
 func New(src LogSource, sink FeedSink, lease LeaseStore, snaps SnapshotStore, cfg Config) *Projector {
@@ -148,6 +158,7 @@ func (p *Projector) Run(ctx context.Context) error {
 	}
 
 	fence := newFence(ctx)
+	p.fenceP.Store(fence)
 	renewCtx, stopRenew := context.WithCancel(ctx)
 	defer stopRenew()
 	go p.renewLoop(renewCtx, fence)
@@ -318,6 +329,30 @@ func (f *fence) exitErr() error {
 		return fmt.Errorf("lease lost: %w", f.lost)
 	}
 	return f.parent.Err()
+}
+
+func (f *fence) health() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lost != nil {
+		return fmt.Errorf("lease lost: %w", f.lost)
+	}
+	if f.parent.Err() != nil {
+		return f.parent.Err()
+	}
+	if f.paused {
+		return errPaused
+	}
+	return nil
+}
+
+// WHY: a standby (no lease), a renew-stall pause, and a lost lease are all NOT-ready — only the active leader passes readiness so a wedged/standby pod sheds probe traffic (RH-06).
+func (p *Projector) Ready() error {
+	f := p.fenceP.Load()
+	if f == nil {
+		return errNotLeader
+	}
+	return f.health()
 }
 
 // Loads the snapshot at <= ack floor then read-only-folds (snap_seq, ack_floor] — never a replay from zero.

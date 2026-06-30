@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,11 +14,15 @@ import (
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kafaconnect/relaypoint/internal/health"
 	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
 func main() {
+	if health.IsProbe(os.Args) {
+		os.Exit(health.RunProbe(health.DefaultAddr))
+	}
 	slog.SetDefault(obs.New("relaypoint-router"))
 
 	// OTLP trace export (M1.5 F5b) — no-op when the OTLP endpoint is unset; fail-open on a setup error.
@@ -73,6 +79,21 @@ func main() {
 		}
 	})
 	must("subscribe", err)
+
+	healthCheck := func() error {
+		if !nc.IsConnected() {
+			return errors.New("nats disconnected")
+		}
+		if _, jerr := js.AccountInfo(); jerr != nil {
+			return fmt.Errorf("jetstream unreachable: %w", jerr)
+		}
+		return nil
+	}
+	go func() {
+		if herr := health.Serve(context.Background(), health.DefaultAddr, healthCheck, healthCheck); herr != nil {
+			slog.Error("health.serve", "err", herr)
+		}
+	}()
 
 	slog.Info("router.up", "url", url, "stream", "INTERACTION_LOGS")
 	stop := make(chan os.Signal, 1)

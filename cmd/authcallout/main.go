@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,10 +15,14 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/kafaconnect/relaypoint/internal/authcallout"
+	"github.com/kafaconnect/relaypoint/internal/health"
 	"github.com/kafaconnect/relaypoint/internal/obs"
 )
 
 func main() {
+	if health.IsProbe(os.Args) {
+		os.Exit(health.RunProbe(health.DefaultAddr))
+	}
 	slog.SetDefault(obs.New("relaypoint-authcallout"))
 
 	// OTLP trace export (M1.5 F5b) — no-op when the OTLP endpoint is unset; fail-open on a setup error.
@@ -54,6 +59,18 @@ func main() {
 	if _, err := resp.Subscribe(nc); err != nil {
 		must("subscribe", err)
 	}
+
+	healthCheck := func() error {
+		if !nc.IsConnected() {
+			return errors.New("nats disconnected")
+		}
+		return nil
+	}
+	go func() {
+		if herr := health.Serve(context.Background(), health.DefaultAddr, healthCheck, healthCheck); herr != nil {
+			slog.Error("health.serve", "err", herr)
+		}
+	}()
 
 	slog.Info("authcallout.up", "url", url, "account", account, "subject", authcallout.AuthRequestSubject)
 	stop := make(chan os.Signal, 1)
