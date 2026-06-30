@@ -174,3 +174,98 @@ func TestGrantsForRejectsIncompleteIdentity(t *testing.T) {
 		t.Fatal("expected error for empty conn id")
 	}
 }
+
+// @spec:authcallout.role.fail-closed-unknown
+func TestGrantsForUnknownRoleFailsClosed(t *testing.T) {
+	for _, id := range []signaling.Identity{
+		{TenantID: "T", UserID: "x", Role: signaling.Role("superuser")},
+		{TenantID: "T", UserID: "x", Role: signaling.Role("")},
+	} {
+		g, err := GrantsFor(id, "c1")
+		if err == nil {
+			t.Fatalf("unknown/empty role %q must be denied, not granted", id.Role)
+		}
+		if g.PubAllow != nil || g.SubAllow != nil || g.AllowResponses {
+			t.Fatalf("denied role must mint an EMPTY grant, got %+v", g)
+		}
+	}
+	// An explicit agent role still mints (no over-tightening).
+	if _, err := GrantsFor(signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, "c1"); err != nil {
+		t.Fatalf("explicit agent role must still be granted: %v", err)
+	}
+}
+
+// @spec:authcallout.jsapi.least-privilege
+func TestGrantsForTrustedBackendJSAPILeastPrivilege(t *testing.T) {
+	g, err := GrantsFor(signaling.Identity{TenantID: "T", UserID: "desk", Role: signaling.RoleTrustedBackend}, "c9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has(g.PubAllow, "$JS.API.>") {
+		t.Fatal("trusted-backend must NOT hold account-wide $JS.API.>")
+	}
+	cases := []struct {
+		subj  string
+		allow bool
+	}{
+		// Allowed: consumer lifecycle + stream info on the one log stream it reads.
+		{"$JS.API.STREAM.INFO.INTERACTION_LOGS", true},
+		{"$JS.API.CONSUMER.CREATE.INTERACTION_LOGS.snoop", true},
+		{"$JS.API.CONSUMER.DURABLE.CREATE.INTERACTION_LOGS.snoop", true},
+		{"$JS.API.CONSUMER.INFO.INTERACTION_LOGS.snoop", true},
+		{"$JS.API.CONSUMER.MSG.NEXT.INTERACTION_LOGS.snoop", true},
+		// Denied: account-wide reach the old $JS.API.> conferred.
+		{"$JS.API.STREAM.INFO.AGENT_FEED", false},
+		{"$JS.API.CONSUMER.CREATE.AGENT_FEED.snoop", false},
+		{"$JS.API.STREAM.DELETE.INTERACTION_LOGS", false},
+		{"$JS.API.STREAM.CREATE.INTERACTION_LOGS", false},
+		{"$JS.API.STREAM.PURGE.INTERACTION_LOGS", false},
+		{"$JS.API.STREAM.MSG.GET.INTERACTION_LOGS", false},
+		{"$JS.API.KV.whatever", false},
+	}
+	for _, c := range cases {
+		if got := allowsPublish(g, c.subj); got != c.allow {
+			t.Errorf("pub %s: allow=%v want %v", c.subj, got, c.allow)
+		}
+	}
+}
+
+// @spec:authcallout.presence.scoped-subjects
+func TestGrantsForAgentPresenceScoped(t *testing.T) {
+	g, err := GrantsFor(signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has(g.PubAllow, "tenant.T.presence.alice.>") {
+		t.Fatal("presence pub must not be the tail-wildcard presence.<self>.>")
+	}
+	if has(g.SubAllow, "tenant.T.presence.*.>") {
+		t.Fatal("presence sub must not be the tail-wildcard presence.*.>")
+	}
+	cases := []struct {
+		kind  string
+		subj  string
+		allow bool
+	}{
+		{"pub", "tenant.T.presence.alice.state", true},
+		{"pub", "tenant.T.presence.alice.typing.i1", true},
+		// Tightened: a non state/typing suffix under <self> is no longer publishable.
+		{"pub", "tenant.T.presence.alice.location", false},
+		{"pub", "tenant.T.presence.bob.state", false},
+		{"sub", "tenant.T.presence.bob.state", true},
+		{"sub", "tenant.T.presence.bob.typing.i1", true},
+		// Tightened: a non state/typing suffix under any actor is no longer subscribable.
+		{"sub", "tenant.T.presence.bob.location", false},
+	}
+	for _, c := range cases {
+		var got bool
+		if c.kind == "pub" {
+			got = allowsPublish(g, c.subj)
+		} else {
+			got = allowsSubscribe(g, c.subj)
+		}
+		if got != c.allow {
+			t.Errorf("%s %s: allow=%v want %v", c.kind, c.subj, got, c.allow)
+		}
+	}
+}

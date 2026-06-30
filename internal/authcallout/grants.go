@@ -30,7 +30,8 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 	t, self := id.TenantID, id.UserID
 	inbox := "_INBOX_" + conn + ".>"
 
-	switch signaling.RoleOf(id) {
+	// Switch on the raw role, not signaling.RoleOf: RoleOf's empty→agent default is the strict direction for the router's gates but fail-OPEN here (it would mint agent perms for an unknown/empty role); the grant layer authorizes nothing it does not explicitly recognise (RH-08).
+	switch id.Role {
 	case signaling.RoleVisitor:
 		// A visitor reads exactly ONE conversation: its interaction `.log` + the transitional events plane; cid is mint-bound (== interaction id, ADR-0009). No $JS.API confines reach to the per-subject ACL.
 		cid := id.ConversationID
@@ -56,7 +57,12 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 			PubAllow: []string{
 				"tenant." + t + ".interaction.*.cmd." + self,
 				inbox,
-				"$JS.API.>",
+				// Least-privilege JS.API (was account-wide `$JS.API.>`): only the consumer lifecycle + stream info on the one stream it reads `.log` from, never account-wide JS admin (other streams, KV, stream create/delete/purge) (RH-08).
+				"$JS.API.STREAM.INFO." + signaling.LogStreamName,
+				"$JS.API.CONSUMER.CREATE." + signaling.LogStreamName + ".>",
+				"$JS.API.CONSUMER.DURABLE.CREATE." + signaling.LogStreamName + ".>",
+				"$JS.API.CONSUMER.INFO." + signaling.LogStreamName + ".>",
+				"$JS.API.CONSUMER.MSG.NEXT." + signaling.LogStreamName + ".>",
 			},
 			PubDeny: []string{"tenant.*.interaction.*.log"},
 			SubAllow: []string{
@@ -68,13 +74,13 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 			SubDeny:        []string{"_INBOX.>"},
 			AllowResponses: true,
 		}, nil
-	default:
-		// No $JS.API grant: a broad $JS.API.CONSUMER.> would let the agent pull-read raw .log or another feed past the subject denies; the browser uses a core subscribe (A4).
+	case signaling.RoleAgent:
 		return Grant{
 			PubAllow: []string{
 				"tenant." + t + ".interaction.*.cmd." + self,
-				// Presence/typing pinned to <self> (the agent can't forge another identity); without it the console floods Publish Violations on every keystroke (F1 grant gap).
-				"tenant." + t + ".presence." + self + ".>",
+				// Presence/typing pinned to <self> (the agent can't forge another identity); scoped to the documented state + per-conversation typing subjects, not a tail-wildcard (RH-08).
+				"tenant." + t + ".presence." + self + ".state",
+				"tenant." + t + ".presence." + self + ".typing.>",
 				inbox,
 			},
 			PubDeny: []string{
@@ -86,8 +92,9 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"tenant." + t + ".routing.offer.user." + self,
 				"tenant." + t + ".routing.offer.user." + self + ".control",
 				"tenant." + t + ".notify." + self,
-				// Tenant presence roster + others' per-conversation typing (presence.*.…); replaces the prior own-only `presence.<self>` literal that never matched what the console reads.
-				"tenant." + t + ".presence.*.>",
+				// Tenant presence roster + others' per-conversation typing, scoped to state + typing (not the broader `presence.*.>` tail-wildcard) (RH-08).
+				"tenant." + t + ".presence.*.state",
+				"tenant." + t + ".presence.*.typing.>",
 				inbox,
 			},
 			SubDeny: []string{
@@ -96,5 +103,8 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 			},
 			AllowResponses: true,
 		}, nil
+	default:
+		// Fail closed: an unknown or empty role authorizes nothing (was a fall-through agent grant — fail-open) (RH-08).
+		return Grant{}, fmt.Errorf("authcallout: role %q authorizes no grant", id.Role)
 	}
 }

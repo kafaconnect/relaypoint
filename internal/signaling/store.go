@@ -15,10 +15,6 @@ import (
 // ErrOCCConflict: the append's expected last-subject-sequence no longer matched (another writer advanced the subject); retryable — re-fold and retry, never blindly append behind it (router-occ).
 var ErrOCCConflict = errors.New("optimistic-concurrency conflict: expected last-subject-sequence mismatch")
 
-// INTERACTION_LOGS — the one JetStream stream of `.log` facts; named once so Replay can target a
-// subject's last sequence (RH-07).
-const logStreamName = "INTERACTION_LOGS"
-
 // Replay drains up to the subject's last STREAM seq (GetLastMsg) and re-checks it, so an empty subject
 // returns before any consumer and a drained one stops the instant it has read the last fact — neither
 // pays the ~250ms MaxWait tail the old Fetch(128, 250ms) bled on every first-access/OCC-conflict/dup
@@ -67,7 +63,7 @@ func (s *jetstreamStore) Replay(subject string) ([]*Event, uint64, error) {
 	var lastSubjSeq uint64
 	var sub *nats.Subscription
 	for {
-		last, err := s.js.GetLastMsg(logStreamName, subject)
+		last, err := s.js.GetLastMsg(LogStreamName, subject)
 		if err != nil {
 			if errors.Is(err, nats.ErrMsgNotFound) {
 				return out, lastSubjSeq, nil // never-written/drained subject: return immediately, no consumer, no MaxWait tail
@@ -109,9 +105,12 @@ func (s *jetstreamStore) Replay(subject string) ([]*Event, uint64, error) {
 	}
 }
 
+// LogStreamName is the JetStream stream capturing every `tenant.*.interaction.*.log` fact; exported so least-privilege callers (e.g. the auth-callout trusted-backend JS.API grant, RH-08) scope to exactly this stream, not account-wide `$JS.API.>`.
+const LogStreamName = "INTERACTION_LOGS"
+
 func logStreamConfig() *nats.StreamConfig {
 	return &nats.StreamConfig{
-		Name:              logStreamName,
+		Name:              LogStreamName,
 		Subjects:          []string{"tenant.*.interaction.*.log"},
 		Storage:           nats.FileStorage,
 		Retention:         nats.LimitsPolicy,
@@ -132,7 +131,7 @@ func EnsureLogStream(js nats.JetStreamContext) error {
 
 // ResetLogStream is the ADR-0002 protobuf-cutover step: deletes+recreates INTERACTION_LOGS so no JSON-era fact survives (a protobuf router unmarshalling a JSON fact bricks that interaction); destructive dev-only, gated by RP_RESET_LOG_STREAM.
 func ResetLogStream(js nats.JetStreamContext) error {
-	if err := js.DeleteStream(logStreamName); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
+	if err := js.DeleteStream(LogStreamName); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		return err
 	}
 	_, err := js.AddStream(logStreamConfig())

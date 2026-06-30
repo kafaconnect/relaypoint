@@ -88,7 +88,7 @@ func TestVisitorGrantRejectsUnsafeConversation(t *testing.T) {
 // @spec:authcallout.responder.chain-no-regression
 func TestChainVerifierUnregressedAndVisitor(t *testing.T) {
 	secret := []byte("s")
-	hmac := NewHMACVerifier(secret)
+	hmac := NewHMACVerifier(secret, AllowHMACTrustedBackend())
 
 	m := newDeskMinter(t, "k1")
 	src := &fakeJWKS{}
