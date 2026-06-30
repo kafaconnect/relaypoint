@@ -32,7 +32,7 @@ type JWKSSource interface {
 	Fetch(ctx context.Context) ([]byte, error)
 }
 
-// Refetch is DoS-hardened (cross-review BLOCKER): the lock is NEVER held across the HTTP fetch, a singleflight collapses concurrent refetches, and a per-kid cooldown throttles forged-kid floods.
+// Refetch is DoS-hardened (cross-review BLOCKER): the lock is NEVER held across the HTTP fetch, a singleflight collapses concurrent refetches, and a GLOBAL unknown-kid cooldown — one shared timer (lastUnknownPoll/refetchMin), NOT per-kid — throttles forged-kid floods (RH-11e).
 type VisitorVerifier struct {
 	src        JWKSSource
 	ttl        time.Duration
@@ -100,6 +100,7 @@ func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
 	}
 
 	// EdDSA only — pin the alg so an `alg:none`/HMAC-confusion token is rejected; validate exp against the verifier clock (server time authority, never the client).
+	// NO clock-skew leeway on exp/nbf is applied (RH-11f, deliberate): desk and RP share infra clocks, and zero leeway keeps a just-expired/revoked token from lingering — secure as-is.
 	parsed, err := jwt.Parse([]byte(token),
 		jwt.WithKeySet(set, jws.WithRequireKid(true), jws.WithInferAlgorithmFromKey(false)),
 		jwt.WithValidate(true),
@@ -169,6 +170,9 @@ func (v *VisitorVerifier) keySet(kid string) (jwk.Set, error) {
 	set, err := v.refetch()
 	if err != nil {
 		// Fail closed even if a stale cache exists — a stale key the token still matches would outlive a desk revocation.
+		// OPERATIONAL DEPENDENCY (RH-11d): if desk's JWKS endpoint is unreachable past `ttl`, ALL visitor verifies fail closed
+		// (an availability cliff). Runbook: alert on a sustained refetch-error rate; a bounded stale-grace window for still-exp-valid
+		// tokens is a possible future softening, deliberately NOT taken here (security-over-availability: a revoked key must not linger).
 		return nil, err
 	}
 	if _, ok := set.LookupKeyID(kid); !ok {

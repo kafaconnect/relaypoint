@@ -312,3 +312,91 @@ func TestIntegration_ConcurrentSameFactDeduped(t *testing.T) {
 		t.Fatalf("seq 3 stored %d times after concurrent same-fact publishes, want 1 (dedup)", n)
 	}
 }
+
+func leaderCount(ps ...*Projector) int {
+	n := 0
+	for _, p := range ps {
+		if p.Ready() == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// @spec:projector.ha.warm-standby-replicas
+//
+// HA topology under test: TWO projector instances share ONE JetStream and ONE
+// lease bucket (kvLeaseName) — the deployed `replicas: 2` warm standby. The KV
+// lease (single-active leader election) is the ONLY thing holding the serial
+// fold + one-command-per-feed delivery invariants under >=2 replicas.
+//
+// Proven here:
+//  1. single-active — exactly ONE instance is the leader (Ready()==nil); the
+//     other is fenced inside Acquire and never goes live (never fans out).
+//  2. warm-standby failover — when the holder releases the lease, the standby
+//     acquires it and resumes the fold from the durable ack floor.
+//  3. exactly-once across the handover — every command lands on the feed once:
+//     no command skipped, none double-delivered.
+//
+// Documented coverage / boundaries:
+//   - A hard CRASH that lets the lease lapse by TTL takes the SAME Acquire/Create
+//     path; it is driven here deterministically via an explicit lease Release
+//     (stopping the leader) instead of a ~5s TTL sleep — no sleep-and-hope.
+//   - The feed's Nats-Msg-Id dedup is the production at-most-once boundary, so a
+//     rogue standby publish is invisible at the feed. Single-active is therefore
+//     asserted at the lease/Ready() seam, and the end-to-end exactly-once
+//     invariant is asserted by counting feed commands across the real handover.
+func TestIntegration_TwoReplicasSingleActiveWarmStandbyFailover(t *testing.T) {
+	nc, js := connectJS(t)
+	defer nc.Drain()
+	freshStreams(t, js)
+
+	appendFact(t, js, "I", 1, "interaction.started", "u1")
+	appendFact(t, js, "I", 2, "participant.joined", "alice")
+	appendFact(t, js, "I", 3, "message.created", "u1")
+
+	// Two replicas contend for the SAME lease bucket against the SAME JetStream.
+	stopA, pa := runProjector(t, nc, js, Config{SnapshotEvery: 1})
+	defer stopA()
+	stopB, pb := runProjector(t, nc, js, Config{SnapshotEvery: 1})
+	defer stopB()
+	stopOf := map[*Projector]func(){pa: stopA, pb: stopB}
+
+	// (1) single-active: exactly one leader, the other fenced in Acquire.
+	waitUntil(t, func() bool { return leaderCount(pa, pb) == 1 }, "exactly one replica must hold the lease")
+	leader, standby := pa, pb
+	if pb.Ready() == nil {
+		leader, standby = pb, pa
+	}
+	if standby.Ready() == nil {
+		t.Fatal("two leaders at once — single-active lease election failed")
+	}
+
+	// The single active leader delivers the whole queued batch.
+	waitUntil(t, func() bool { return has(eventSeqs(t, drainFeed(t, js, "alice", "I")), 3) },
+		"the active leader did not project the initial batch")
+	if standby.Ready() == nil {
+		t.Fatal("standby went live while the leader still held the lease (a standby must not fan out)")
+	}
+
+	// (2) warm-standby failover: the holder releases the lease (clean stop ->
+	// deferred Release deletes the leader key); the standby must take over.
+	stopOf[leader]()
+	waitUntil(t, func() bool { return standby.Ready() == nil },
+		"standby did not acquire the lease after the holder released it")
+
+	appendFact(t, js, "I", 4, "message.created", "u1")
+	appendFact(t, js, "I", 5, "message.created", "u1")
+	waitUntil(t, func() bool {
+		s := eventSeqs(t, drainFeed(t, js, "alice", "I"))
+		return has(s, 4) && has(s, 5)
+	}, "standby did not resume the fold from the ack floor after takeover")
+
+	// (3) exactly-once across the handover: no skip, no double-delivery.
+	seqs := eventSeqs(t, drainFeed(t, js, "alice", "I"))
+	for _, s := range []int64{2, 3, 4, 5} {
+		if count(seqs, s) != 1 {
+			t.Fatalf("seq %d appears %d times across the leader handover, want exactly 1 (no skip / no double-delivery); all=%v", s, count(seqs, s), seqs)
+		}
+	}
+}

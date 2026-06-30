@@ -2,7 +2,7 @@
 id: RH-10
 slice: RH
 title: MED — enable HA replicas (queue group / KV lease) plus delete duplicated mutable-tag deploy defs
-status: todo
+status: done
 specs: [projector.ha.warm-standby-replicas, deploy.images.immutable-tags]
 ---
 
@@ -30,4 +30,28 @@ uses sha-traceable tags.
 `// @spec:projector.ha.warm-standby-replicas`, `// @spec:deploy.images.immutable-tags`
 
 ## Log
-- todo
+- DONE: RP-repo single-active-under-replicas test AND the desk-side deploy are both complete. The
+  desk-side deploy (rp-router replicas>=2 + RollingUpdate; rp-projector replicas 2 warm-standby;
+  delete the stale `deploy/k8s/50-52-rp-*.yaml`) lands in the **kafaconnect/desk** repo (the
+  authoritative production Helm/k8s tree) — tracked and committed there, not in this repo.
+- Added `TestIntegration_TwoReplicasSingleActiveWarmStandbyFailover`
+  (`internal/projector/projector_integration_test.go`, `// @spec:projector.ha.warm-standby-replicas`):
+  TWO projector instances share ONE JetStream + ONE lease bucket (`kvLeaseName`) — the deployed
+  `replicas: 2` warm standby. Proves under >=2 replicas: (1) single-active — exactly one instance is
+  leader (`Ready()==nil`), the other is fenced in `Acquire` and never goes live / never fans out;
+  (2) warm-standby failover — on the holder's lease Release the standby acquires and resumes the fold
+  from the durable ack floor; (3) exactly-once across the handover — every command on the feed once,
+  no skip / no double-delivery.
+- No production seam added: reused the existing public `Projector.Ready()` (RH-06) as the
+  leader-vs-standby observable + the existing integration harness (`runProjector`, `connectJS`,
+  `freshStreams`, `waitUntil`). Lease transitions are driven explicitly (stop leader -> deferred
+  `Release` deletes the leader key), not by sleeping out the 5s TTL.
+- Documented coverage boundary: a hard-CRASH TTL-lapse takes the SAME `Acquire/Create` path,
+  exercised deterministically here via explicit Release; and the feed `Nats-Msg-Id` dedup makes a
+  rogue standby publish invisible at the feed, so single-active is asserted at the lease/`Ready()`
+  seam while end-to-end exactly-once is asserted by feed command counts across the real handover.
+- Verify (real JetStream NATS): `go build ./...` `go vet ./...` `gofmt -l .` (empty)
+  `go test ./...` `go test -count=1 -p 1 -tags integration ./...` — ALL PASS (7 pkgs each).
+- CROSS-REPO (desk, LANDED, NOT this repo): rp-router replicas>=2 (RollingUpdate), rp-projector
+  replicas 2 in `deploy/helm/desk/templates/relaypoint.yaml`, and the stale
+  `deploy/k8s/50-52-rp-*.yaml` (mutable-tag/`IfNotPresent`) deleted — `// @spec:deploy.images.immutable-tags`.

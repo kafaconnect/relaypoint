@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,11 +17,17 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/kafaconnect/relaypoint/internal/health"
 	"github.com/kafaconnect/relaypoint/internal/obs"
 	"github.com/kafaconnect/relaypoint/internal/projector"
 )
 
+const defaultNATSUser = "projector"
+
 func main() {
+	if health.IsProbe(os.Args) {
+		os.Exit(health.RunProbe(health.DefaultAddr))
+	}
 	slog.SetDefault(obs.New("relaypoint-projector"))
 
 	// OTLP trace export (M1.5 F5b) — no-op when the OTLP endpoint is unset; fail-open on a setup error.
@@ -32,8 +39,8 @@ func main() {
 	defer func() { _ = tracerShutdown(context.Background()) }()
 
 	url := envOr("NATS_URL", nats.DefaultURL)
-	user := envOr("NATS_USER", "router")
-	pass := envOr("NATS_PASSWORD", "router-dev")
+	user := envOr("NATS_USER", defaultNATSUser)
+	pass := mustEnv("NATS_PASSWORD") // RH-11h: fail loud, never default to a shared dev credential
 
 	nc, err := nats.Connect(url, nats.UserInfo(user, pass), nats.Name("relaypoint-projector"))
 	must("connect", err)
@@ -56,7 +63,7 @@ func main() {
 	snaps, err := projector.NewSnapshotStore(jsKV)
 	must("snapshot-store", err)
 
-	cfg := projector.Config{MaxDeliver: maxDeliver, LeaseTTL: leaseTTL}
+	cfg := projector.Config{MaxDeliver: maxDeliver, LeaseTTL: leaseTTL, HealthAddr: health.DefaultAddr}
 	switch os.Getenv("PROJECTOR_FANOUT_MODE") {
 	case "tenant-roster":
 		// production: a tenant's agents come from desk's real roster (its Zitadel org membership), never hardcoded.
@@ -77,6 +84,21 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	live := func() error {
+		if !nc.IsConnected() {
+			return errors.New("nats disconnected")
+		}
+		if _, jerr := js.AccountInfo(); jerr != nil {
+			return fmt.Errorf("jetstream unreachable: %w", jerr)
+		}
+		return nil
+	}
+	go func() {
+		if herr := health.Serve(ctx, cfg.HealthAddr, live, p.Ready, obs.MetricsHandler()); herr != nil {
+			slog.Error("health.serve", "err", herr)
+		}
+	}()
 
 	slog.Info("projector.up", "url", url, "stream", "INTERACTION_LOGS", "feed_stream", "AGENT_FEED")
 	if err := p.Run(ctx); err != nil && ctx.Err() == nil {

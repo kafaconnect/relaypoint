@@ -26,6 +26,16 @@ Skills: built-in OpenSpec (`explore/propose/apply/archive/sync`) + custom
 (`change-planning`, `cross-review`, `qa-verify`, `archive-guard`, `board-bootstrap`,
 `docs-writer`). Independent **cross-review** (builder ≠ reviewer) before archive.
 
+## Building locally
+
+RelayPoint is consumed by desk as a **submodule**, so a parent `go.work` can capture this module
+and break standalone builds/tooling (gopls reports "not included in your workspace", `internal/`
+import errors). Always build/test this repo with the workspace OFF:
+
+```bash
+GOWORK=off go build ./... && GOWORK=off go test ./...
+```
+
 ## Definition of Done (every change)
 
 `openspec validate --strict`; lint/typecheck/test/coverage green; every `#### Scenario:`
@@ -56,7 +66,9 @@ cannot express — may cite a change/issue) and a **TODO**. Nothing else: no "wh
 comments, no doc-essays restating a signature/type/test, no step narration, no banners, no
 commented-out code. A non-WHY/non-TODO comment is a review DEFECT that BLOCKS merge — delete
 it or fix the code (rename/extract). Machine tags (`// @spec:<id>`, `//go:…`, build/struct
-tags) are exempt. Applies to every file and language; when delegating, state this rule and
+tags) are exempt. The **DEFAULT-ZERO bar applies to production/main code**; **test files may be
+a bit looser** — short scenario/boundary narration that aids reading a test is fine, but still
+no decorative filler, banners, or what-comments. When delegating, state this rule and
 `grep '^\+\s*//'` the diff before committing — sub-agents are the repeat offenders.
 
 ## Licensing

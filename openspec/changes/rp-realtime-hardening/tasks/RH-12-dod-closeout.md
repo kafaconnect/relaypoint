@@ -2,7 +2,7 @@
 id: RH-12
 slice: RH
 title: DoD — spec-tree sync, anchor RDL ids, ADRs, cross-reviews, CI green
-status: todo
+status: done
 specs: [RDL-01, RDL-02, RDL-03]
 ---
 
@@ -34,4 +34,16 @@ model and needs its own ADR.
 `// @spec:RDL-01`, `// @spec:RDL-02`, `// @spec:RDL-03` (anchored into the materialized spec tree)
 
 ## Log
-- todo
+- done: DoD closeout. (1) Materialized the canonical spec tree (FIRST materialization) from this
+  change's deltas → `openspec/specs/{observability,projector,authcallout,deploy,signaling-core}/spec.md`.
+  (2) `@spec` resolution check over the Go tree: 89 distinct ids; all 26 ids this epic introduces
+  (`RDL-01/02/03` + every RH-06..11 id) resolve in `openspec/specs/`. The remaining 63 are
+  PRE-EXISTING (8 already-archived changes whose deltas were never synced + a set of orphan
+  `authcallout.visitor.*`/`obs.*`/`web-call.*`/`f1.*` tags) — flagged, out of this change's delta
+  scope. (3) ADR-0007 flipped Proposed→Accepted; ADR-0003 gained a reciprocal amendment noting the
+  fence constrains its Decision 4. (4) Fixed a regression this epic's comment-sweep (7043bf9) caused:
+  it stripped the `// program-output` logging-gate marker in `cmd/signaltest-inject/main.go`,
+  breaking `check-logging.sh` — restored. (5) CI green (GOWORK=off): `check-logging.sh`,
+  `check-skills-mirror.sh`, `go build/vet ./...`, `gofmt -l .` clean, `go test ./...` and
+  `go test -count=1 -p 1 -tags integration ./...` all pass (7 pkgs; integration against a live
+  JetStream NATS). RH-10 desk-side deploy lands in the kafaconnect/desk repo.

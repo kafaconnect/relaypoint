@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -396,5 +397,133 @@ func TestCore_StaleTokenDoesNotBurnRetryBudget(t *testing.T) {
 		if f.Sequence != int64(i+1) {
 			t.Fatalf("B dense per-interaction sequence broke at index %d: seq=%d", i, f.Sequence)
 		}
+	}
+}
+
+// @spec:router.state.idle-evict
+func TestCore_IdleEvictionRebuildsOnNextAccess(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	clock := func() time.Time { return now }
+	st := newFakeStore()
+	r := NewRouter(st, WithDevMode(), WithClock(clock), WithStateLimits(1024, 8, time.Minute))
+	subjA := "tenant.t1.interaction.A.cmd.u1"
+	subjB := "tenant.t1.interaction.B.cmd.u1"
+
+	if got := r.HandleCommand(context.Background(), subjA, cmd("a0", "t1", "interaction.started", "")); got.Status != statusAccepted {
+		t.Fatalf("A start: %+v", got)
+	}
+	if got := r.HandleCommand(context.Background(), subjA, cmd("a1", "t1", "message.created", "hi")); got.Status != statusAccepted {
+		t.Fatalf("A msg: %+v", got)
+	}
+	r.mu.Lock()
+	_, cachedBefore := r.inter["t1/A"]
+	r.mu.Unlock()
+	if !cachedBefore {
+		t.Fatal("A should be cached after access")
+	}
+
+	now = now.Add(2 * time.Minute) // A is now idle past the 1m TTL
+	if got := r.HandleCommand(context.Background(), subjB, cmd("b0", "t1", "interaction.started", "")); got.Status != statusAccepted {
+		t.Fatalf("B start: %+v", got) // any insert triggers the idle sweep
+	}
+	r.mu.Lock()
+	_, cachedAfter := r.inter["t1/A"]
+	r.mu.Unlock()
+	if cachedAfter {
+		t.Fatal("idle A must be evicted once it is idle past the TTL")
+	}
+
+	// transparent rebuild-on-next-access: a retry of a1 replays accepted (dedup rebuilt from the log)
+	if got := r.HandleCommand(context.Background(), subjA, cmd("a1", "t1", "message.created", "hi")); got.Status != statusAccepted {
+		t.Fatalf("rebuilt A retry must replay accepted, got %+v", got)
+	}
+	// a fresh command lands at the next dense sequence, proving seq was rebuilt from the log
+	if got := r.HandleCommand(context.Background(), subjA, cmd("a2", "t1", "message.created", "yo")); got.Status != statusAccepted {
+		t.Fatalf("rebuilt A new message rejected: %+v", got)
+	}
+	facts, _, _ := st.Replay(logSubjectFor("t1", "A"))
+	if len(facts) != 3 || facts[2].Sequence != 3 {
+		t.Fatalf("rebuilt-from-log state wrong: %d facts, last seq %d (want 3,3)", len(facts), facts[len(facts)-1].Sequence)
+	}
+}
+
+// @spec:router.state.idle-evict
+func TestCore_LRUCapAndResultsBounded(t *testing.T) {
+	st := newFakeStore()
+	r := NewRouter(st, WithDevMode(), WithStateLimits(1, 4, time.Hour))
+	subjA := "tenant.t1.interaction.A.cmd.u1"
+	subjB := "tenant.t1.interaction.B.cmd.u1"
+
+	if got := r.HandleCommand(context.Background(), subjA, cmd("a0", "t1", "interaction.started", "")); got.Status != statusAccepted {
+		t.Fatalf("A start: %+v", got)
+	}
+	for i := 1; i <= 8; i++ {
+		if got := r.HandleCommand(context.Background(), subjA, cmd(fmt.Sprintf("a%d", i), "t1", "message.created", fmt.Sprintf("m%d", i))); got.Status != statusAccepted {
+			t.Fatalf("A msg %d: %+v", i, got)
+		}
+	}
+	r.mu.Lock()
+	sa := r.inter["t1/A"]
+	r.mu.Unlock()
+	sa.mu.Lock()
+	nres := len(sa.results)
+	sa.mu.Unlock()
+	if nres > 4 {
+		t.Fatalf("per-interaction results cache unbounded: %d entries (cap 4)", nres)
+	}
+
+	// opening B evicts A under the maxInter=1 LRU cap
+	if got := r.HandleCommand(context.Background(), subjB, cmd("b0", "t1", "interaction.started", "")); got.Status != statusAccepted {
+		t.Fatalf("B start: %+v", got)
+	}
+	r.mu.Lock()
+	_, aCached := r.inter["t1/A"]
+	n := len(r.inter)
+	r.mu.Unlock()
+	if aCached || n != 1 {
+		t.Fatalf("A not LRU-evicted under the cap: cached=%v size=%d (want false,1)", aCached, n)
+	}
+
+	// a retry of an OLD (results-evicted) command_id must still NOT double-append: the broker dedups
+	// and the log rebuild yields accepted — eviction is safe.
+	before, _, _ := st.Replay(logSubjectFor("t1", "A"))
+	if got := r.HandleCommand(context.Background(), subjA, cmd("a1", "t1", "message.created", "m1")); got.Status != statusAccepted {
+		t.Fatalf("evicted-id retry must replay accepted, got %+v", got)
+	}
+	after, _, _ := st.Replay(logSubjectFor("t1", "A"))
+	if len(after) != len(before) {
+		t.Fatalf("evicted-id retry double-appended: before=%d after=%d", len(before), len(after))
+	}
+}
+
+// TestCopyMissingResultsPreservesFIFO asserts a re-fold copy lands missing dedup entries in fresh's
+// chronological (resultOrder) order, not random map order — so st.resultOrder stays a true FIFO and the
+// bounded cache evicts the OLDEST, never a younger entry early (cross-review FIX 4).
+func TestCopyMissingResultsPreservesFIFO(t *testing.T) {
+	mk := func(ids ...string) *interactionState {
+		st := &interactionState{results: map[string]storedResult{}}
+		for _, id := range ids {
+			st.putResult(id, storedResult{result: &CommandResult{CommandId: id}}, 0)
+		}
+		return st
+	}
+	// fresh holds c1..c5 chronologically; a stray id sits in resultOrder but not results (defensive guard).
+	fresh := mk("c1", "c2", "c3", "c4", "c5")
+	fresh.resultOrder = append(fresh.resultOrder, "ghost")
+	// st already has c2; it is missing c1,c3,c4,c5 and must receive them in fresh's chronological order.
+	st := mk("c2")
+	st.copyMissingResults(fresh, 0)
+
+	want := []string{"c2", "c1", "c3", "c4", "c5"}
+	if len(st.resultOrder) != len(want) {
+		t.Fatalf("resultOrder = %v, want %v", st.resultOrder, want)
+	}
+	for i := range want {
+		if st.resultOrder[i] != want[i] {
+			t.Fatalf("resultOrder = %v, want %v (chronological FIFO copy)", st.resultOrder, want)
+		}
+	}
+	if _, ok := st.results["ghost"]; ok {
+		t.Fatal("ghost id (in resultOrder, absent from results) must be skipped, not copied")
 	}
 }

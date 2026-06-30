@@ -1,6 +1,6 @@
 # ADR-0007: The projector fences its data path within the lease TTL budget
 
-- Status: **Proposed** (openspec change `rp-realtime-hardening`, RH-02)
+- Status: **Accepted** (openspec change `rp-realtime-hardening`, RH-02 — applied)
 - Date: 2026-06-29
 - Scope: the RelayPoint Participation/Fan-out service's lease-renew + data-path fencing. Constrains
   the leased single-active worker model of **ADR-0003** (Decision 4). Relates to the un-reviewed perf

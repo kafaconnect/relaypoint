@@ -51,10 +51,24 @@ type claims struct {
 type HMACVerifier struct {
 	Secret []byte
 	Now    func() time.Time
+	// allowTrustedBackend permits role=trusted-backend over the process-wide HMAC secret; the zero value is the SECURE posture (rejected), set only in the dev posture (RH-08).
+	allowTrustedBackend bool
 }
 
-func NewHMACVerifier(secret []byte) *HMACVerifier {
-	return &HMACVerifier{Secret: secret, Now: time.Now}
+// HMACOption configures the dev HMAC link; the zero verifier is the SECURE posture (no trusted-backend self-assertion).
+type HMACOption func(*HMACVerifier)
+
+// AllowHMACTrustedBackend permits role=trusted-backend over the process-wide HMAC secret. DEV ONLY — a holder could self-assert ANY tenant as a privileged backend; main.go enables it solely when JWKS is unconfigured (the dev posture) (RH-08).
+func AllowHMACTrustedBackend() HMACOption {
+	return func(v *HMACVerifier) { v.allowTrustedBackend = true }
+}
+
+func NewHMACVerifier(secret []byte, opts ...HMACOption) *HMACVerifier {
+	v := &HMACVerifier{Secret: secret, Now: time.Now}
+	for _, o := range opts {
+		o(v)
+	}
+	return v
 }
 
 func (v *HMACVerifier) Verify(token string) (signaling.Identity, error) {
@@ -95,9 +109,21 @@ func (v *HMACVerifier) Verify(token string) (signaling.Identity, error) {
 	if err := validSubjectToken(c.User); err != nil {
 		return signaling.Identity{}, fmt.Errorf("authcallout: invalid user: %w", err)
 	}
-	role := signaling.RoleAgent
-	if c.Role == string(signaling.RoleTrustedBackend) {
+	// Fail closed on role: an unknown/empty/visitor claim must NOT silently become agent — that would
+	// bypass the RH-08 grant-layer default (which only ever sees RoleAgent on this HMAC path) and violate
+	// authcallout.role.fail-closed-unknown. The sole minter, MintDevToken, always emits a concrete role.
+	var role signaling.Role
+	switch c.Role {
+	case string(signaling.RoleAgent):
+		role = signaling.RoleAgent
+	case string(signaling.RoleTrustedBackend):
+		// Fail closed in prod: the process-wide HMAC secret must not self-assert the privileged trusted-backend role; main.go allows it only in the dev posture (no JWKS) (RH-08).
+		if !v.allowTrustedBackend {
+			return signaling.Identity{}, fmt.Errorf("authcallout: trusted-backend role not permitted over HMAC")
+		}
 		role = signaling.RoleTrustedBackend
+	default:
+		return signaling.Identity{}, fmt.Errorf("authcallout: role %q not permitted over HMAC", c.Role)
 	}
 	return signaling.Identity{TenantID: c.Tenant, UserID: c.User, Role: role}, nil
 }

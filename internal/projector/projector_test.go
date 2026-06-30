@@ -537,6 +537,16 @@ func TestPartialPublishThenCrash(t *testing.T) {
 	}
 }
 
+// @spec:projector.config.fanout-concurrency
+func TestConfigFanoutConcurrencyDefault(t *testing.T) {
+	if got := (Config{}).withDefaults().FanoutConcurrency; got != defaultFanoutConcurrency {
+		t.Errorf("default FanoutConcurrency = %d, want %d", got, defaultFanoutConcurrency)
+	}
+	if got := (Config{FanoutConcurrency: 8}).withDefaults().FanoutConcurrency; got != 8 {
+		t.Errorf("explicit FanoutConcurrency = %d, want 8 (caller value preserved, not overridden)", got)
+	}
+}
+
 // @spec: RDL-01
 // @spec: RDL-02
 func TestConcurrentFanoutAllRecipients(t *testing.T) {

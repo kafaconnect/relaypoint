@@ -2,7 +2,7 @@
 id: RH-06
 slice: RH
 title: HIGH — health/readiness surface on each binary plus a least-privilege projector NATS user
-status: todo
+status: done
 specs: [obs.health.liveness-nats-js, obs.health.readiness-reflects-lease, deploy.nats.projector-user]
 ---
 
@@ -32,4 +32,25 @@ It works only because infra NATS is currently anonymous → enabling auth darks 
 `// @spec:obs.health.liveness-nats-js`, `// @spec:obs.health.readiness-reflects-lease`, `// @spec:deploy.nats.projector-user`
 
 ## Log
-- todo
+- DONE. Added `internal/health` (liveness/readiness `/healthz` + `/readyz`, distroless self-probe
+  `-healthcheck`, defaulted `:8222` — no new env). Each `cmd/{router,projector,authcallout}` now
+  serves it: liveness = NATS connected + JetStream `AccountInfo` reachable (authcallout = connected
+  only, it uses no JS); the projector's readiness reads its leader lease via a new `Projector.Ready()`
+  backed by the existing `fence` (FAILS while standby/wedged, paused on a renew stall, or lease-lost)
+  — exposed through the projector's own type, no new global. Health port is a `projector.Config`
+  field (`HealthAddr`, defaulted).
+- Fixed the diverged `cmd/projector` NATS default (`router`/`router-dev` -> `projector`/`projector-dev`).
+  Added a least-privilege `projector` NATS user to `deploy/nats/nats-server.conf` (`.log` READ-only +
+  publish-deny on `.log`, AGENT_FEED/DLQ write, `$KV.projector-{lease,snapshot}` + RP-scoped JS API);
+  added it to callout-exempt `auth_users`; documented the infra-NATS-anonymous posture (ADR-0004).
+  Wired `PROJECTOR_PASSWORD` into compose + `.env.example`; added distroless self-probe healthchecks
+  to the router + authcallout compose services.
+- Tests: `internal/health` TestLivenessHealthyOnlyWhenNATSAndJetStreamReachable,
+  TestReadinessIndependentOfLiveness (@spec:obs.health.liveness-nats-js); `internal/projector`
+  TestReadyReflectsLeaseState (@spec:obs.health.readiness-reflects-lease); `cmd/projector`
+  TestProjectorNATSUserDefaultIsProjector, TestNATSConfDefinesLeastPrivilegeProjectorUser
+  (@spec:deploy.nats.projector-user).
+- CROSS-REPO FOLLOW-UP (desk, NOT done here): wire k8s liveness/readiness probes against `:8222`
+  `/healthz` + `/readyz` in `deploy/helm/desk/templates/relaypoint.yaml` and
+  `deploy/k8s/50-52-rp-*.yaml`, and add the production `projector` NATS user/password to the desk
+  Helm values.

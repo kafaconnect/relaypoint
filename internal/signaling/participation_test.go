@@ -42,9 +42,10 @@ func TestParticipation_IntervalFold(t *testing.T) {
 }
 
 func TestParticipation_AssignedAndRejoin(t *testing.T) {
+	// An assign lands structurally as participant.joined (RH-11a: no distinct interaction.assigned fact).
 	v := FoldParticipation([]*Event{
 		ev(1, "interaction.started", "u1"),
-		ev(2, "interaction.assigned", "alice"),
+		ev(2, "participant.joined", "alice"),
 		ev(3, "participant.left", "alice"),
 		ev(4, "participant.joined", "alice"),
 	})
@@ -60,5 +61,22 @@ func TestParticipation_AssignedAndRejoin(t *testing.T) {
 	}
 	if !v.IsParticipantNow("alice") {
 		t.Error("alice re-joined at seq 4 — must be a current participant")
+	}
+}
+
+// @spec:router.cluster.assigned-emit-or-drop
+// Decision: DROP. interaction.assigned was recognized but never emitted; it is a domain verb, not a
+// delivery structure, so it is removed from both the recognized set and the fold. An assign opens
+// membership as participant.joined; a stray interaction.assigned fact must NOT open an interval.
+func TestParticipation_AssignedFactDropped(t *testing.T) {
+	if isParticipationFact("interaction.assigned") {
+		t.Error("interaction.assigned must not be a recognized participation fact (dropped, never emitted)")
+	}
+	v := FoldParticipation([]*Event{
+		ev(1, "interaction.started", "u1"),
+		ev(2, "interaction.assigned", "alice"),
+	})
+	if v.IsParticipantNow("alice") {
+		t.Error("a dropped interaction.assigned fact must not open membership in the fold")
 	}
 }

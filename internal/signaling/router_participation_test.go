@@ -257,7 +257,7 @@ func TestRouter_DirectParticipationFactRejected(t *testing.T) {
 	st := newFakeStore()
 	r := NewRouter(st)
 	startWithDesk(t, r, "t1", "iJ", "desk")
-	for _, typ := range []string{"participant.joined", "participant.left", "interaction.assigned"} {
+	for _, typ := range []string{"participant.joined", "participant.left"} {
 		got := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iJ", "desk"), agentCmd("d-"+typ, "t1", "desk", typ))
 		if got.Status != statusRejected {
 			t.Fatalf("direct %s must be rejected, got %+v", typ, got)

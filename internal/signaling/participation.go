@@ -28,7 +28,7 @@ func NewParticipationView() *ParticipationView {
 // Facts MUST arrive in sequence order.
 func (v *ParticipationView) ApplyFact(e *Event) {
 	switch e.EventType {
-	case "participant.joined", "interaction.assigned":
+	case "participant.joined":
 		v.open(e.ActorId, e.Sequence)
 	case "participant.left":
 		v.close(e.ActorId, e.Sequence)

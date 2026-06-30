@@ -10,6 +10,7 @@ services:
     environment:                       # @spec:deploy.creds.env-externalised
       ROUTER_PASSWORD: ${ROUTER_PASSWORD:-router-dev}
       CLIENT_PASSWORD: ${CLIENT_PASSWORD:-client-dev}
+      PROJECTOR_PASSWORD: ${PROJECTOR_PASSWORD:-projector-dev}
       AUTH_PASSWORD: ${AUTH_PASSWORD:-auth-dev}
       # The auth account PUBLIC nkey that signs minted users (the SEED stays with the responder).
       AUTH_CALLOUT_ISSUER: ${AUTH_CALLOUT_ISSUER:?set AUTH_CALLOUT_ISSUER — mint an account nkey, see deploy/.env.example}
@@ -38,6 +39,12 @@ services:
     depends_on:                        # @spec:deploy.health.router-waits-for-nats
       nats:
         condition: service_healthy     # don't race NATS startup
+    healthcheck:                       # distroless image self-probes :8222/healthz (no shell/wget)
+      test: ["CMD", "/router", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
     restart: unless-stopped
 
   authcallout:
@@ -53,6 +60,12 @@ services:
     depends_on:
       nats:
         condition: service_healthy
+    healthcheck:                       # distroless image self-probes :8222/healthz (no shell/wget)
+      test: ["CMD", "/authcallout", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
     restart: unless-stopped
 
   coturn:

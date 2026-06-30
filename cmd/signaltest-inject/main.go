@@ -57,7 +57,7 @@ func main() {
 	must(err)
 	var res interactionpb.CommandResult
 	must(proto.Unmarshal(reply.Data, &res))
-	fmt.Printf("subject=%s status=%s reason=%q command_id=%s\n", subject, res.GetStatus(), res.GetReason(), cmdID)
+	fmt.Printf("subject=%s status=%s reason=%q command_id=%s\n", subject, res.GetStatus(), res.GetReason(), cmdID) // program-output
 	if res.GetStatus() != interactionpb.CommandResult_STATUS_ACCEPTED {
 		os.Exit(1)
 	}

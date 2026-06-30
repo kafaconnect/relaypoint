@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -12,6 +14,27 @@ import (
 
 	"github.com/kafaconnect/relaypoint/internal/obs"
 )
+
+// @spec:router.config.fail-loud-password
+func TestNATSPasswordFailLoud(t *testing.T) {
+	if os.Getenv("RH11_FAILLOUD") == "1" {
+		mustEnv("NATS_PASSWORD") // child: NATS_PASSWORD unset → must os.Exit(1)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestNATSPasswordFailLoud")
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "NATS_PASSWORD=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = append(env, "RH11_FAILLOUD=1")
+	err := cmd.Run()
+	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.Success() {
+		t.Fatalf("mustEnv(NATS_PASSWORD) with the var unset must exit non-zero; got err=%v", err)
+	}
+}
 
 // replays the QueueSubscribe handler's context plumbing so propagation is tested without a live NATS connection.
 func seedCtx(m *nats.Msg, base *slog.Logger) context.Context {

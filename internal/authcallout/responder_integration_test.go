@@ -132,7 +132,7 @@ func lastColon(s string) int {
 func dialResponder(t *testing.T, url, pass string, kp nkeys.KeyPair) {
 	t.Helper()
 	seed, _ := kp.Seed()
-	v := NewHMACVerifier([]byte(tokenSecret))
+	v := NewHMACVerifier([]byte(tokenSecret), AllowHMACTrustedBackend())
 	r, err := NewResponder(v, seed, "APP")
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func dialResponder(t *testing.T, url, pass string, kp nkeys.KeyPair) {
 func dialResponderChain(t *testing.T, url, pass string, kp nkeys.KeyPair, vis Verifier) {
 	t.Helper()
 	seed, _ := kp.Seed()
-	chain := NewChainVerifier(NewHMACVerifier([]byte(tokenSecret)), vis)
+	chain := NewChainVerifier(NewHMACVerifier([]byte(tokenSecret), AllowHMACTrustedBackend()), vis)
 	r, err := NewResponder(chain, seed, "APP")
 	if err != nil {
 		t.Fatal(err)
@@ -442,5 +442,78 @@ func TestAuthCalloutDeniesBadToken(t *testing.T) {
 		nats.MaxReconnects(0), nats.Timeout(2*time.Second)); err == nil {
 		nc.Close()
 		t.Error("connection with an invalid token must be denied")
+	}
+}
+
+// dialResponderSecureHMAC wires the responder with the PROD HMAC link (no trusted-backend self-assertion) so the embedded NATS enforces the RH-08 gate end-to-end.
+func dialResponderSecureHMAC(t *testing.T, url, pass string, kp nkeys.KeyPair) {
+	t.Helper()
+	seed, _ := kp.Seed()
+	r, err := NewResponder(NewHMACVerifier([]byte(tokenSecret)), seed, "APP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc, err := connectWithRetry(t, url, nats.UserInfo("authsvc", pass))
+	if err != nil {
+		t.Fatalf("responder connect: %v", err)
+	}
+	if _, err := r.Subscribe(nc); err != nil {
+		t.Fatalf("responder subscribe: %v", err)
+	}
+	t.Cleanup(func() { nc.Drain() })
+}
+
+// @spec:authcallout.hmac.no-trusted-backend-prod (enforced by real NATS)
+func TestAuthCalloutHMACDeniesTrustedBackendInProd(t *testing.T) {
+	url, kp, pass := startNATS(t)
+	dialResponderSecureHMAC(t, url, pass, kp)
+
+	// An HMAC token self-asserting trusted-backend must be denied at connect (no minted privileged authority from the process-wide secret).
+	beTok := token(t, signaling.Identity{TenantID: "T", UserID: "desk", Role: signaling.RoleTrustedBackend})
+	if nc, err := nats.Connect(url, nats.Token(beTok), nats.MaxReconnects(0), nats.Timeout(2*time.Second)); err == nil {
+		nc.Close()
+		t.Error("trusted-backend over HMAC must be denied in the prod posture")
+	}
+	// An agent over the same secure HMAC link still connects (the agent self-assert path is unchanged).
+	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
+	if !canSub(t, url, aliceTok, "tenant.T.agent.alice.feed.>") {
+		t.Error("agent must still authenticate over the secure HMAC link")
+	}
+}
+
+// @spec:authcallout.tenant.cross-denied (enforced by real NATS)
+func TestAuthCalloutVisitorCrossTenantDenied(t *testing.T) {
+	url, kp, pass := startNATS(t)
+
+	m := newDeskMinter(t, "k1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	dialResponderChain(t, url, pass, kp, NewVisitorVerifier(src, time.Minute))
+
+	// A visitor minted for tenant T1 bound to conversation C1.
+	visTok := m.mint(t, mintOpts{sub: "sess1", tid: "T1", cid: "C1"})
+
+	// Same-tenant own conversation still works (the cross-tenant denial must NOT over-tighten legitimate reach).
+	if !canSub(t, url, visTok, "tenant.T1.interaction.C1.log") {
+		t.Error("visitor must still read its own tenant's conversation .log")
+	}
+
+	// Cross-TENANT: no subject under a DIFFERENT tenant (even the same conversation id) is reachable.
+	for _, subj := range []string{
+		"tenant.T2.interaction.C1.log",
+		"tenant.T2.conversation.C1.events",
+		"tenant.T2.agent.alice.feed.i1",
+	} {
+		if canSub(t, url, visTok, subj) {
+			t.Errorf("visitor of T1 must NOT subscribe another tenant's %s", subj)
+		}
+	}
+	for _, subj := range []string{
+		"tenant.T2.conversation.C1.events",
+		"tenant.T2.interaction.C1.cmd.sess1",
+	} {
+		if canPub(t, url, visTok, subj) {
+			t.Errorf("visitor of T1 must NOT publish another tenant's %s", subj)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -16,14 +17,17 @@ import (
 	"github.com/kafaconnect/relaypoint/internal/signaling"
 )
 
-var errRosterUnavailable = errors.New("projector: roster unavailable after in-process retry window")
+var (
+	errRosterUnavailable = errors.New("projector: roster unavailable after in-process retry window")
+	errNotLeader         = errors.New("projector: not holding lease")
+	errPaused            = errors.New("projector: lease renew stalled")
+)
 
 const (
 	feedControlSchema = signaling.SchemaV1
 	controlRevoked    = "feed.revoked"
 
-	// fanoutConcurrency collapses N sequential publish RTTs into ~one; only one fact is in flight (MaxAckPending=1) so it also caps total concurrent publishes. @spec: RDL-01
-	fanoutConcurrency = 32
+	defaultFanoutConcurrency = 32
 
 	// @spec:RDL-03
 	leaseRenewAttempts     = 3
@@ -83,6 +87,10 @@ type Config struct {
 	LeaseRenew        time.Duration
 	LeaseTTL          time.Duration
 	RosterRetryWindow time.Duration
+	HealthAddr        string
+
+	// FanoutConcurrency collapses N sequential per-recipient publish RTTs into ~one; MaxAckPending=1 keeps a single fact in flight, so this also bounds total concurrent publishes. @spec: RDL-01
+	FanoutConcurrency int
 
 	// DEV/TEST fan-out override (nil in prod): desk M1 emits no participation facts yet, so the stock per-participation fan-out would leave every feed empty; participation is still folded.
 	TenantWideAgents map[string][]string
@@ -116,6 +124,12 @@ func (c Config) withDefaults() Config {
 	if c.RosterRetryWindow <= 0 {
 		c.RosterRetryWindow = 90 * time.Second
 	}
+	if c.HealthAddr == "" {
+		c.HealthAddr = ":8222"
+	}
+	if c.FanoutConcurrency <= 0 {
+		c.FanoutConcurrency = defaultFanoutConcurrency
+	}
 	return c
 }
 
@@ -129,6 +143,7 @@ type Projector struct {
 	st         *state
 	sinceSnap  int
 	lastAckSeq uint64
+	fenceP     atomic.Pointer[fence]
 }
 
 func New(src LogSource, sink FeedSink, lease LeaseStore, snaps SnapshotStore, cfg Config) *Projector {
@@ -148,6 +163,7 @@ func (p *Projector) Run(ctx context.Context) error {
 	}
 
 	fence := newFence(ctx)
+	p.fenceP.Store(fence)
 	renewCtx, stopRenew := context.WithCancel(ctx)
 	defer stopRenew()
 	go p.renewLoop(renewCtx, fence)
@@ -212,6 +228,7 @@ func (p *Projector) renewWithRetry(ctx context.Context, fence *fence) error {
 			return nil
 		}
 		fence.pause()
+		obs.LeaseRenewRetries.Inc()
 		obs.Logger(ctx).Warn("projector.lease-renew-retry", "attempt", attempt+1, "err", err.Error())
 	}
 	return err
@@ -320,6 +337,30 @@ func (f *fence) exitErr() error {
 	return f.parent.Err()
 }
 
+func (f *fence) health() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lost != nil {
+		return fmt.Errorf("lease lost: %w", f.lost)
+	}
+	if f.parent.Err() != nil {
+		return f.parent.Err()
+	}
+	if f.paused {
+		return errPaused
+	}
+	return nil
+}
+
+// WHY: a standby (no lease), a renew-stall pause, and a lost lease are all NOT-ready — only the active leader passes readiness so a wedged/standby pod sheds probe traffic (RH-06).
+func (p *Projector) Ready() error {
+	f := p.fenceP.Load()
+	if f == nil {
+		return errNotLeader
+	}
+	return f.health()
+}
+
 // Loads the snapshot at <= ack floor then read-only-folds (snap_seq, ack_floor] — never a replay from zero.
 func (p *Projector) Hydrate(ctx context.Context) error {
 	floor, err := p.src.AckFloor(ctx)
@@ -368,7 +409,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	case p.cfg.Roster != nil:
 		agents, rerr := p.resolveRoster(ctx, f, e, iid, log)
 		if rerr != nil {
-			return p.src.Nak(f)
+			return p.nak(f)
 		}
 		recipients = agents
 		log.Info("projector.roster-fanout", "tenant", e.TenantId, "subject_iid", iid,
@@ -383,7 +424,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	}
 	if perr := p.fanout(ctx, e, iid, recipients, payload); perr != nil {
 		if ctx.Err() != nil {
-			return p.src.Nak(f)
+			return p.nak(f)
 		}
 		return p.dlqOrNak(ctx, f, fmt.Sprintf("feed publish failed: %v", perr))
 	}
@@ -391,7 +432,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	if e.EventType == "participant.left" {
 		if terr := p.tombstone(ctx, e.TenantId, e.ActorId, iid, e.Sequence); terr != nil {
 			if ctx.Err() != nil {
-				return p.src.Nak(f)
+				return p.nak(f)
 			}
 			return p.dlqOrNak(ctx, f, fmt.Sprintf("revoked tombstone failed: %v", terr))
 		}
@@ -399,7 +440,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 
 	// WHY: a fence (overdue/lost lease) cancels ctx mid-fact; a stale holder must Nak, never ack/snapshot (RH-02).
 	if ctx.Err() != nil {
-		return p.src.Nak(f)
+		return p.nak(f)
 	}
 	if err := p.src.Ack(f); err != nil {
 		return fmt.Errorf("ack: %w", err)
@@ -419,6 +460,7 @@ func (p *Projector) resolveRoster(ctx context.Context, f Fact, e *signaling.Even
 		case err == nil && len(agents) > 0:
 			return agents, nil
 		case err != nil:
+			obs.RosterErrors.Inc()
 			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
 				"sequence", e.Sequence, "err", err.Error())
 		default:
@@ -447,8 +489,9 @@ func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, 
 	if len(recipients) == 0 {
 		return nil
 	}
+	start := time.Now()
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(fanoutConcurrency)
+	g.SetLimit(p.cfg.FanoutConcurrency)
 	for _, agent := range recipients {
 		agent := agent
 		dedup := fmt.Sprintf("%s.%s.%s.%d", e.TenantId, agent, iid, e.Sequence)
@@ -456,13 +499,16 @@ func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, 
 			return p.publishWithRetry(gctx, e.TenantId, agent, iid, dedup, payload)
 		})
 	}
-	return g.Wait()
+	err := g.Wait()
+	obs.FanoutLatency.Observe(time.Since(start).Seconds())
+	return err
 }
 
 func (p *Projector) publishWithRetry(ctx context.Context, tenant, agent, iid, dedup string, payload []byte) error {
 	var err error
 	for attempt := 0; attempt < p.cfg.PublishRetry; attempt++ {
 		if attempt > 0 {
+			obs.PublishRetries.Inc()
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -488,19 +534,25 @@ func (p *Projector) tombstone(ctx context.Context, tenant, agent, iid string, at
 	return p.publishWithRetry(ctx, tenant, agent, iid, dedup, payload)
 }
 
+func (p *Projector) nak(f Fact) error {
+	obs.Naks.Inc()
+	return p.src.Nak(f)
+}
+
 // @spec:projector.delivery.exhausted-to-dlq
 func (p *Projector) dlqOrNak(ctx context.Context, f Fact, reason string) error {
 	if p.src.Delivered(f) < p.cfg.MaxDeliver {
 		obs.Logger(ctx).Warn("projector.delivery-retry", "reason", reason, "delivered", p.src.Delivered(f))
-		return p.src.Nak(f)
+		return p.nak(f)
 	}
 	tenant, evID, seq := "", "", int64(0)
 	if f.Event != nil {
 		tenant, evID, seq = f.Event.TenantId, f.Event.EventId, f.Event.Sequence
 	}
 	if err := p.sink.Dlq(ctx, tenant, reason, evID, seq); err != nil {
-		return p.src.Nak(f) // DLQ unavailable — keep the source un-acked, retry later
+		return p.nak(f) // DLQ unavailable — keep the source un-acked, retry later
 	}
+	obs.DLQRoutes.Inc()
 	obs.Logger(ctx).Error("projector.dlq", "reason", reason, "event_id", evID, "sequence", seq)
 	if err := p.src.Ack(f); err != nil { // ack so the consumer is not wedged
 		return fmt.Errorf("ack dlq: %w", err)
