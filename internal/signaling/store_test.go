@@ -13,8 +13,8 @@ func TestLogStreamRetentionCeiling(t *testing.T) {
 	if cfg.MaxAge <= 0 {
 		t.Error("INTERACTION_LOGS must carry a MaxAge ceiling (operability backstop)")
 	}
-	if cfg.MaxBytes <= 0 {
-		t.Error("INTERACTION_LOGS must carry a MaxBytes ceiling (operability backstop)")
+	if cfg.MaxBytes != -1 {
+		t.Errorf("MaxBytes = %d, want -1 (account-bounded; the byte ceiling is the JetStream account max_storage, not a per-stream cap that would exceed or over-reserve a shared account)", cfg.MaxBytes)
 	}
 	// Per-subject discard would silently drop an open interaction's HEAD facts and corrupt OCC/replay.
 	if cfg.MaxMsgsPerSubject != -1 {

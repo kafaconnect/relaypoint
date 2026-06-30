@@ -79,8 +79,11 @@ The router MUST close the following correctness/operability gaps:
 
 - `interaction.assigned` MUST either be EMITTED on assign (distinct from a transfer's `joined`) or
   REMOVED from the recognized event set — the recognized-but-never-emitted state MUST NOT persist.
-- `INTERACTION_LOGS` MUST carry a `MaxBytes`/`MaxAge` ceiling with an alert; per-subject `discard`
-  MUST NOT be enabled on this stream (it would silently drop a live interaction's facts).
+- `INTERACTION_LOGS` MUST carry a `MaxAge` ceiling; its BYTE ceiling is the JetStream ACCOUNT
+  `max_storage` (infra-provisioned, with an alert) — NOT a per-stream `MaxBytes`, which is `-1`/
+  account-bounded (a per-stream cap above a shared account is rejected, and one within it starves the
+  co-tenant streams). Per-subject `discard` MUST NOT be enabled (it would silently drop a live
+  interaction's facts).
 - The router (and projector) NATS password MUST be **fail-loud** (`mustEnv`), like the auth-callout —
   a missing credential MUST abort startup, not silently default to `router-dev`.
 - `EnsureLogStream` MUST return the `UpdateStream` error when both `AddStream` and `UpdateStream`
@@ -96,7 +99,7 @@ The router MUST close the following correctness/operability gaps:
 - **id:** `signaling.stream.retention-ceiling`
 - **GIVEN** the `INTERACTION_LOGS` stream config
 - **WHEN** it is ensured
-- **THEN** it declares a `MaxBytes`/`MaxAge` ceiling (with an alert hook) and does NOT enable per-subject discard, so a single live interaction's facts are never silently dropped
+- **THEN** it declares a `MaxAge` ceiling and an account-bounded byte ceiling (`MaxBytes` = -1; the JetStream account `max_storage` + an alert is the byte safeguard) and does NOT enable per-subject discard, so a single live interaction's facts are never silently dropped
 
 #### Scenario: A missing NATS password aborts startup loudly
 - **id:** `router.config.fail-loud-password`

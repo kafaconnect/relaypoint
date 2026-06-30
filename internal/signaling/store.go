@@ -108,16 +108,13 @@ func (s *jetstreamStore) Replay(subject string) ([]*Event, uint64, error) {
 // LogStreamName is the JetStream stream capturing every `tenant.*.interaction.*.log` fact; exported so least-privilege callers (e.g. the auth-callout trusted-backend JS.API grant, RH-08) scope to exactly this stream, not account-wide `$JS.API.>`.
 const LogStreamName = "INTERACTION_LOGS"
 
-// Operability backstop ceilings (RH-11c), defaulted in code, never env. The `.log` is the SOURCE OF
-// TRUTH that Replay/OCC rebuild from, so these are sized to never trigger in normal SME→ME operation
-// — only to cap a pathological runaway (a fact-spam bug or never-ended interactions accumulating
-// forever) before it can fill a single-node disk. A monitor MUST alert well before either is reached
-// (see docs/runbooks): hitting them with DiscardOld would drop the OLDEST whole-stream facts and
-// corrupt an open interaction's replay, so the alert — not the ceiling — is the real safeguard.
-const (
-	logStreamMaxAge   = 365 * 24 * time.Hour    // > any realistic open-interaction lifetime
-	logStreamMaxBytes = 50 * 1024 * 1024 * 1024 // 50 GiB total across all interactions
-)
+// Operability ceiling (RH-11c, revised at deploy): MaxAge bounds the `.log` by TIME. The BYTE ceiling
+// is the JetStream ACCOUNT max_storage (infra-provisioned), NOT a per-stream MaxBytes — on a shared
+// account a per-stream MaxBytes above the account is rejected ("insufficient storage"), and one within
+// it would reserve the whole pool and starve the co-tenant streams (which are all -1/account-bounded).
+// A monitor MUST alert on account storage; the alert — not a hard per-stream byte cap — is the real
+// safeguard (DiscardOld is a last resort that corrupts an open interaction's replay by dropping its head).
+const logStreamMaxAge = 365 * 24 * time.Hour // > any realistic open-interaction lifetime
 
 // logStreamDedupWindow is the EXACTLY-ONCE BOUNDARY for an interaction `.log` append: JetStream rejects
 // a duplicate MsgId (tenant.iid.command_id) seen within it. RH-07 bounded the in-memory `results` cache,
@@ -137,7 +134,8 @@ func logStreamConfig() *nats.StreamConfig {
 		Retention: nats.LimitsPolicy,
 		Discard:   nats.DiscardOld, // whole-stream, NEVER DiscardNewPerSubject: per-subject discard would drop an open interaction's head facts
 		MaxAge:    logStreamMaxAge,
-		MaxBytes:  logStreamMaxBytes,
+		// account-bounded (-1): the byte ceiling is the JetStream account max_storage, not a per-stream cap — a per-stream cap above a shared account is rejected (RH-11c, revised at deploy).
+		MaxBytes: -1,
 		// Broker is the durable exactly-once authority within this window; the in-memory results cache is a bounded fast-path that may evict sooner (RH-07).
 		Duplicates: logStreamDedupWindow,
 		// -1 = unlimited per subject: a single interaction's `.log` is never capped (its head must survive for replay)
