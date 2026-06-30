@@ -22,7 +22,7 @@ func TestLivenessHealthyOnlyWhenNATSAndJetStreamReachable(t *testing.T) {
 		}
 		return nil
 	}
-	h := Handler(live, live)
+	h := Handler(live, live, nil)
 
 	for _, c := range []struct {
 		nats, js bool
@@ -44,7 +44,7 @@ func TestLivenessHealthyOnlyWhenNATSAndJetStreamReachable(t *testing.T) {
 
 // @spec:obs.health.liveness-nats-js
 func TestReadinessIndependentOfLiveness(t *testing.T) {
-	h := Handler(func() error { return nil }, func() error { return errString("not ready") })
+	h := Handler(func() error { return nil }, func() error { return errString("not ready") }, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, readyPath, nil))

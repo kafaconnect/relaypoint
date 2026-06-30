@@ -14,15 +14,20 @@ const (
 	DefaultAddr = ":8222"
 	livePath    = "/healthz"
 	readyPath   = "/readyz"
+	metricsPath = "/metrics"
 	probeFlag   = "-healthcheck"
 )
 
 type Check func() error
 
-func Handler(live, ready Check) http.Handler {
+// metrics is mounted on this same listener (not a second port) so RH-09's scrape rides the probe port; nil leaves only the probes.
+func Handler(live, ready Check, metrics http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(livePath, probe(live))
 	mux.HandleFunc(readyPath, probe(ready))
+	if metrics != nil {
+		mux.Handle(metricsPath, metrics)
+	}
 	return mux
 }
 
@@ -40,11 +45,11 @@ func probe(c Check) http.HandlerFunc {
 }
 
 // WHY: return the bind error (never panic) so the caller can log-and-continue — telemetry must not crash the service.
-func Serve(ctx context.Context, addr string, live, ready Check) error {
+func Serve(ctx context.Context, addr string, live, ready Check, metrics http.Handler) error {
 	if addr == "" {
 		addr = DefaultAddr
 	}
-	srv := &http.Server{Addr: addr, Handler: Handler(live, ready), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: Handler(live, ready, metrics), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)

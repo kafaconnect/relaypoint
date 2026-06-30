@@ -223,6 +223,7 @@ func (p *Projector) renewWithRetry(ctx context.Context, fence *fence) error {
 			return nil
 		}
 		fence.pause()
+		obs.LeaseRenewRetries.Inc()
 		obs.Logger(ctx).Warn("projector.lease-renew-retry", "attempt", attempt+1, "err", err.Error())
 	}
 	return err
@@ -403,7 +404,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	case p.cfg.Roster != nil:
 		agents, rerr := p.resolveRoster(ctx, f, e, iid, log)
 		if rerr != nil {
-			return p.src.Nak(f)
+			return p.nak(f)
 		}
 		recipients = agents
 		log.Info("projector.roster-fanout", "tenant", e.TenantId, "subject_iid", iid,
@@ -418,7 +419,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	}
 	if perr := p.fanout(ctx, e, iid, recipients, payload); perr != nil {
 		if ctx.Err() != nil {
-			return p.src.Nak(f)
+			return p.nak(f)
 		}
 		return p.dlqOrNak(ctx, f, fmt.Sprintf("feed publish failed: %v", perr))
 	}
@@ -426,7 +427,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	if e.EventType == "participant.left" {
 		if terr := p.tombstone(ctx, e.TenantId, e.ActorId, iid, e.Sequence); terr != nil {
 			if ctx.Err() != nil {
-				return p.src.Nak(f)
+				return p.nak(f)
 			}
 			return p.dlqOrNak(ctx, f, fmt.Sprintf("revoked tombstone failed: %v", terr))
 		}
@@ -434,7 +435,7 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 
 	// WHY: a fence (overdue/lost lease) cancels ctx mid-fact; a stale holder must Nak, never ack/snapshot (RH-02).
 	if ctx.Err() != nil {
-		return p.src.Nak(f)
+		return p.nak(f)
 	}
 	if err := p.src.Ack(f); err != nil {
 		return fmt.Errorf("ack: %w", err)
@@ -454,6 +455,7 @@ func (p *Projector) resolveRoster(ctx context.Context, f Fact, e *signaling.Even
 		case err == nil && len(agents) > 0:
 			return agents, nil
 		case err != nil:
+			obs.RosterErrors.Inc()
 			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
 				"sequence", e.Sequence, "err", err.Error())
 		default:
@@ -482,6 +484,7 @@ func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, 
 	if len(recipients) == 0 {
 		return nil
 	}
+	start := time.Now()
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(fanoutConcurrency)
 	for _, agent := range recipients {
@@ -491,13 +494,16 @@ func (p *Projector) fanout(ctx context.Context, e *signaling.Event, iid string, 
 			return p.publishWithRetry(gctx, e.TenantId, agent, iid, dedup, payload)
 		})
 	}
-	return g.Wait()
+	err := g.Wait()
+	obs.FanoutLatency.Observe(time.Since(start).Seconds())
+	return err
 }
 
 func (p *Projector) publishWithRetry(ctx context.Context, tenant, agent, iid, dedup string, payload []byte) error {
 	var err error
 	for attempt := 0; attempt < p.cfg.PublishRetry; attempt++ {
 		if attempt > 0 {
+			obs.PublishRetries.Inc()
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -523,19 +529,25 @@ func (p *Projector) tombstone(ctx context.Context, tenant, agent, iid string, at
 	return p.publishWithRetry(ctx, tenant, agent, iid, dedup, payload)
 }
 
+func (p *Projector) nak(f Fact) error {
+	obs.Naks.Inc()
+	return p.src.Nak(f)
+}
+
 // @spec:projector.delivery.exhausted-to-dlq
 func (p *Projector) dlqOrNak(ctx context.Context, f Fact, reason string) error {
 	if p.src.Delivered(f) < p.cfg.MaxDeliver {
 		obs.Logger(ctx).Warn("projector.delivery-retry", "reason", reason, "delivered", p.src.Delivered(f))
-		return p.src.Nak(f)
+		return p.nak(f)
 	}
 	tenant, evID, seq := "", "", int64(0)
 	if f.Event != nil {
 		tenant, evID, seq = f.Event.TenantId, f.Event.EventId, f.Event.Sequence
 	}
 	if err := p.sink.Dlq(ctx, tenant, reason, evID, seq); err != nil {
-		return p.src.Nak(f) // DLQ unavailable — keep the source un-acked, retry later
+		return p.nak(f) // DLQ unavailable — keep the source un-acked, retry later
 	}
+	obs.DLQRoutes.Inc()
 	obs.Logger(ctx).Error("projector.dlq", "reason", reason, "event_id", evID, "sequence", seq)
 	if err := p.src.Ack(f); err != nil { // ack so the consumer is not wedged
 		return fmt.Errorf("ack dlq: %w", err)

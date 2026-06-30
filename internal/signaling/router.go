@@ -405,6 +405,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 					st.putResult(k, v, r.maxResults)
 				}
 			}
+			obs.PublishRetries.Inc()
 			continue
 		}
 		if aerr != nil {
@@ -657,6 +658,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 					st.putResult(k, v, r.maxResults)
 				}
 			}
+			obs.PublishRetries.Inc()
 			continue
 		}
 		if aerr != nil {

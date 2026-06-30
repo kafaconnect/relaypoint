@@ -90,7 +90,7 @@ func main() {
 		return nil
 	}
 	go func() {
-		if herr := health.Serve(context.Background(), health.DefaultAddr, healthCheck, healthCheck); herr != nil {
+		if herr := health.Serve(context.Background(), health.DefaultAddr, healthCheck, healthCheck, obs.MetricsHandler()); herr != nil {
 			slog.Error("health.serve", "err", herr)
 		}
 	}()

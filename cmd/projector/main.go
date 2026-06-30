@@ -98,7 +98,7 @@ func main() {
 		return nil
 	}
 	go func() {
-		if herr := health.Serve(ctx, cfg.HealthAddr, live, p.Ready); herr != nil {
+		if herr := health.Serve(ctx, cfg.HealthAddr, live, p.Ready, obs.MetricsHandler()); herr != nil {
 			slog.Error("health.serve", "err", herr)
 		}
 	}()

@@ -89,6 +89,53 @@ func TestStartSpanLocalChildIsLocalNotRemote(t *testing.T) {
 	}
 }
 
+// @spec:obs.otlp.export-wired
+// InitTracer wires the OTLP exporter ONLY when an endpoint is configured; a span seeded by an inbound
+// traceparent continues that trace_id either way (exported when wired, log-only when not).
+func TestInitTracerWiresExportWhenEndpointSet(t *testing.T) {
+	const parentTrace = "0123456789abcdef0123456789abcdef"
+	const tp = "00-" + parentTrace + "-0123456789abcdef-01"
+
+	// unset endpoint → exporter stays dormant, span path is log-only but still continues the trace id.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	tracer = nil
+	offShutdown, err := InitTracer(context.Background(), "rp-test-off")
+	if err != nil {
+		t.Fatalf("InitTracer(endpoint unset) err = %v", err)
+	}
+	if tracer != nil {
+		t.Fatal("no endpoint must leave the exporter dormant (tracer nil ⇒ log-only)")
+	}
+	offCtx, offEnd := StartSpan(ContextFromTraceparent(context.Background(), tp), "router")
+	offEnd()
+	if tc, _ := TraceFromContext(offCtx); tc.TraceID != parentTrace {
+		t.Fatalf("log-only span dropped inbound continuity: trace_id=%s, want %s", tc.TraceID, parentTrace)
+	}
+	_ = offShutdown(context.Background())
+
+	// endpoint set → exporter wired; a span under the inbound traceparent continues that trace id.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+	onShutdown, err := InitTracer(context.Background(), "rp-test-on")
+	if err != nil {
+		t.Fatalf("InitTracer(endpoint set) err = %v", err)
+	}
+	t.Cleanup(func() {
+		tracer = nil
+		cctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = onShutdown(cctx)
+	})
+	if tracer == nil {
+		t.Fatal("a configured endpoint must wire the exporter (tracer non-nil)")
+	}
+	onCtx, onEnd := StartSpan(ContextFromTraceparent(context.Background(), tp), "router")
+	onEnd()
+	if tc, _ := TraceFromContext(onCtx); tc.TraceID != parentTrace {
+		t.Fatalf("exported span broke the desk→RP waterfall: trace_id=%s, want %s", tc.TraceID, parentTrace)
+	}
+}
+
 // @spec:obs.sampling-config
 func TestSamplerRatioFromEnv(t *testing.T) {
 	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "0.25")
