@@ -63,6 +63,8 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"$JS.API.CONSUMER.DURABLE.CREATE." + signaling.LogStreamName + ".>",
 				"$JS.API.CONSUMER.INFO." + signaling.LogStreamName + ".>",
 				"$JS.API.CONSUMER.MSG.NEXT." + signaling.LogStreamName + ".>",
+				// nats.go deletes its ephemeral consumers on Unsubscribe/Drain; without DELETE the backend leaks consumers + hits permission errors. Scoped to the one stream, never account-wide (RH-08).
+				"$JS.API.CONSUMER.DELETE." + signaling.LogStreamName + ".>",
 			},
 			PubDeny: []string{"tenant.*.interaction.*.log"},
 			SubAllow: []string{

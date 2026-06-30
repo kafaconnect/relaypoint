@@ -214,9 +214,12 @@ func TestGrantsForTrustedBackendJSAPILeastPrivilege(t *testing.T) {
 		{"$JS.API.CONSUMER.DURABLE.CREATE.INTERACTION_LOGS.snoop", true},
 		{"$JS.API.CONSUMER.INFO.INTERACTION_LOGS.snoop", true},
 		{"$JS.API.CONSUMER.MSG.NEXT.INTERACTION_LOGS.snoop", true},
+		// nats.go deletes library-created ephemeral consumers on Unsubscribe/Drain: DELETE on THIS stream is required, else the backend leaks consumers + hits permission errors.
+		{"$JS.API.CONSUMER.DELETE.INTERACTION_LOGS.snoop", true},
 		// Denied: account-wide reach the old $JS.API.> conferred.
 		{"$JS.API.STREAM.INFO.AGENT_FEED", false},
 		{"$JS.API.CONSUMER.CREATE.AGENT_FEED.snoop", false},
+		{"$JS.API.CONSUMER.DELETE.AGENT_FEED.snoop", false},
 		{"$JS.API.STREAM.DELETE.INTERACTION_LOGS", false},
 		{"$JS.API.STREAM.CREATE.INTERACTION_LOGS", false},
 		{"$JS.API.STREAM.PURGE.INTERACTION_LOGS", false},

@@ -103,3 +103,17 @@ The router MUST close the following correctness/operability gaps:
 - **GIVEN** the router or projector started without its NATS password env set
 - **WHEN** it boots
 - **THEN** it aborts with a fatal "missing required env" rather than silently connecting with a `router-dev` default
+
+### Requirement: The interaction-log stream dedups appends over a bounded exactly-once window
+
+`INTERACTION_LOGS` MUST set a JetStream `Duplicates` window wider than any realistic client/reconnect
+retry (NOT the 2-min broker default). The in-memory `results` dedup cache is bounded (RH-07), so once a
+committed `command_id`'s entry is evicted the broker window is the SOLE exactly-once authority that stops
+a retried-but-still-legal command from double-appending on a long interaction. The window is defaulted in
+code (never env). Unbounded per-command dedup is a deferred future option; this window is the boundary.
+
+#### Scenario: A retried committed command_id is deduped by the broker after in-memory eviction
+- **id:** `signaling.stream.dedup-window`
+- **GIVEN** the `INTERACTION_LOGS` stream config
+- **WHEN** it is ensured
+- **THEN** it declares a non-zero `Duplicates` window comfortably exceeding any client/reconnect retry, so a retry of an already-committed `command_id` is deduped by the broker even after its in-memory `results` entry has been evicted

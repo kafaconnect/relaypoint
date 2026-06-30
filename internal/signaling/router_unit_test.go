@@ -495,3 +495,35 @@ func TestCore_LRUCapAndResultsBounded(t *testing.T) {
 		t.Fatalf("evicted-id retry double-appended: before=%d after=%d", len(before), len(after))
 	}
 }
+
+// TestCopyMissingResultsPreservesFIFO asserts a re-fold copy lands missing dedup entries in fresh's
+// chronological (resultOrder) order, not random map order — so st.resultOrder stays a true FIFO and the
+// bounded cache evicts the OLDEST, never a younger entry early (cross-review FIX 4).
+func TestCopyMissingResultsPreservesFIFO(t *testing.T) {
+	mk := func(ids ...string) *interactionState {
+		st := &interactionState{results: map[string]storedResult{}}
+		for _, id := range ids {
+			st.putResult(id, storedResult{result: &CommandResult{CommandId: id}}, 0)
+		}
+		return st
+	}
+	// fresh holds c1..c5 chronologically; a stray id sits in resultOrder but not results (defensive guard).
+	fresh := mk("c1", "c2", "c3", "c4", "c5")
+	fresh.resultOrder = append(fresh.resultOrder, "ghost")
+	// st already has c2; it is missing c1,c3,c4,c5 and must receive them in fresh's chronological order.
+	st := mk("c2")
+	st.copyMissingResults(fresh, 0)
+
+	want := []string{"c2", "c1", "c3", "c4", "c5"}
+	if len(st.resultOrder) != len(want) {
+		t.Fatalf("resultOrder = %v, want %v", st.resultOrder, want)
+	}
+	for i := range want {
+		if st.resultOrder[i] != want[i] {
+			t.Fatalf("resultOrder = %v, want %v (chronological FIFO copy)", st.resultOrder, want)
+		}
+	}
+	if _, ok := st.results["ghost"]; ok {
+		t.Fatal("ghost id (in resultOrder, absent from results) must be skipped, not copied")
+	}
+}

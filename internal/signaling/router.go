@@ -72,6 +72,21 @@ func (st *interactionState) putResult(id string, sr storedResult, max int) {
 	}
 }
 
+// copyMissingResults folds in fresh's dedup entries that st lacks, iterating fresh.resultOrder
+// (chronological) NOT the map: copying in random map order would scramble st.resultOrder and evict the
+// wrong (younger) entry early. The guard skips an id present in resultOrder but not results (defensive).
+func (st *interactionState) copyMissingResults(fresh *interactionState, max int) {
+	for _, id := range fresh.resultOrder {
+		sr, ok := fresh.results[id]
+		if !ok {
+			continue
+		}
+		if _, exists := st.results[id]; !exists {
+			st.putResult(id, sr, max)
+		}
+	}
+}
+
 // parentBinding records a privileged command's sub-facts so a divergent retry of the same parent command_id is rejected before re-emitting any sub-fact (A5); rebuilt from each sub-fact's CausedBy.
 type parentBinding struct {
 	subIDs map[string]bool
@@ -400,11 +415,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 				return res
 			}
 			st.seq, st.streamSeq, st.status, st.part, st.parents = fresh.seq, fresh.streamSeq, fresh.status, fresh.part, fresh.parents
-			for k, v := range fresh.results {
-				if _, ok := st.results[k]; !ok {
-					st.putResult(k, v, r.maxResults)
-				}
-			}
+			st.copyMissingResults(fresh, r.maxResults)
 			obs.PublishRetries.Inc()
 			continue
 		}
@@ -438,11 +449,7 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 			return res
 		}
 		st.seq, st.streamSeq, st.status, st.part, st.parents = fresh.seq, fresh.streamSeq, fresh.status, fresh.part, fresh.parents
-		for k, v := range fresh.results {
-			if _, ok := st.results[k]; !ok {
-				st.putResult(k, v, r.maxResults)
-			}
-		}
+		st.copyMissingResults(fresh, r.maxResults)
 		if committed, ok := st.results[cmd.CommandId]; ok {
 			if committed.payloadHash != "" && committed.payloadHash != ph {
 				return &CommandResult{CommandId: cmd.CommandId, Status: statusRejected, Reason: "conflict: command_id reused with a different payload"}
@@ -661,11 +668,7 @@ func (r *Router) appendParticipationFact(ctx context.Context, tenant, iid, comma
 				return res
 			}
 			st.seq, st.streamSeq, st.status, st.part, st.parents = fresh.seq, fresh.streamSeq, fresh.status, fresh.part, fresh.parents
-			for k, v := range fresh.results {
-				if _, ok := st.results[k]; !ok {
-					st.putResult(k, v, r.maxResults)
-				}
-			}
+			st.copyMissingResults(fresh, r.maxResults)
 			obs.PublishRetries.Inc()
 			continue
 		}

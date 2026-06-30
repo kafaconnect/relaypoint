@@ -28,6 +28,19 @@ func TestLogStreamRetentionCeiling(t *testing.T) {
 	}
 }
 
+// @spec:signaling.stream.dedup-window
+func TestLogStreamDedupWindow(t *testing.T) {
+	cfg := logStreamConfig()
+	// The in-memory results cache is bounded (RH-07), so the BROKER dedup window is the durable
+	// exactly-once authority for a retried committed command_id; it must be set (not the 2-min default).
+	if cfg.Duplicates != logStreamDedupWindow {
+		t.Errorf("Duplicates = %v, want %v (the exactly-once boundary)", cfg.Duplicates, logStreamDedupWindow)
+	}
+	if cfg.Duplicates <= 0 {
+		t.Error("INTERACTION_LOGS must carry a non-zero Duplicates window (broker exactly-once authority)")
+	}
+}
+
 // @spec:signaling.stream.retention-ceiling
 func TestEnsureStreamReturnsUpdateErrWhenBothFail(t *testing.T) {
 	addErr := errors.New("add failed")

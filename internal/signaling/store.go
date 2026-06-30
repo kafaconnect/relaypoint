@@ -119,6 +119,16 @@ const (
 	logStreamMaxBytes = 50 * 1024 * 1024 * 1024 // 50 GiB total across all interactions
 )
 
+// logStreamDedupWindow is the EXACTLY-ONCE BOUNDARY for an interaction `.log` append: JetStream rejects
+// a duplicate MsgId (tenant.iid.command_id) seen within it. RH-07 bounded the in-memory `results` cache,
+// so once that fast-path entry is evicted the broker window is the SOLE authority that stops a retried
+// ACCEPTED command_id (still legal in the current state, on a >maxResults-long interaction) double-
+// appending. Hence a window far wider than any realistic client/reconnect retry, not the NATS 2-min
+// default which a long interaction's eviction could outlive. 1h >> any reconnect/backoff burst and the
+// per-stream dedup index stays memory-bounded. Unbounded per-command dedup is a deferred future option;
+// this window is the current guarantee boundary (defaulted in code, never env — RH-11c convention).
+const logStreamDedupWindow = time.Hour
+
 func logStreamConfig() *nats.StreamConfig {
 	return &nats.StreamConfig{
 		Name:      LogStreamName,
@@ -128,6 +138,8 @@ func logStreamConfig() *nats.StreamConfig {
 		Discard:   nats.DiscardOld, // whole-stream, NEVER DiscardNewPerSubject: per-subject discard would drop an open interaction's head facts
 		MaxAge:    logStreamMaxAge,
 		MaxBytes:  logStreamMaxBytes,
+		// Broker is the durable exactly-once authority within this window; the in-memory results cache is a bounded fast-path that may evict sooner (RH-07).
+		Duplicates: logStreamDedupWindow,
 		// -1 = unlimited per subject: a single interaction's `.log` is never capped (its head must survive for replay)
 		MaxMsgsPerSubject: -1,
 	}

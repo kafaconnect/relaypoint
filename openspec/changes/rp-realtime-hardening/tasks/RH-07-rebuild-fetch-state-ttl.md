@@ -52,3 +52,9 @@ interactions grow router memory at ME multi-tenant scale (no router KV snapshot,
   `// @spec:router.state.idle-evict` `TestCore_IdleEvictionRebuildsOnNextAccess` and
   `TestCore_LRUCapAndResultsBounded` (idle + LRU eviction, bounded results, transparent rebuild-on-
   next-access with no double-append after eviction).
+- Follow-up (cross-review FIX 2): bounding `results` exposed that after BOTH the 2-min broker dedup
+  window AND in-memory eviction, a retry of a still-legal committed command_id on a >`maxResults`-long
+  interaction could double-append. Fixed by setting the stream's `Duplicates` to `logStreamDedupWindow`
+  (1h) so the BROKER is the durable exactly-once authority within the window and the bounded cache is a
+  safe fast-path (`signaling.stream.dedup-window`). NOTE: unbounded per-command dedup is a DEFERRED
+  future option; the `Duplicates` window is the current guarantee boundary.
