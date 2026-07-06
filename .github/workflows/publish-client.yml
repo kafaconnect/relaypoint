@@ -1,0 +1,36 @@
+name: publish-client
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: clients/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: '@kafaconnect'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      # pnpm workspace: install from repo root so the lockfile resolves.
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm build
+      # restricted: GitHub Packages has no public npm tier — access follows repo/org visibility.
+      - run: pnpm publish --no-git-checks --access restricted
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
