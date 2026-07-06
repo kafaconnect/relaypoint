@@ -1,6 +1,6 @@
 {
-  "name": "@relaypoint/client",
-  "version": "0.1.0-chat",
+  "name": "@kafaconnect/relaypoint-client",
+  "version": "0.1.0",
   "description": "RelayPoint browser SDK — chat subset over the signaling-core router-authoritative protocol",
   "license": "SEE LICENSE IN ../../LICENSE",
   "type": "module",
