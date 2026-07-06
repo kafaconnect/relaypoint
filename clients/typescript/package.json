@@ -1,6 +1,6 @@
 {
   "name": "@kafaconnect/relaypoint-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "RelayPoint browser SDK — chat subset over the signaling-core router-authoritative protocol",
   "license": "SEE LICENSE IN ../../LICENSE",
   "type": "module",
@@ -14,6 +14,10 @@
     "./testing": {
       "types": "./dist/testing/fake-transport.d.ts",
       "import": "./dist/testing/fake-transport.js"
+    },
+    "./gen/*.js": {
+      "types": "./dist/gen/relaypoint/interaction/v1/*.d.ts",
+      "import": "./dist/gen/relaypoint/interaction/v1/*.js"
     }
   },
   "files": [

@@ -30,7 +30,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: .
       - run: pnpm build
-      # restricted: GitHub Packages has no public npm tier — access follows repo/org visibility.
-      - run: pnpm publish --no-git-checks --access restricted
+      # public: this is an open-source client SDK (relaypoint is a public repo), consumed org-wide.
+      - run: pnpm publish --no-git-checks --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
