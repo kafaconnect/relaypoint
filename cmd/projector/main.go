@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -63,23 +61,10 @@ func main() {
 	snaps, err := projector.NewSnapshotStore(jsKV)
 	must("snapshot-store", err)
 
+	// Fan-out is structural-only: recipients come from folded participation (coveredBy). The former
+	// tenant-wide roster override (a desk product rule) was removed at the substrate boundary (SBI-03);
+	// desk now emits participation facts, so no roster pull remains on this path.
 	cfg := projector.Config{MaxDeliver: maxDeliver, LeaseTTL: leaseTTL, HealthAddr: health.DefaultAddr}
-	switch os.Getenv("PROJECTOR_FANOUT_MODE") {
-	case "tenant-roster":
-		// production: a tenant's agents come from desk's real roster (its Zitadel org membership), never hardcoded.
-		dr, err := projector.NewDeskRoster(
-			mustEnv("DESK_ROSTER_URL"),
-			mustEnv("DESK_ROSTER_TOKEN"),
-			rosterCacheTTL(),
-			&http.Client{Timeout: 10 * time.Second})
-		must("desk-roster", err)
-		cfg.Roster = dr
-		slog.Info("projector.tenant-roster", "url", os.Getenv("DESK_ROSTER_URL"), "cache_ttl", rosterCacheTTL().String())
-	case "tenant-wide":
-		// dev shortcut: a static roster bypasses the participation gate, which stays empty until desk emits facts.
-		cfg.TenantWideAgents = parseTenantAgents(os.Getenv("PROJECTOR_TENANT_AGENTS"))
-		slog.Warn("projector.tenant-wide", "tenants", len(cfg.TenantWideAgents), "note", "participation gate bypassed")
-	}
 	p := projector.New(src, sink, lease, snaps, cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -107,23 +92,6 @@ func main() {
 	}
 }
 
-func parseTenantAgents(csv string) map[string][]string {
-	out := map[string][]string{}
-	for _, pair := range strings.Split(csv, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		tid, agent, ok := strings.Cut(pair, ":")
-		tid, agent = strings.TrimSpace(tid), strings.TrimSpace(agent)
-		if !ok || tid == "" || agent == "" {
-			continue
-		}
-		out[tid] = append(out[tid], agent)
-	}
-	return out
-}
-
 func workerID() string {
 	host, _ := os.Hostname()
 	return fmt.Sprintf("%s-%s", host, uuid.Must(uuid.NewV7()))
@@ -143,16 +111,6 @@ func mustEnv(k string) string {
 		os.Exit(1)
 	}
 	return v
-}
-
-func rosterCacheTTL() time.Duration {
-	if raw := os.Getenv("DESK_ROSTER_TTL"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
-			return d
-		}
-		slog.Warn("projector.roster_ttl.invalid_env", "value", raw)
-	}
-	return 60 * time.Second
 }
 
 func must(label string, err error) {

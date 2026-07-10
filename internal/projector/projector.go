@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,9 +17,8 @@ import (
 )
 
 var (
-	errRosterUnavailable = errors.New("projector: roster unavailable after in-process retry window")
-	errNotLeader         = errors.New("projector: not holding lease")
-	errPaused            = errors.New("projector: lease renew stalled")
+	errNotLeader = errors.New("projector: not holding lease")
+	errPaused    = errors.New("projector: lease renew stalled")
 )
 
 const (
@@ -80,23 +78,16 @@ func (s *state) restore(snap *Snapshot) {
 }
 
 type Config struct {
-	MaxDeliver        int
-	SnapshotEvery     int
-	PublishRetry      int
-	RetryBackoff      time.Duration
-	LeaseRenew        time.Duration
-	LeaseTTL          time.Duration
-	RosterRetryWindow time.Duration
-	HealthAddr        string
+	MaxDeliver    int
+	SnapshotEvery int
+	PublishRetry  int
+	RetryBackoff  time.Duration
+	LeaseRenew    time.Duration
+	LeaseTTL      time.Duration
+	HealthAddr    string
 
 	// FanoutConcurrency collapses N sequential per-recipient publish RTTs into ~one; MaxAckPending=1 keeps a single fact in flight, so this also bounds total concurrent publishes. @spec: RDL-01
 	FanoutConcurrency int
-
-	// DEV/TEST fan-out override (nil in prod): desk M1 emits no participation facts yet, so the stock per-participation fan-out would leave every feed empty; participation is still folded.
-	TenantWideAgents map[string][]string
-
-	// Production tenant-shared fan-out source; takes precedence over TenantWideAgents; a roster lookup error Naks the fact (redelivery), never drops it.
-	Roster Roster
 }
 
 func (c Config) withDefaults() Config {
@@ -120,9 +111,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.LeaseRenew >= c.LeaseTTL {
 		c.LeaseRenew = c.LeaseTTL / 2 // keep a positive fencing slack
-	}
-	if c.RosterRetryWindow <= 0 {
-		c.RosterRetryWindow = 90 * time.Second
 	}
 	if c.HealthAddr == "" {
 		c.HealthAddr = ":8222"
@@ -390,7 +378,6 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	if tp := f.Traceparent(); tp != "" {
 		ctx = obs.ContextFromTraceparent(ctx, tp)
 	}
-	log := obs.Logger(ctx)
 	e := f.Event
 	if e == nil || e.TenantId == "" || e.EventType == "" {
 		return p.dlqOrNak(ctx, f, "malformed envelope")
@@ -403,20 +390,11 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	view := p.st.view(key)
 
 	// Fold before picking recipients so a closing left@L is itself projected but no fact at S>L is.
+	// Structural fan-out ONLY: recipients come from folded participation (coveredBy), never a tenant-wide
+	// roster override — that "every agent sees every interaction" rule is a desk PRODUCT policy, kept out
+	// of this substrate (SBI-03; desk ADR-0020). Desk now emits participation facts as its source of truth.
 	view.ApplyFact(e)
 	recipients := coveredBy(view, e.Sequence)
-	switch {
-	case p.cfg.Roster != nil:
-		agents, rerr := p.resolveRoster(ctx, f, e, iid, log)
-		if rerr != nil {
-			return p.nak(f)
-		}
-		recipients = agents
-		log.Info("projector.roster-fanout", "tenant", e.TenantId, "subject_iid", iid,
-			"sequence", e.Sequence, "agents", agents)
-	case len(p.cfg.TenantWideAgents[e.TenantId]) > 0:
-		recipients = p.cfg.TenantWideAgents[e.TenantId]
-	}
 
 	payload, err := proto.Marshal(e)
 	if err != nil {
@@ -448,40 +426,6 @@ func (p *Projector) process(ctx context.Context, f Fact) error {
 	p.lastAckSeq = f.StreamSeq
 	p.maybeSnapshot(ctx, f.StreamSeq)
 	return nil
-}
-
-// @spec:projector.roster.unbounded-retry
-func (p *Projector) resolveRoster(ctx context.Context, f Fact, e *signaling.Event, iid string, log *slog.Logger) ([]string, error) {
-	deadline := time.Now().Add(p.cfg.RosterRetryWindow)
-	backoff := p.cfg.RetryBackoff
-	for {
-		agents, err := p.cfg.Roster.Agents(ctx, e.TenantId)
-		switch {
-		case err == nil && len(agents) > 0:
-			return agents, nil
-		case err != nil:
-			obs.RosterErrors.Inc()
-			log.Warn("projector.roster-failed", "tenant", e.TenantId, "subject_iid", iid,
-				"sequence", e.Sequence, "err", err.Error())
-		default:
-			log.Warn("projector.roster-empty", "tenant", e.TenantId, "subject_iid", iid, "sequence", e.Sequence)
-		}
-		if ctx.Err() != nil || time.Now().After(deadline) {
-			return nil, errRosterUnavailable
-		}
-		// WHY: hold the MaxAckPending=1 slot via InProgress so a roster blip doesn't burn the MaxDeliver budget (RH-04).
-		if ierr := p.src.InProgress(f); ierr != nil {
-			return nil, errRosterUnavailable
-		}
-		select {
-		case <-ctx.Done():
-			return nil, errRosterUnavailable
-		case <-time.After(backoff):
-		}
-		if backoff < 500*time.Millisecond {
-			backoff *= 2
-		}
-	}
 }
 
 // @spec: RDL-01

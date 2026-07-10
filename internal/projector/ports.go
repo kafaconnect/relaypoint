@@ -59,8 +59,3 @@ type SnapshotStore interface {
 	Load(ctx context.Context, maxSeq uint64) (*Snapshot, uint64, error)
 	Save(ctx context.Context, seq uint64, s *Snapshot) error
 }
-
-// Tenant-shared fan-out recipient set (M1: every agent sees every interaction); a port, not desk's HTTP, for loose coupling; a transient error Naks the fact (redelivery), so a roster outage never drops one.
-type Roster interface {
-	Agents(ctx context.Context, tenantID string) ([]string, error)
-}
