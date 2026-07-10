@@ -20,7 +20,7 @@ var (
 	})
 	Naks = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: "relaypoint", Subsystem: "projector", Name: "naks_total",
-		Help: "Facts Nak'd for redelivery (roster blip, fence, transient publish failure).",
+		Help: "Facts Nak'd for redelivery (fence, transient publish failure).",
 	})
 	// Shared by the projector (feed publish) and the router (log-append OCC re-fold); a single binary scrapes its own meaning.
 	PublishRetries = prometheus.NewCounter(prometheus.CounterOpts{
@@ -31,10 +31,6 @@ var (
 		Namespace: "relaypoint", Subsystem: "projector", Name: "lease_renew_retries_total",
 		Help: "Lease-renew attempts that failed and were retried within the fencing budget.",
 	})
-	RosterErrors = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "relaypoint", Subsystem: "projector", Name: "roster_errors_total",
-		Help: "Roster lookups that returned an error (desk roster 5xx/timeout).",
-	})
 	FanoutLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "relaypoint", Subsystem: "projector", Name: "fanout_latency_seconds",
 		Help: "Wall time to fan a single fact out to all recipient feeds.", Buckets: prometheus.DefBuckets,
@@ -42,7 +38,7 @@ var (
 )
 
 func init() {
-	metricsRegistry.MustRegister(DLQRoutes, Naks, PublishRetries, LeaseRenewRetries, RosterErrors, FanoutLatency)
+	metricsRegistry.MustRegister(DLQRoutes, Naks, PublishRetries, LeaseRenewRetries, FanoutLatency)
 }
 
 // MetricsHandler serves the Prometheus exposition; read-only and fail-open like the rest of obs (ADR-0011 §9).

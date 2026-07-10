@@ -182,21 +182,21 @@ func fact(streamSeq uint64, iid string, seq int64, typ, actor string) Fact {
 func TestProjector_PropagatesTraceFromLogToFeed(t *testing.T) {
 	const tp = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
 
-	traced := fact(1, "i1", 1, "message.created", "u1")
+	// alice is a folded participant of BOTH interactions (structural fan-out; no roster).
+	i1join := fact(1, "i1", 1, "participant.joined", "alice")
+	traced := fact(2, "i1", 2, "message.created", "u1")
 	traced.traceparent = tp
-	untraced := fact(2, "i2", 1, "message.created", "u1")
+	i2join := fact(3, "i2", 1, "participant.joined", "alice")
+	untraced := fact(4, "i2", 2, "message.created", "u1")
 
-	src := newFakeSource(traced, untraced)
+	src := newFakeSource(i1join, traced, i2join, untraced)
 	sink := newFakeSink()
-	runAll(t, src, sink, nil, Config{TenantWideAgents: map[string][]string{tn: {"alice"}}})
+	runAll(t, src, sink, nil, Config{})
 
-	tracedFeeds := sink.feedsFor("alice", "i1")
-	if len(tracedFeeds) != 1 {
-		t.Fatalf("want 1 feed publish for the traced fact, got %d", len(tracedFeeds))
-	}
-	got, ok := obs.ParseTraceparent(tracedFeeds[0].traceparent)
+	tracedMsg := feedAtSeq(t, sink.feedsFor("alice", "i1"), 2) // the traced message.created@2
+	got, ok := obs.ParseTraceparent(tracedMsg.traceparent)
 	if !ok {
-		t.Fatalf("feed traceparent not well-formed: %q", tracedFeeds[0].traceparent)
+		t.Fatalf("feed traceparent not well-formed: %q", tracedMsg.traceparent)
 	}
 	want, _ := obs.ParseTraceparent(tp)
 	if got.TraceID != want.TraceID {
@@ -206,13 +206,26 @@ func TestProjector_PropagatesTraceFromLogToFeed(t *testing.T) {
 		t.Fatalf("feed span id should be a fresh child span, got the parent's %q", got.SpanID)
 	}
 
-	untracedFeeds := sink.feedsFor("alice", "i2")
-	if len(untracedFeeds) != 1 {
-		t.Fatalf("want 1 feed publish for the untraced fact, got %d", len(untracedFeeds))
+	untracedMsg := feedAtSeq(t, sink.feedsFor("alice", "i2"), 2) // the trace-less message.created@2
+	if untracedMsg.traceparent != "" {
+		t.Fatalf("a trace-less fact must not fabricate a trace, got %q", untracedMsg.traceparent)
 	}
-	if untracedFeeds[0].traceparent != "" {
-		t.Fatalf("a trace-less fact must not fabricate a trace, got %q", untracedFeeds[0].traceparent)
+}
+
+// feedAtSeq returns the single feed publish carrying the Event at the given sequence.
+func feedAtSeq(t *testing.T, ps []pub, seq int64) pub {
+	t.Helper()
+	var out []pub
+	for _, p := range ps {
+		e := &signaling.Event{}
+		if err := proto.Unmarshal(p.payload, e); err == nil && e.Sequence == seq {
+			out = append(out, p)
+		}
 	}
+	if len(out) != 1 {
+		t.Fatalf("want exactly 1 feed publish at sequence %d, got %d", seq, len(out))
+	}
+	return out[0]
 }
 
 func runAll(t *testing.T, src *fakeSource, sink *fakeSink, snaps *fakeSnaps, cfg Config) *Projector {
@@ -260,163 +273,56 @@ func TestFanoutToParticipantsOnly(t *testing.T) {
 	}
 }
 
-func TestTenantWideFanoutShortcut(t *testing.T) {
+// @spec:substrate.no-roster-pull
+// Fan-out is driven SOLELY by folded participation (coveredBy) — there is no tenant-wide roster
+// override left in the substrate. The projector core depends only on LogSource/FeedSink/LeaseStore/
+// SnapshotStore; a Roster port no longer exists, so a roster HTTP pull is structurally impossible on
+// the projector path. This asserts the fold-only recipient set (SBI-03; desk ADR-0020).
+func TestFanoutFromParticipationOnlyNoRosterPull(t *testing.T) {
 	src := newFakeSource(
-		fact(1, "I", 1, "interaction.started", "u1"),
-		fact(2, "I", 2, "message.created", "u1"),
+		fact(1, "I", 1, "participant.joined", "alice"),
+		fact(2, "I", 2, "participant.joined", "bob"),
+		fact(3, "I", 3, "message.created", "u1"),
 	)
 	sink := newFakeSink()
-	runAll(t, src, sink, nil, Config{TenantWideAgents: map[string][]string{tn: {"agent1"}}})
+	// No Roster / TenantWideAgents config exists to set — the only recipient source is participation.
+	runAll(t, src, sink, nil, Config{})
 
-	if got := len(sink.feedsFor("agent1", "I")); got != 2 {
-		t.Fatalf("agent1 feed = %d facts, want 2 (tenant-wide ignores participation)", got)
+	if got := len(sink.feedsFor("alice", "I")); got != 3 {
+		t.Fatalf("alice feed = %d facts, want 3 (own join, bob join, message) from folded participation alone", got)
 	}
-	if got := len(sink.feedsFor("bob", "I")); got != 0 {
-		t.Fatalf("bob (not in roster) feed = %d, want 0", got)
+	if got := len(sink.feedsFor("bob", "I")); got != 2 {
+		t.Fatalf("bob feed = %d facts, want 2 (own join, message) from folded participation alone", got)
 	}
-}
-
-type fakeRoster struct {
-	agents  map[string][]string
-	err     error
-	lookups int
-}
-
-func (r *fakeRoster) Agents(_ context.Context, tenantID string) ([]string, error) {
-	r.lookups++
-	if r.err != nil {
-		return nil, r.err
-	}
-	return r.agents[tenantID], nil
-}
-
-func TestTenantRosterFanout(t *testing.T) {
-	src := newFakeSource(
-		fact(1, "I", 1, "interaction.started", "u1"),
-		fact(2, "I", 2, "message.created", "u1"),
-	)
-	sink := newFakeSink()
-	rr := &fakeRoster{agents: map[string][]string{tn: {"agent1", "agent2"}}}
-	runAll(t, src, sink, nil, Config{Roster: rr})
-
-	for _, a := range []string{"agent1", "agent2"} {
-		if got := len(sink.feedsFor(a, "I")); got != 2 {
-			t.Fatalf("%s feed = %d facts, want 2 (tenant-roster fans to every agent)", a, got)
-		}
-	}
+	// A tenant agent who never joined this interaction gets nothing — the removed roster override would
+	// otherwise have fanned every tenant agent every fact.
 	if got := len(sink.feedsFor("stranger", "I")); got != 0 {
-		t.Fatalf("non-roster agent feed = %d, want 0", got)
+		t.Fatalf("stranger (never a participant) feed = %d, want 0 (no tenant-wide roster fan-out)", got)
 	}
-	if rr.lookups == 0 {
-		t.Fatal("roster was never consulted")
-	}
-}
-
-func TestTenantRosterErrorRecoversInProcessNoNak(t *testing.T) {
-	src := newFakeSource(
-		fact(1, "I", 1, "interaction.started", "u1"),
-		fact(2, "I", 2, "message.created", "u1"),
-	)
-	sink := newFakeSink()
-	calls := 0
-	failing := &errOnceRoster{agents: map[string][]string{tn: {"agent1"}}, failAt: 2, calls: &calls}
-	runAll(t, src, sink, nil, Config{Roster: failing,
-		RosterRetryWindow: 50 * time.Millisecond, RetryBackoff: time.Millisecond})
-
-	if !containsSeq(t, sink.feedsFor("agent1", "I"), 2) {
-		t.Fatal("agent1 never received seq 2 after the roster recovered in-process")
-	}
-	if countSeq(src.naked, 2) != 0 {
-		t.Fatalf("seq 2 Nak'd %d times, want 0 (a transient roster error is held in-process, not redelivered)", countSeq(src.naked, 2))
-	}
-	if src.inProgress < 1 {
-		t.Fatal("InProgress was never called to hold the delivery during the roster blip")
-	}
-}
-
-type errOnceRoster struct {
-	agents map[string][]string
-	failAt int
-	calls  *int
-}
-
-func (r *errOnceRoster) Agents(_ context.Context, tenantID string) ([]string, error) {
-	*r.calls++
-	if *r.calls == r.failAt {
-		return nil, errors.New("roster outage")
-	}
-	return r.agents[tenantID], nil
 }
 
 // @spec:projector.delivery.exhausted-to-dlq
 func TestExhaustedDeliveryToDLQ(t *testing.T) {
-	f := fact(1, "I", 1, "message.created", "u1")
-	src := newFakeSource(f)
+	src := newFakeSource(
+		fact(1, "I", 1, "participant.joined", "agent1"),
+		fact(2, "I", 2, "message.created", "u1"),
+	)
 	src.redeliverCap = 3
 	sink := newFakeSink()
-	sink.failFor[fmt.Sprintf("%s.%s.%s.%d", tn, "agent1", "I", 1)] = 99
-	runAll(t, src, sink, nil, Config{MaxDeliver: 3, PublishRetry: 1,
-		Roster: &fakeRoster{agents: map[string][]string{tn: {"agent1"}}}})
+	sink.failFor[fmt.Sprintf("%s.%s.%s.%d", tn, "agent1", "I", 2)] = 99
+	runAll(t, src, sink, nil, Config{MaxDeliver: 3, PublishRetry: 1})
 
 	if len(sink.dlq) != 1 {
 		t.Fatalf("DLQ entries = %d, want 1 (exhausted delivery dead-lettered, not silently dropped); entries=%v", len(sink.dlq), sink.dlq)
 	}
-	if !strings.Contains(sink.dlq[0], "ev-1") {
+	if !strings.Contains(sink.dlq[0], "ev-2") {
 		t.Fatalf("DLQ record %q missing the source event_id", sink.dlq[0])
 	}
-	if countSeq(src.acked, 1) != 1 {
-		t.Fatalf("exhausted streamSeq 1 acked %d times, want 1 (acked after DLQ so the MaxAckPending=1 consumer is not wedged)", countSeq(src.acked, 1))
+	if countSeq(src.acked, 2) != 1 {
+		t.Fatalf("exhausted streamSeq 2 acked %d times, want 1 (acked after DLQ so the MaxAckPending=1 consumer is not wedged)", countSeq(src.acked, 2))
 	}
-	if countSeq(src.naked, 1) < 1 {
-		t.Fatal("streamSeq 1 was never Nak'd before exhaustion (transient failures must redeliver first)")
-	}
-}
-
-// @spec:projector.roster.unbounded-retry
-func TestRosterErrorHeldViaInProgressThenBoundedNakNeverDLQ(t *testing.T) {
-	f := fact(1, "I", 1, "message.created", "u1")
-	src := newFakeSource(f)
-	src.redeliverCap = 3
-	sink := newFakeSink()
-	runAll(t, src, sink, nil, Config{MaxDeliver: 3,
-		RosterRetryWindow: 30 * time.Millisecond, RetryBackoff: 5 * time.Millisecond,
-		Roster: &fakeRoster{err: errors.New("roster outage")}})
-
-	if src.inProgress < 1 {
-		t.Fatal("InProgress was never called — a roster outage must extend the delivery budget, not burn it")
-	}
-	if len(sink.dlq) != 0 {
-		t.Fatalf("DLQ entries = %d, want 0 (a roster outage must never DLQ a valid fact); entries=%v", len(sink.dlq), sink.dlq)
-	}
-	if countSeq(src.acked, 1) != 0 {
-		t.Fatalf("streamSeq 1 acked %d times, want 0 (a roster outage must not ack-drop the fact)", countSeq(src.acked, 1))
-	}
-	if countSeq(src.naked, 1) < 1 {
-		t.Fatal("streamSeq 1 was never Nak'd (the bounded fallback after the in-process window must Nak)")
-	}
-}
-
-// @spec:projector.roster.empty-soft-fail
-func TestEmptyRosterSoftFailNotDropped(t *testing.T) {
-	f := fact(1, "I", 1, "message.created", "u1")
-	src := newFakeSource(f)
-	src.redeliverCap = 3
-	sink := newFakeSink()
-	runAll(t, src, sink, nil, Config{MaxDeliver: 3,
-		RosterRetryWindow: 30 * time.Millisecond, RetryBackoff: 5 * time.Millisecond,
-		Roster: &fakeRoster{agents: map[string][]string{tn: {}}}})
-
-	if countSeq(src.acked, 1) != 0 {
-		t.Fatalf("empty-roster streamSeq 1 acked %d times, want 0 (soft-fail must not ack-drop a real fact)", countSeq(src.acked, 1))
-	}
-	if countSeq(src.naked, 1) < 1 {
-		t.Fatal("empty-roster streamSeq 1 was never Nak'd (it must soft-fail/retry, not ack-drop)")
-	}
-	if len(sink.dlq) != 0 {
-		t.Fatalf("DLQ entries = %d, want 0 (an empty roster is a transient soft-fail, never DLQ); entries=%v", len(sink.dlq), sink.dlq)
-	}
-	if got := len(sink.feedsFor("agent1", "I")); got != 0 {
-		t.Fatalf("empty roster fanned to %d feeds, want 0 (must not fan to a stale/empty set)", got)
+	if countSeq(src.naked, 2) < 1 {
+		t.Fatal("streamSeq 2 was never Nak'd before exhaustion (transient failures must redeliver first)")
 	}
 }
 
@@ -551,25 +457,27 @@ func TestConfigFanoutConcurrencyDefault(t *testing.T) {
 // @spec: RDL-02
 func TestConcurrentFanoutAllRecipients(t *testing.T) {
 	agents := []string{"a1", "a2", "a3", "a4", "a5", "a6"}
-	f := fact(2, "I", 2, "message.created", "u1")
-	src := newFakeSource(
-		fact(1, "I", 1, "interaction.started", "u1"),
-		f,
-	)
+	// Seed the recipient set via participation joins (structural fan-out); message.created lands at seq 7.
+	facts := make([]Fact, 0, len(agents)+1)
+	for i, a := range agents {
+		facts = append(facts, fact(uint64(i+1), "I", int64(i+1), "participant.joined", a))
+	}
+	facts = append(facts, fact(7, "I", 7, "message.created", "u1"))
+	src := newFakeSource(facts...)
 	sink := newFakeSink()
-	sink.failFor[fmt.Sprintf("%s.%s.%s.%d", tn, "a4", "I", 2)] = 4
-	runAll(t, src, sink, nil, Config{Roster: &fakeRoster{agents: map[string][]string{tn: agents}}})
+	sink.failFor[fmt.Sprintf("%s.%s.%s.%d", tn, "a4", "I", 7)] = 4
+	runAll(t, src, sink, nil, Config{})
 
 	for _, a := range agents {
-		if n := countSeqIn(t, sink.feedsFor(a, "I"), 2); n != 1 {
-			t.Fatalf("%s got seq 2 %d times, want exactly 1 (concurrent fan-out + dedup across redelivery)", a, n)
+		if n := countSeqIn(t, sink.feedsFor(a, "I"), 7); n != 1 {
+			t.Fatalf("%s got seq 7 %d times, want exactly 1 (concurrent fan-out + dedup across redelivery)", a, n)
 		}
 	}
-	if countSeq(src.acked, 2) != 1 {
-		t.Fatalf("streamSeq 2 acked %d times, want 1 (ack only after ALL recipients)", countSeq(src.acked, 2))
+	if countSeq(src.acked, 7) != 1 {
+		t.Fatalf("streamSeq 7 acked %d times, want 1 (ack only after ALL recipients)", countSeq(src.acked, 7))
 	}
-	if countSeq(src.naked, 2) < 1 {
-		t.Fatal("streamSeq 2 was never Nak'd despite one recipient failing its first delivery")
+	if countSeq(src.naked, 7) < 1 {
+		t.Fatal("streamSeq 7 was never Nak'd despite one recipient failing its first delivery")
 	}
 }
 
@@ -750,15 +658,14 @@ func (s *fenceSink) Publish(ctx context.Context, tenant, agent, iid, dedup strin
 
 // @spec:RDL-03
 func TestFencedInFlightPublishNaksNotAcks(t *testing.T) {
-	f := fact(1, "I", 1, "message.created", "u1")
+	// A join fact folds agent1 in and is itself projected to agent1's feed (coveredBy at its own seq),
+	// so the in-flight publish exists without any roster override.
+	f := fact(1, "I", 1, "participant.joined", "agent1")
 	src := newFakeSource(f)
 	base := newFakeSink()
 	sink := &fenceSink{fakeSink: base, entered: make(chan struct{})}
 	snaps := newFakeSnaps()
-	p := New(src, sink, &fakeLease{}, snaps, Config{
-		SnapshotEvery: 1,
-		Roster:        &fakeRoster{agents: map[string][]string{tn: {"agent1"}}},
-	})
+	p := New(src, sink, &fakeLease{}, snaps, Config{SnapshotEvery: 1})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

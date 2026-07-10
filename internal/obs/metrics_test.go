@@ -15,7 +15,6 @@ func TestMetricsSurfaceExposesNamedSeries(t *testing.T) {
 	Naks.Inc()
 	PublishRetries.Inc()
 	LeaseRenewRetries.Inc()
-	RosterErrors.Inc()
 	FanoutLatency.Observe(0.42)
 
 	rec := httptest.NewRecorder()
@@ -31,7 +30,6 @@ func TestMetricsSurfaceExposesNamedSeries(t *testing.T) {
 		"relaypoint_projector_naks_total",
 		"relaypoint_publish_retries_total",
 		"relaypoint_projector_lease_renew_retries_total",
-		"relaypoint_projector_roster_errors_total",
 		"relaypoint_projector_fanout_latency_seconds",
 	} {
 		if !strings.Contains(got, series) {
