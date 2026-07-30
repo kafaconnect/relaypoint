@@ -392,6 +392,33 @@ func TestAuthCalloutMintsPinnedAgentACLs(t *testing.T) {
 	}
 }
 
+// @spec:admin-operation.nats-enforced
+func TestAuthCalloutAdminOperationObserverACLs(t *testing.T) {
+	url, kp, pass := startNATS(t)
+	m := newDeskMinter(t, "k1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	dialResponderChain(t, url, pass, kp, NewVisitorVerifier(src, time.Minute))
+
+	adminTok := m.mint(t, mintOpts{
+		sub:        "admin",
+		tid:        "T",
+		role:       "agent",
+		capability: signaling.CapabilityAgentFeedAdminOperationObserver,
+	})
+	subject := "tenant.T.admin.operation.018f0000-0000-7000-8000-000000000001.changed"
+
+	if !canSub(t, url, adminTok, subject) {
+		t.Error("admin observer must subscribe same-tenant operation hints")
+	}
+	if canSub(t, url, adminTok, "tenant.OTHER.admin.operation.018f0000-0000-7000-8000-000000000001.changed") {
+		t.Error("admin observer must not subscribe cross-tenant operation hints")
+	}
+	if canPub(t, url, adminTok, subject) {
+		t.Error("admin observer must not publish operation hints")
+	}
+}
+
 // @spec:signaling.feed.inbox-reads-own-feed-only (no JetStream API)
 func TestAuthCalloutAgentDeniedJetStreamConsumerAPI(t *testing.T) {
 	url, kp, pass := startNATS(t)

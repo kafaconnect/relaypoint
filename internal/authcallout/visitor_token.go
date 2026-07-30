@@ -128,7 +128,13 @@ func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
 
 	// A desk-minted AGENT token (role=agent) carries no cid — its grant is the agent's own feed, same EdDSA/desk-JWKS trust as a `vis_` (desk embedded the tenant, so RP stays DB-free).
 	if role == string(signaling.RoleAgent) {
-		return signaling.Identity{TenantID: tid, UserID: sub, Role: signaling.RoleAgent}, nil
+		capability, _ := claimString(parsed, "cap")
+		return signaling.Identity{
+			TenantID:   tid,
+			UserID:     sub,
+			Role:       signaling.RoleAgent,
+			Capability: capability,
+		}, nil
 	}
 
 	cid, _ := claimString(parsed, "cid")
