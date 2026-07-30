@@ -4,4 +4,4 @@
 
 ## AO
 
-- [ ] AO-01 — Add the signed admin-operation observer grant ([tasks/AO-01-capability-grant.md](tasks/AO-01-capability-grant.md)) — IN PROGRESS
+- [x] AO-01 — Add the signed admin-operation observer grant ([tasks/AO-01-capability-grant.md](tasks/AO-01-capability-grant.md))

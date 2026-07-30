@@ -2,7 +2,7 @@
 id: AO-01
 slice: AO
 title: Add the signed admin-operation observer grant
-status: in_progress
+status: done
 specs: [admin-operation.profile-verifies, admin-operation.grant-isolated, admin-operation.nats-enforced]
 ---
 
@@ -19,4 +19,5 @@ Acceptance:
 ## Log
 
 - 2026-07-30 in_progress: failing verifier/grant/embedded-NATS tests added before implementation.
-
+- 2026-07-30 done: exact capability grant implemented; build, vet, race tests, auth-callout
+  integration, logging check, strict OpenSpec validation, and independent review passed.
