@@ -77,7 +77,7 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 			AllowResponses: true,
 		}, nil
 	case signaling.RoleAgent:
-		return Grant{
+		grant := Grant{
 			PubAllow: []string{
 				"tenant." + t + ".interaction.*.cmd." + self,
 				// Presence/typing pinned to <self> (the agent can't forge another identity); scoped to the documented state + per-conversation typing subjects, not a tail-wildcard (RH-08).
@@ -104,7 +104,11 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 				"tenant.*.interaction.*.log",
 			},
 			AllowResponses: true,
-		}, nil
+		}
+		if id.Capability == signaling.CapabilityAgentFeedAdminOperationObserver {
+			grant.SubAllow = append(grant.SubAllow, "tenant."+t+".admin.operation.*.changed")
+		}
+		return grant, nil
 	default:
 		// Fail closed: an unknown or empty role authorizes nothing (was a fall-through agent grant — fail-open) (RH-08).
 		return Grant{}, fmt.Errorf("authcallout: role %q authorizes no grant", id.Role)

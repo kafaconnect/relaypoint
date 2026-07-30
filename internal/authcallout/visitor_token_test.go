@@ -54,6 +54,7 @@ func (m *deskMinter) jwks(t *testing.T) []byte {
 type mintOpts struct {
 	iss, aud, sub, tid, cid string
 	role                    string // when set, stamps the `role` claim (e.g. "agent"); empty == a visitor token
+	capability              string
 	exp                     time.Time
 	noExp                   bool // omit the exp claim entirely (an anomalous token the verifier must reject)
 	kid                     string
@@ -89,6 +90,9 @@ func (m *deskMinter) mint(t *testing.T, o mintOpts) string {
 		Claim("cid", o.cid)
 	if o.role != "" {
 		b = b.Claim("role", o.role)
+	}
+	if o.capability != "" {
+		b = b.Claim("cap", o.capability)
 	}
 	if !o.noExp {
 		b = b.Expiration(o.exp)
@@ -392,6 +396,27 @@ func TestAgentTokenVerifiesViaJWKSAndGrantsOwnFeed(t *testing.T) {
 	}
 	if allowsSubscribe(g, "tenant."+tidOK+".agent.someone-else.feed.i1") {
 		t.Fatal("agent must NOT read another agent's feed")
+	}
+}
+
+// @spec:admin-operation.profile-verifies
+func TestAdminOperationObserverTokenVerifiesCapability(t *testing.T) {
+	m := newDeskMinter(t, "desk-ingress-1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	v := NewVisitorVerifier(src, time.Minute)
+
+	id, err := v.Verify(m.mint(t, mintOpts{
+		sub:        "admin7",
+		tid:        tidOK,
+		role:       "agent",
+		capability: signaling.CapabilityAgentFeedAdminOperationObserver,
+	}))
+	if err != nil {
+		t.Fatalf("verify admin observer token: %v", err)
+	}
+	if id.Capability != signaling.CapabilityAgentFeedAdminOperationObserver {
+		t.Fatalf("capability = %q", id.Capability)
 	}
 }
 

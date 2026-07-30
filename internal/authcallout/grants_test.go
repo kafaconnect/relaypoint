@@ -116,6 +116,51 @@ func TestGrantsForAgent(t *testing.T) {
 	}
 }
 
+// @spec:admin-operation.grant-isolated
+func TestGrantsForAdminOperationObserver(t *testing.T) {
+	id := signaling.Identity{
+		TenantID:   "T",
+		UserID:     "admin",
+		Role:       signaling.RoleAgent,
+		Capability: signaling.CapabilityAgentFeedAdminOperationObserver,
+	}
+	g, err := GrantsFor(id, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !allowsSubscribe(g, "tenant.T.admin.operation.018f0000-0000-7000-8000-000000000001.changed") {
+		t.Fatal("admin observer must subscribe same-tenant operation hints")
+	}
+	if allowsSubscribe(g, "tenant.OTHER.admin.operation.018f0000-0000-7000-8000-000000000001.changed") {
+		t.Fatal("admin observer must not subscribe cross-tenant operation hints")
+	}
+	if allowsPublish(g, "tenant.T.admin.operation.018f0000-0000-7000-8000-000000000001.changed") {
+		t.Fatal("admin observer must not publish operation hints")
+	}
+	if !allowsSubscribe(g, "tenant.T.agent.admin.feed.i1") {
+		t.Fatal("admin observer must preserve existing agent feed grants")
+	}
+
+	for _, capability := range []string{signaling.CapabilityAgentFeed, "unknown-profile"} {
+		agent, err := GrantsFor(signaling.Identity{
+			TenantID:   "T",
+			UserID:     "alice",
+			Role:       signaling.RoleAgent,
+			Capability: capability,
+		}, "c2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !allowsSubscribe(agent, "tenant.T.agent.alice.feed.i1") {
+			t.Fatalf("capability %q regressed the agent feed", capability)
+		}
+		if allowsSubscribe(agent, "tenant.T.admin.operation.018f0000-0000-7000-8000-000000000001.changed") {
+			t.Fatalf("capability %q must not subscribe operation hints", capability)
+		}
+	}
+}
+
 func TestGrantsForTrustedBackend(t *testing.T) {
 	id := signaling.Identity{TenantID: "T", UserID: "desk", Role: signaling.RoleTrustedBackend}
 	g, err := GrantsFor(id, "c9")
