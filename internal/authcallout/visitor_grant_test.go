@@ -54,7 +54,9 @@ func TestVisitorGrantHasNoResponsePermission(t *testing.T) {
 	if vis.AllowResponses {
 		t.Fatal("visitor must NOT be granted a response permission (subscribe-only)")
 	}
-	agent, _ := GrantsFor(signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, "v1")
+	agent, _ := GrantsFor(signaling.Identity{
+		TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed,
+	}, "v1")
 	be, _ := GrantsFor(signaling.Identity{TenantID: "T", UserID: "desk", Role: signaling.RoleTrustedBackend}, "v1")
 	if !agent.AllowResponses || !be.AllowResponses {
 		t.Fatal("agent + trusted-backend must keep their response permission (request/reply)")
@@ -97,8 +99,11 @@ func TestChainVerifierUnregressedAndVisitor(t *testing.T) {
 
 	chain := NewChainVerifier(hmac, vis)
 
-	agentTok, _ := MintDevToken(secret, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, 0)
-	if id, err := chain.Verify(agentTok); err != nil || id.Role != signaling.RoleAgent || id.UserID != "alice" {
+	agentTok, _ := MintDevToken(secret, signaling.Identity{
+		TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed,
+	}, 0)
+	if id, err := chain.Verify(agentTok); err != nil ||
+		id.Capability != signaling.CapabilityAgentFeed || id.Role != "" || id.UserID != "alice" {
 		t.Fatalf("agent path regressed: id=%+v err=%v", id, err)
 	}
 	beTok, _ := MintDevToken(secret, signaling.Identity{TenantID: "T", UserID: "desk", Role: signaling.RoleTrustedBackend}, 0)

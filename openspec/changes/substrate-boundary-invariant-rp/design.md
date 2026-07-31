@@ -69,19 +69,36 @@ The removed `@spec:` ids (`projector.roster.unbounded-retry`, `projector.roster.
 `projector.roster.empty-soft-fail`) are retired by this change's spec delta (the roster requirement
 they anchored no longer exists in the substrate).
 
-## Deferred follow-ups (explicitly NOT done here)
+## Deferred follow-up
 
-1. **`RoleAgent` → capability gate / `GrantsFor`.** Desk still sends `role=agent` for both agents and
-   connectors, and the auth-callout's `RoleAgent` grant model still serves them correctly. Changing
-   role→capability grants is orthogonal authz work; leaving it untouched means nothing breaks from
-   this change. Tracked as a follow-up.
-2. **`agent` → `subscriber` subject rename.** The feed subject family `tenant.*.agent.*.feed.>` is
+The **`agent` → `subscriber` subject rename** remains deferred. The feed subject family
+`tenant.*.agent.*.feed.>` is
    subscribed to by live clients (desk-web). Renaming it is a WIRE-BREAKING change requiring
-   coordinated client rollout, so subjects are kept AS-IS. Tracked as a follow-up.
+coordinated client rollout, so subjects are kept AS-IS.
 
-Doing ONLY the roster removal keeps this change additive to the live cutover and low-risk: the
-deleted paths were only exercised when an override was explicitly configured, and desk's participation
-emission already drives `coveredBy` to the intended recipient set.
+## Design discussion (agreed 20260731T022847Z)
+
+The capability follow-up is now accepted after an independent cross-repo discussion using `agy`
+(`gemini-3.6-flash-high`, read-only, 10-minute bound). The standalone `gemini` CLI was unavailable.
+The agreed design brings capability authorization into this change.
+
+Desk-minted subscriber tokens contain verified `tid`, opaque `sub`, and one exact capability:
+`agent-feed` or `agent-feed-admin-operation-observer`. They omit both `role` and `cid`. RelayPoint
+rejects subscriber capability combined with either claim, rejects unknown or missing capability,
+and rejects legacy `role=agent` as a grant source.
+
+`GrantsFor` keeps the visitor and trusted-backend role protocols, then selects the base subscriber
+grant only from the exact capability profile. The observer profile adds only the same-tenant admin
+operation hint. The `.agent.` token in feed subjects is retained as a legacy wire namespace and is
+not interpreted as a product role.
+
+The router accepts an ordinary non-backend writer only when it has a known subscriber capability.
+Every non-start write remains gated by current folded participation. Privileged participation
+commands remain trusted-backend-only. Dev HMAC minting and verification use the same exact
+capability predicate, so development cannot bypass the production grant model.
+
+Rejected alternatives are a role fallback, an unknown-capability base grant, and an immediate
+wire-breaking `.subscriber.` subject migration.
 
 ## Alternatives considered
 

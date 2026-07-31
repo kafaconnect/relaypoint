@@ -62,8 +62,9 @@ func subjectMatch(pattern, subj string) bool {
 	return len(pt) == len(st)
 }
 
-func TestGrantsForAgent(t *testing.T) {
-	id := signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}
+// @spec:substrate.gate-authenticated-subscriber
+func TestGrantsForSubscriberCapability(t *testing.T) {
+	id := signaling.Identity{TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed}
 	g, err := GrantsFor(id, "c1")
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +122,6 @@ func TestGrantsForAdminOperationObserver(t *testing.T) {
 	id := signaling.Identity{
 		TenantID:   "T",
 		UserID:     "admin",
-		Role:       signaling.RoleAgent,
 		Capability: signaling.CapabilityAgentFeedAdminOperationObserver,
 	}
 	g, err := GrantsFor(id, "c1")
@@ -142,11 +142,10 @@ func TestGrantsForAdminOperationObserver(t *testing.T) {
 		t.Fatal("admin observer must preserve existing agent feed grants")
 	}
 
-	for _, capability := range []string{signaling.CapabilityAgentFeed, "unknown-profile"} {
+	for _, capability := range []string{signaling.CapabilityAgentFeed} {
 		agent, err := GrantsFor(signaling.Identity{
 			TenantID:   "T",
 			UserID:     "alice",
-			Role:       signaling.RoleAgent,
 			Capability: capability,
 		}, "c2")
 		if err != nil {
@@ -220,23 +219,25 @@ func TestGrantsForRejectsIncompleteIdentity(t *testing.T) {
 	}
 }
 
-// @spec:authcallout.role.fail-closed-unknown
-func TestGrantsForUnknownRoleFailsClosed(t *testing.T) {
+// @spec:substrate.token-capability-not-role
+func TestGrantsForRoleOnlyAndUnknownCapabilityFailClosed(t *testing.T) {
 	for _, id := range []signaling.Identity{
-		{TenantID: "T", UserID: "x", Role: signaling.Role("superuser")},
-		{TenantID: "T", UserID: "x", Role: signaling.Role("")},
+		{TenantID: "T", UserID: "x", Role: signaling.RoleAgent},
+		{TenantID: "T", UserID: "x", Capability: "unknown-profile"},
+		{TenantID: "T", UserID: "x"},
 	} {
 		g, err := GrantsFor(id, "c1")
 		if err == nil {
-			t.Fatalf("unknown/empty role %q must be denied, not granted", id.Role)
+			t.Fatalf("identity %+v must be denied, not granted", id)
 		}
 		if g.PubAllow != nil || g.SubAllow != nil || g.AllowResponses {
-			t.Fatalf("denied role must mint an EMPTY grant, got %+v", g)
+			t.Fatalf("denied identity must mint an EMPTY grant, got %+v", g)
 		}
 	}
-	// An explicit agent role still mints (no over-tightening).
-	if _, err := GrantsFor(signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, "c1"); err != nil {
-		t.Fatalf("explicit agent role must still be granted: %v", err)
+	if _, err := GrantsFor(signaling.Identity{
+		TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed,
+	}, "c1"); err != nil {
+		t.Fatalf("subscriber capability must be granted: %v", err)
 	}
 }
 
@@ -280,7 +281,9 @@ func TestGrantsForTrustedBackendJSAPILeastPrivilege(t *testing.T) {
 
 // @spec:authcallout.presence.scoped-subjects
 func TestGrantsForAgentPresenceScoped(t *testing.T) {
-	g, err := GrantsFor(signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent}, "c1")
+	g, err := GrantsFor(signaling.Identity{
+		TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed,
+	}, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}

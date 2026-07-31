@@ -44,8 +44,13 @@ func IdentityFrom(ctx context.Context) Identity {
 }
 
 func RoleOf(id Identity) Role {
-	if id.Role != "" {
-		return id.Role
+	return id.Role
+}
+
+func IsSubscriberCapability(capability string) bool {
+	switch capability {
+	case CapabilityAgentFeed, CapabilityAgentFeedAdminOperationObserver:
+		return true
 	}
-	return RoleAgent
+	return false
 }

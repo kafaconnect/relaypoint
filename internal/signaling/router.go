@@ -345,8 +345,13 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 		return res
 	}
 
+	if isAuthenticated(id) && RoleOf(id) != RoleTrustedBackend && !IsSubscriberCapability(id.Capability) {
+		res.Status, res.Reason = statusRejected, "capability_denied"
+		return res
+	}
+
 	// Every agent write except interaction.started requires an OPEN membership interval, re-checked after every OCC rebuild so a racing participant.left can't slip through (A2a/A3); trusted backend exempt.
-	gateParticipation := isAuthenticated(id) && RoleOf(id) == RoleAgent && cmd.Type != "interaction.started"
+	gateParticipation := isAuthenticated(id) && RoleOf(id) != RoleTrustedBackend && cmd.Type != "interaction.started"
 
 	st, err := r.getState(tenant, iid)
 	if err != nil {
@@ -474,7 +479,9 @@ func (r *Router) HandleCommand(ctx context.Context, subject string, data []byte)
 }
 
 // Both Identity fields are empty only in the shared-`client` dev posture, so either being set means a real auth-callout-minted identity.
-func isAuthenticated(id Identity) bool { return id.UserID != "" || id.Role != "" }
+func isAuthenticated(id Identity) bool {
+	return id.UserID != "" || id.Role != "" || id.Capability != ""
+}
 
 func isParticipationCommand(t string) bool {
 	switch t {

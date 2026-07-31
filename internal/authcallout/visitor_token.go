@@ -126,19 +126,21 @@ func (v *VisitorVerifier) Verify(token string) (signaling.Identity, error) {
 		}
 	}
 
-	// A desk-minted AGENT token (role=agent) carries no cid — its grant is the agent's own feed, same EdDSA/desk-JWKS trust as a `vis_` (desk embedded the tenant, so RP stays DB-free).
-	if role == string(signaling.RoleAgent) {
-		capability, _ := claimString(parsed, "cap")
+	capability, capabilitySet := claimString(parsed, "cap")
+	cid, cidSet := claimString(parsed, "cid")
+	_, roleSet := parsed.Get("role")
+	if capabilitySet {
+		if roleSet || cidSet || !signaling.IsSubscriberCapability(capability) {
+			return signaling.Identity{}, fmt.Errorf("%w: invalid subscriber claims", ErrVisitorToken)
+		}
 		return signaling.Identity{
 			TenantID:   tid,
 			UserID:     sub,
-			Role:       signaling.RoleAgent,
 			Capability: capability,
 		}, nil
 	}
 
-	cid, _ := claimString(parsed, "cid")
-	if cid == "" {
+	if role != "" || !cidSet || cid == "" {
 		return signaling.Identity{}, fmt.Errorf("%w: missing cid", ErrVisitorToken)
 	}
 	if err := validSubjectToken(cid); err != nil {

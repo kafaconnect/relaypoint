@@ -107,11 +107,12 @@ func identityFromSubject(subject string, trusted map[string]bool) signaling.Iden
 	if len(p) != 6 || p[1] == "" || p[5] == "" {
 		return signaling.Identity{}
 	}
-	role := signaling.RoleAgent
 	if trusted[p[5]] {
-		role = signaling.RoleTrustedBackend
+		return signaling.Identity{TenantID: p[1], UserID: p[5], Role: signaling.RoleTrustedBackend}
 	}
-	return signaling.Identity{TenantID: p[1], UserID: p[5], Role: role}
+	return signaling.Identity{
+		TenantID: p[1], UserID: p[5], Capability: signaling.CapabilityAgentFeed,
+	}
 }
 
 func devTrustedIdentity(subject string, trusted map[string]bool) signaling.Identity {

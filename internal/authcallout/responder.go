@@ -108,13 +108,20 @@ func (r *Responder) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			obs.Logger(ctx).Warn("authcallout.deny", "reason", err.Error())
 			token, _ = r.deny(m.Data, err.Error())
 		} else {
-			obs.Logger(ctx).Info("authcallout.allow",
-				"tenant", id.TenantID, "user", id.UserID, "role", string(signaling.RoleOf(id)))
+			obs.Logger(ctx).Info("authcallout.allow", authAllowAttrs(id)...)
 		}
 		if token != "" {
 			_ = m.Respond([]byte(token))
 		}
 	})
+}
+
+func authAllowAttrs(id signaling.Identity) []any {
+	attrs := []any{"tenant", id.TenantID, "user", id.UserID, "role", string(signaling.RoleOf(id))}
+	if id.Capability != "" {
+		attrs = append(attrs, "capability", id.Capability)
+	}
+	return attrs
 }
 
 // A verify/grant failure returns an error the caller turns into a signed DENY, not a timeout.

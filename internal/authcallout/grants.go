@@ -30,9 +30,11 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 	t, self := id.TenantID, id.UserID
 	inbox := "_INBOX_" + conn + ".>"
 
-	// Switch on the raw role, not signaling.RoleOf: RoleOf's empty→agent default is the strict direction for the router's gates but fail-OPEN here (it would mint agent perms for an unknown/empty role); the grant layer authorizes nothing it does not explicitly recognise (RH-08).
 	switch id.Role {
 	case signaling.RoleVisitor:
+		if id.Capability != "" {
+			return Grant{}, fmt.Errorf("authcallout: visitor capability is not permitted")
+		}
 		// A visitor reads exactly ONE conversation: its interaction `.log` + the transitional events plane; cid is mint-bound (== interaction id, ADR-0009). No $JS.API confines reach to the per-subject ACL.
 		cid := id.ConversationID
 		if err := validSubjectToken(cid); err != nil {
@@ -53,6 +55,9 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 			},
 		}, nil
 	case signaling.RoleTrustedBackend:
+		if id.Capability != "" {
+			return Grant{}, fmt.Errorf("authcallout: trusted-backend capability is not permitted")
+		}
 		return Grant{
 			PubAllow: []string{
 				"tenant." + t + ".interaction.*.cmd." + self,
@@ -76,7 +81,10 @@ func GrantsFor(id signaling.Identity, conn string) (Grant, error) {
 			SubDeny:        []string{"_INBOX.>"},
 			AllowResponses: true,
 		}, nil
-	case signaling.RoleAgent:
+	case "":
+		if !signaling.IsSubscriberCapability(id.Capability) || id.ConversationID != "" {
+			return Grant{}, fmt.Errorf("authcallout: capability %q authorizes no grant", id.Capability)
+		}
 		grant := Grant{
 			PubAllow: []string{
 				"tenant." + t + ".interaction.*.cmd." + self,
