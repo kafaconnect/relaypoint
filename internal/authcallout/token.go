@@ -41,10 +41,11 @@ func (c *ChainVerifier) Verify(token string) (signaling.Identity, error) {
 
 // claims is the dev token body; expiry is server-validated against Now, never the client wall-clock (signaling-core time-authority rule).
 type claims struct {
-	Tenant  string `json:"tenant"`
-	User    string `json:"user"`
-	Role    string `json:"role,omitempty"`
-	ExpUnix int64  `json:"exp"`
+	Tenant     string `json:"tenant"`
+	User       string `json:"user"`
+	Role       string `json:"role,omitempty"`
+	Capability string `json:"cap,omitempty"`
+	ExpUnix    int64  `json:"exp"`
 }
 
 // HMACVerifier validates the dev bearer with an operator-supplied shared secret (env, never committed) — the trust root that makes `<self>` airtight.
@@ -109,23 +110,27 @@ func (v *HMACVerifier) Verify(token string) (signaling.Identity, error) {
 	if err := validSubjectToken(c.User); err != nil {
 		return signaling.Identity{}, fmt.Errorf("authcallout: invalid user: %w", err)
 	}
-	// Fail closed on role: an unknown/empty/visitor claim must NOT silently become agent — that would
-	// bypass the RH-08 grant-layer default (which only ever sees RoleAgent on this HMAC path) and violate
-	// authcallout.role.fail-closed-unknown. The sole minter, MintDevToken, always emits a concrete role.
-	var role signaling.Role
+	if c.Capability != "" {
+		if c.Role != "" || !signaling.IsSubscriberCapability(c.Capability) {
+			return signaling.Identity{}, fmt.Errorf("authcallout: capability %q not permitted over HMAC", c.Capability)
+		}
+		return signaling.Identity{
+			TenantID: c.Tenant, UserID: c.User, Capability: c.Capability,
+		}, nil
+	}
+
 	switch c.Role {
-	case string(signaling.RoleAgent):
-		role = signaling.RoleAgent
 	case string(signaling.RoleTrustedBackend):
 		// Fail closed in prod: the process-wide HMAC secret must not self-assert the privileged trusted-backend role; main.go allows it only in the dev posture (no JWKS) (RH-08).
 		if !v.allowTrustedBackend {
 			return signaling.Identity{}, fmt.Errorf("authcallout: trusted-backend role not permitted over HMAC")
 		}
-		role = signaling.RoleTrustedBackend
+		return signaling.Identity{
+			TenantID: c.Tenant, UserID: c.User, Role: signaling.RoleTrustedBackend,
+		}, nil
 	default:
 		return signaling.Identity{}, fmt.Errorf("authcallout: role %q not permitted over HMAC", c.Role)
 	}
-	return signaling.Identity{TenantID: c.Tenant, UserID: c.User, Role: role}, nil
 }
 
 // Rejects a tenant/user that isn't a single safe NATS subject token: it's interpolated into ACL subjects, so a metachar would inject tokens/wildcards past the `<self>` pin (A6).
@@ -146,7 +151,18 @@ func validSubjectToken(s string) error {
 
 // MintDevToken builds a dev bearer for tests/tooling, NOT production issuance (that is the issuer's signed JWT).
 func MintDevToken(secret []byte, id signaling.Identity, ttl time.Duration) (string, error) {
-	c := claims{Tenant: id.TenantID, User: id.UserID, Role: string(signaling.RoleOf(id))}
+	if id.Role != "" && id.Capability != "" {
+		return "", fmt.Errorf("authcallout: role and capability are mutually exclusive")
+	}
+	if id.Role == "" && !signaling.IsSubscriberCapability(id.Capability) {
+		return "", fmt.Errorf("authcallout: capability %q not permitted", id.Capability)
+	}
+	if id.Role != "" && id.Role != signaling.RoleTrustedBackend {
+		return "", fmt.Errorf("authcallout: role %q not permitted", id.Role)
+	}
+	c := claims{
+		Tenant: id.TenantID, User: id.UserID, Role: string(id.Role), Capability: id.Capability,
+	}
 	if ttl > 0 {
 		c.ExpUnix = time.Now().Add(ttl).Unix()
 	}

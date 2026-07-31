@@ -47,17 +47,11 @@ override is both wrong-in-principle and redundant. Removing it is **additive to 
 low-risk: with desk emitting participation, `coveredBy` already produces the intended recipient set,
 and the deleted paths were only exercised when a roster/tenant-wide override was explicitly wired.
 
-## Deferred (NOT in this change — follow-ups)
+## Deferred
 
-Two adjacent substrate-boundary cleanups are intentionally OUT OF SCOPE here so this stays a
-low-risk, roster-only removal (see `design.md` for detail):
-
-1. **`RoleAgent` → capability gate / `GrantsFor` change.** Desk still authenticates connectors and
-   agents with `role=agent`, so the existing `RoleAgent` grant model is left UNCHANGED — nothing
-   breaks. Reworking role→capability grants is a separate authz change.
-2. **`agent` → `subscriber` subject rename.** Renaming the feed subject family
+The **`agent` → `subscriber` subject rename** remains out of scope. Renaming the feed subject family
    (`tenant.*.agent.*.feed.>`) is WIRE-BREAKING for connected clients (e.g. desk-web subscribes to
-   that pattern) and needs coordinated client work. Subjects are kept AS-IS.
+that pattern) and needs coordinated client work. Subjects are kept AS-IS.
 
 ## Impact
 
@@ -74,3 +68,13 @@ low-risk, roster-only removal (see `design.md` for detail):
 - **Metrics:** `relaypoint_projector_roster_errors_total` removed (its only writer is gone).
 - **Cross-repo:** consumes desk `substrate-boundary-invariant` (SBI-01) participation emission; aligns
   the substrate with desk ADR-0020. Desk repo is untouched by this change.
+
+## Capability cutover extension (2026-07-31)
+
+The previously deferred authorization half is now in scope. RelayPoint will select the opaque
+subscriber grant from a verified, closed capability profile and will not use `RoleAgent` as an
+authorization input. Visitor and trusted-backend protocols retain their separate roles. The live
+`.agent.` feed subject remains a legacy wire namespace; renaming it is still deferred because it is
+a breaking client contract.
+
+This extension is T1 Foundational because it changes the authentication-to-NATS-ACL boundary.

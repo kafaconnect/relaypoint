@@ -26,7 +26,9 @@ func privCmd(id, tenant, actor, typ string, pd participationData) []byte {
 }
 
 func agentCtx(tenant, user string) context.Context {
-	return WithIdentity(context.Background(), Identity{TenantID: tenant, UserID: user, Role: RoleAgent})
+	return WithIdentity(context.Background(), Identity{
+		TenantID: tenant, UserID: user, Capability: CapabilityAgentFeed,
+	})
 }
 
 func deskCtx(tenant, svc string) context.Context {
@@ -91,6 +93,26 @@ func TestRouter_AssignedAgentCommandAccepted(t *testing.T) {
 	got := r.HandleCommand(agentCtx("t1", "bob"), cmdSubj("t1", "iW", "bob"), agentCmd("m1", "t1", "bob", "message.created"))
 	if got.Status != statusAccepted {
 		t.Fatalf("assigned agent command must be accepted, got %+v", got)
+	}
+}
+
+// @spec:substrate.token-capability-not-role
+func TestRouterLegacyRoleWithoutCapabilityDenied(t *testing.T) {
+	st := newFakeStore()
+	r := NewRouter(st)
+	startWithDesk(t, r, "t1", "iLegacy", "desk")
+	if got := r.HandleCommand(deskCtx("t1", "desk"), cmdSubj("t1", "iLegacy", "desk"),
+		privCmd("a1", "t1", "desk", "participant.assign", participationData{Agent: "bob"})); got.Status != statusAccepted {
+		t.Fatalf("assign bob: %+v", got)
+	}
+
+	legacy := WithIdentity(context.Background(), Identity{
+		TenantID: "t1", UserID: "bob", Role: RoleAgent,
+	})
+	got := r.HandleCommand(legacy, cmdSubj("t1", "iLegacy", "bob"),
+		agentCmd("m1", "t1", "bob", "message.created"))
+	if got.Status != statusRejected || got.Reason != "capability_denied" {
+		t.Fatalf("legacy role-only identity must be capability_denied, got %+v", got)
 	}
 }
 

@@ -86,8 +86,10 @@ func (m *deskMinter) mint(t *testing.T, o mintOpts) string {
 		Audience([]string{o.aud}).
 		Subject(o.sub).
 		IssuedAt(time.Now()).
-		Claim("tid", o.tid).
-		Claim("cid", o.cid)
+		Claim("tid", o.tid)
+	if o.cid != "" {
+		b = b.Claim("cid", o.cid)
+	}
 	if o.role != "" {
 		b = b.Claim("role", o.role)
 	}
@@ -362,20 +364,23 @@ func TestVisitorUnknownKidFloodThrottled(t *testing.T) {
 	}
 }
 
-// @spec:authcallout.agent.token-verifies-grants-feed
-func TestAgentTokenVerifiesViaJWKSAndGrantsOwnFeed(t *testing.T) {
+// @spec:substrate.gate-authenticated-subscriber
+func TestSubscriberCapabilityTokenVerifiesViaJWKSAndGrantsOwnFeed(t *testing.T) {
 	m := newDeskMinter(t, "desk-ingress-1")
 	src := &fakeJWKS{}
 	src.set(m.jwks(t), nil)
 	v := NewVisitorVerifier(src, time.Minute)
 
 	const agentSub = "agent7"
-	id, err := v.Verify(m.mint(t, mintOpts{sub: agentSub, tid: tidOK, role: "agent"}))
+	id, err := v.Verify(m.mint(t, mintOpts{
+		sub: agentSub, tid: tidOK, capability: signaling.CapabilityAgentFeed,
+	}))
 	if err != nil {
 		t.Fatalf("desk agent token must verify via JWKS: %v", err)
 	}
-	if id.Role != signaling.RoleAgent || id.TenantID != tidOK || id.UserID != agentSub {
-		t.Fatalf("unexpected agent identity: %+v", id)
+	if id.Role != "" || id.Capability != signaling.CapabilityAgentFeed ||
+		id.TenantID != tidOK || id.UserID != agentSub {
+		t.Fatalf("unexpected subscriber identity: %+v", id)
 	}
 	if id.ConversationID != "" {
 		t.Fatalf("agent identity must not carry a ConversationID, got %q", id.ConversationID)
@@ -409,7 +414,6 @@ func TestAdminOperationObserverTokenVerifiesCapability(t *testing.T) {
 	id, err := v.Verify(m.mint(t, mintOpts{
 		sub:        "admin7",
 		tid:        tidOK,
-		role:       "agent",
 		capability: signaling.CapabilityAgentFeedAdminOperationObserver,
 	}))
 	if err != nil {
@@ -417,6 +421,25 @@ func TestAdminOperationObserverTokenVerifiesCapability(t *testing.T) {
 	}
 	if id.Capability != signaling.CapabilityAgentFeedAdminOperationObserver {
 		t.Fatalf("capability = %q", id.Capability)
+	}
+}
+
+// @spec:substrate.token-capability-not-role
+func TestSubscriberTokenRoleOnlyOrAmbiguousFailsClosed(t *testing.T) {
+	m := newDeskMinter(t, "desk-ingress-1")
+	src := &fakeJWKS{}
+	src.set(m.jwks(t), nil)
+	v := NewVisitorVerifier(src, time.Minute)
+
+	for _, opts := range []mintOpts{
+		{sub: "legacy", tid: tidOK, role: "agent"},
+		{sub: "ambiguous-role", tid: tidOK, role: "agent", capability: signaling.CapabilityAgentFeed},
+		{sub: "ambiguous-cid", tid: tidOK, cid: cidA, capability: signaling.CapabilityAgentFeed},
+		{sub: "unknown", tid: tidOK, capability: "unknown-profile"},
+	} {
+		if _, err := v.Verify(m.mint(t, opts)); err == nil {
+			t.Fatalf("claims %+v must fail closed", opts)
+		}
 	}
 }
 
@@ -435,7 +458,9 @@ func TestAgentTokenMissingTidRejected(t *testing.T) {
 		{"missing sub", "", tidOK},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := v.Verify(m.mint(t, mintOpts{sub: c.sub, tid: c.tid, role: "agent"}))
+			_, err := v.Verify(m.mint(t, mintOpts{
+				sub: c.sub, tid: c.tid, capability: signaling.CapabilityAgentFeed,
+			}))
 			if err == nil {
 				t.Fatalf("%s must be rejected", c.name)
 			} else if !errors.Is(err, ErrVisitorToken) {

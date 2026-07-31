@@ -150,7 +150,9 @@ func TestCore_RestartRebuild(t *testing.T) {
 // @spec:signaling.cmd.forged-author-rejected
 func TestCore_ForgedAuthor(t *testing.T) {
 	r := NewRouter(newFakeStore(), WithDevMode())
-	ctx := WithIdentity(context.Background(), Identity{TenantID: "t1", UserID: "u1"})
+	ctx := WithIdentity(context.Background(), Identity{
+		TenantID: "t1", UserID: "u1", Capability: CapabilityAgentFeed,
+	})
 	body, _ := proto.Marshal(&Command{CommandId: "f1", TenantId: "t1", ActorId: "u2", Type: "interaction.started", Medium: "chat"})
 	if got := r.HandleCommand(ctx, "tenant.t1.interaction.iF.cmd.u1", body); got.Status != statusRejected {
 		t.Fatalf("forged actor must be rejected, got %+v", got)

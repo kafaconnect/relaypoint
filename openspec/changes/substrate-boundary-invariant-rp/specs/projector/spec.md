@@ -38,3 +38,33 @@ deleted, so there is no roster lookup to retry, soft-fail, or cache. The scenari
 `projector.roster.empty-soft-fail` are retired with the behaviour. Fan-out is now structural-only
 (`substrate.no-roster-pull`); an interaction with no folded participants simply has no recipients, so
 the "empty roster" soft-fail case no longer exists.
+
+## ADDED Requirements
+
+### Requirement: Opaque subscribers are authorized by capability
+
+RelayPoint MUST select a subscriber's NATS grant only from an exact verified capability profile and
+MUST NOT use `RoleAgent` as an authorization input. The subscriber id MUST be treated as opaque and
+all grants MUST remain pinned to the verified tenant and subscriber. Visitor and trusted-backend
+protocols MAY retain their separate role-bound grants.
+
+#### Scenario: Capability grants a non-agent opaque subscriber
+- **id:** `substrate.gate-authenticated-subscriber`
+- **GIVEN** a verified identity with tenant, opaque subscriber id, and capability `agent-feed`, but no agent role
+- **WHEN** RelayPoint constructs its grant and handles an ordinary command
+- **THEN** it grants only that tenant and subscriber's feed/command surface
+- **AND** a non-start command is accepted only while that subscriber participates
+
+#### Scenario: RoleAgent cannot grant subscriber access
+- **id:** `substrate.token-capability-not-role`
+- **GIVEN** a legacy token carrying `role=agent` without an exact subscriber capability
+- **WHEN** RelayPoint verifies the token or constructs a grant
+- **THEN** it fails closed and grants no subscriber subjects
+- **AND** a token combining subscriber capability with `role` or `cid` also fails closed
+
+#### Scenario: Authorization contains no Desk domain branch
+- **id:** `substrate.no-domain-branch-static-review`
+- **GIVEN** the RelayPoint authorization and command-gate implementation
+- **WHEN** its subscriber predicates are inspected
+- **THEN** they branch only on verified capability, tenant, opaque subscriber, and participation
+- **AND** they do not branch on Desk role, channel, team, queue, or routing policy

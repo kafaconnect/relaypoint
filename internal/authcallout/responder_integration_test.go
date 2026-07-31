@@ -265,7 +265,7 @@ func TestAuthCalloutChainAgentUnregressed(t *testing.T) {
 	src.set(m.jwks(t), nil)
 	dialResponderChain(t, url, pass, kp, NewVisitorVerifier(src, time.Minute))
 
-	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
+	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed})
 	if !canSub(t, url, aliceTok, "tenant.T.agent.alice.feed.>") {
 		t.Error("agent feed read regressed under the chain")
 	}
@@ -358,7 +358,7 @@ func TestAuthCalloutMintsPinnedAgentACLs(t *testing.T) {
 	url, kp, pass := startNATS(t)
 	dialResponder(t, url, pass, kp)
 
-	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
+	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed})
 
 	// @spec:signaling.feed.inbox-reads-own-feed-only
 	if !canSub(t, url, aliceTok, "tenant.T.agent.alice.feed.>") {
@@ -424,7 +424,7 @@ func TestAuthCalloutAgentDeniedJetStreamConsumerAPI(t *testing.T) {
 	url, kp, pass := startNATS(t)
 	dialResponder(t, url, pass, kp)
 
-	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
+	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed})
 
 	// A pull consumer create/bind/next goes over $JS.API.CONSUMER.*; every such publish must be denied.
 	for _, subj := range []string{
@@ -502,7 +502,7 @@ func TestAuthCalloutHMACDeniesTrustedBackendInProd(t *testing.T) {
 		t.Error("trusted-backend over HMAC must be denied in the prod posture")
 	}
 	// An agent over the same secure HMAC link still connects (the agent self-assert path is unchanged).
-	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Role: signaling.RoleAgent})
+	aliceTok := token(t, signaling.Identity{TenantID: "T", UserID: "alice", Capability: signaling.CapabilityAgentFeed})
 	if !canSub(t, url, aliceTok, "tenant.T.agent.alice.feed.>") {
 		t.Error("agent must still authenticate over the secure HMAC link")
 	}
