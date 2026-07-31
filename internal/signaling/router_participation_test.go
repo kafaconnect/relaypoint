@@ -97,6 +97,7 @@ func TestRouter_AssignedAgentCommandAccepted(t *testing.T) {
 }
 
 // @spec:substrate.token-capability-not-role
+// @spec:corex-foundation.subscriber-capability-not-role
 func TestRouterLegacyRoleWithoutCapabilityDenied(t *testing.T) {
 	st := newFakeStore()
 	r := NewRouter(st)
@@ -106,13 +107,40 @@ func TestRouterLegacyRoleWithoutCapabilityDenied(t *testing.T) {
 		t.Fatalf("assign bob: %+v", got)
 	}
 
-	legacy := WithIdentity(context.Background(), Identity{
-		TenantID: "t1", UserID: "bob", Role: RoleAgent,
-	})
-	got := r.HandleCommand(legacy, cmdSubj("t1", "iLegacy", "bob"),
-		agentCmd("m1", "t1", "bob", "message.created"))
-	if got.Status != statusRejected || got.Reason != "capability_denied" {
-		t.Fatalf("legacy role-only identity must be capability_denied, got %+v", got)
+	before := len(factsOf(st, "t1", "iLegacy"))
+	for _, tc := range []struct {
+		name     string
+		command  string
+		identity Identity
+	}{
+		{name: "role only", command: "m-role", identity: Identity{TenantID: "t1", UserID: "bob", Role: RoleAgent}},
+		{name: "unknown capability", command: "m-unknown", identity: Identity{TenantID: "t1", UserID: "bob", Capability: "unknown-profile"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := r.HandleCommand(
+				WithIdentity(context.Background(), tc.identity),
+				cmdSubj("t1", "iLegacy", "bob"),
+				agentCmd(tc.command, "t1", "bob", "message.created"),
+			)
+			if got.Status != statusRejected || got.Reason != "capability_denied" {
+				t.Fatalf("identity must be capability_denied, got %+v", got)
+			}
+			if after := len(factsOf(st, "t1", "iLegacy")); after != before {
+				t.Fatalf("rejected identity changed delivery state: facts %d -> %d", before, after)
+			}
+		})
+	}
+
+	got := r.HandleCommand(
+		agentCtx("t1", "bob"),
+		cmdSubj("t1", "iLegacy", "bob"),
+		agentCmd("m-valid", "t1", "bob", "message.created"),
+	)
+	if got.Status != statusAccepted {
+		t.Fatalf("valid capability identity must be accepted, got %+v", got)
+	}
+	if after := len(factsOf(st, "t1", "iLegacy")); after != before+1 {
+		t.Fatalf("valid capability did not advance delivery state: facts %d -> %d", before, after)
 	}
 }
 
