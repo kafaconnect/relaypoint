@@ -14,8 +14,8 @@
 //    IceCandidate, SessionDescription — NOT in the chat slice)
 //   intentionally-opaque blobs (e.g. SDP)              -> raw bytes, no decode
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 import type { Message } from "@bufbuild/protobuf";
@@ -24,7 +24,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file relaypoint/interaction/v1/interaction.proto.
  */
 export const file_relaypoint_interaction_v1_interaction: GenFile = /*@__PURE__*/
-  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIuECCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDBIUCgxjb21tYW5kZWRfYnkYDyABKAkSDgoGcmVhc29uGBAgASgJEhIKCnJlcXVlc3RfaWQYESABKAkifgoHQ29tbWFuZBISCgpjb21tYW5kX2lkGAEgASgJEhEKCXRlbmFudF9pZBgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgR0eXBlGAQgASgJEg4KBm1lZGl1bRgFIAEoCRIOCgZyZWZfaWQYBiABKAkSDAoEZGF0YRgHIAEoDCLTAQoNQ29tbWFuZFJlc3VsdBISCgpjb21tYW5kX2lkGAEgASgJEj8KBnN0YXR1cxgCIAEoDjIvLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuQ29tbWFuZFJlc3VsdC5TdGF0dXMSEQoJY2F1c2VkX2J5GAMgASgJEg4KBnJlYXNvbhgEIAEoCSJKCgZTdGF0dXMSFgoSU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPU1RBVFVTX0FDQ0VQVEVEEAESEwoPU1RBVFVTX1JFSkVDVEVEEAIiSwoLU2lnbmFsRXZlbnQSDgoGc2NoZW1hGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIYWN0b3JfaWQYAyABKAkSDAoEZGF0YRgEIAEoDCI0CgtDaGF0TWVzc2FnZRIMCgR0ZXh0GAEgASgJEhcKD2F0dGFjaG1lbnRfcmVmcxgCIAMoCSJbCgtGZWVkQ29udHJvbBIOCgZzY2hlbWEYASABKAkSDwoHY29udHJvbBgCIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgDIAEoCRITCgthdF9zZXF1ZW5jZRgEIAEoA0JSWlBnaXRodWIuY29tL2thZmFjb25uZWN0L3JlbGF5cG9pbnQvZ2VuL2dvL3JlbGF5cG9pbnQvaW50ZXJhY3Rpb24vdjE7aW50ZXJhY3Rpb25wYmIGcHJvdG8z", [file_google_protobuf_timestamp]);
+  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIuECCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDBIUCgxjb21tYW5kZWRfYnkYDyABKAkSDgoGcmVhc29uGBAgASgJEhIKCnJlcXVlc3RfaWQYESABKAkifgoHQ29tbWFuZBISCgpjb21tYW5kX2lkGAEgASgJEhEKCXRlbmFudF9pZBgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgR0eXBlGAQgASgJEg4KBm1lZGl1bRgFIAEoCRIOCgZyZWZfaWQYBiABKAkSDAoEZGF0YRgHIAEoDCLTAQoNQ29tbWFuZFJlc3VsdBISCgpjb21tYW5kX2lkGAEgASgJEj8KBnN0YXR1cxgCIAEoDjIvLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuQ29tbWFuZFJlc3VsdC5TdGF0dXMSEQoJY2F1c2VkX2J5GAMgASgJEg4KBnJlYXNvbhgEIAEoCSJKCgZTdGF0dXMSFgoSU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPU1RBVFVTX0FDQ0VQVEVEEAESEwoPU1RBVFVTX1JFSkVDVEVEEAIiSwoLU2lnbmFsRXZlbnQSDgoGc2NoZW1hGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIYWN0b3JfaWQYAyABKAkSDAoEZGF0YRgEIAEoDCI0CgtDaGF0TWVzc2FnZRIMCgR0ZXh0GAEgASgJEhcKD2F0dGFjaG1lbnRfcmVmcxgCIAMoCSJbCgtGZWVkQ29udHJvbBIOCgZzY2hlbWEYASABKAkSDwoHY29udHJvbBgCIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgDIAEoCRITCgthdF9zZXF1ZW5jZRgEIAEoAyKtAgoUUGFydGljaXBhdGlvbkNvbW1hbmQSEAoIZXZlbnRfaWQYASABKAkSGQoRYWdncmVnYXRlX3ZlcnNpb24YAiABKAQSEQoJdGVuYW50X2lkGAMgASgJEhYKDmludGVyYWN0aW9uX2lkGAQgASgJEhYKDnBhcnRpY2lwYW50X2lkGAUgASgJEksKDWRlc2lyZWRfc3RhdGUYBiABKA4yNC5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlBhcnRpY2lwYXRpb25EZXNpcmVkU3RhdGUSLwoLb2NjdXJyZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKC3RyYWNlcGFyZW50GAggASgJEhIKCmNhcGFiaWxpdHkYCSABKAkicQoaUmVwbGF5UGFydGljaXBhdGlvblJlcXVlc3QSEQoJdGVuYW50X2lkGAEgASgJEhYKDmludGVyYWN0aW9uX2lkGAIgASgJEhQKDGZyb21fdmVyc2lvbhgDIAEoBBISCgp0b192ZXJzaW9uGAQgASgEIssBChtSZXBsYXlQYXJ0aWNpcGF0aW9uUmVzcG9uc2USQQoIY29tbWFuZHMYASADKAsyLy5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlBhcnRpY2lwYXRpb25Db21tYW5kEhQKDGhlYWRfdmVyc2lvbhgCIAEoBBIVCg1oZWFkX2V2ZW50X2lkGAMgASgJEhEKCWhlYWRfaGFzaBgEIAEoDBIVCg1oaXN0b3J5X2Zsb29yGAUgASgEEhIKCnByb3ZlbmFuY2UYBiABKAkibAomR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlcXVlc3QSEQoJdGVuYW50X2lkGAEgASgJEhYKDmludGVyYWN0aW9uX2lkGAIgASgJEhcKD21pbmltdW1fdmVyc2lvbhgDIAEoBCLdAQonR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlc3BvbnNlEhEKCXRlbmFudF9pZBgBIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgCIAEoCRIZChFhZ2dyZWdhdGVfdmVyc2lvbhgDIAEoBBIVCg1oZWFkX2V2ZW50X2lkGAQgASgJEhEKCWhlYWRfaGFzaBgFIAEoDBIXCg9wYXJ0aWNpcGFudF9pZHMYBiADKAkSFQoNaGlzdG9yeV9mbG9vchgHIAEoBBISCgpwcm92ZW5hbmNlGAggASgJKp4BChlQYXJ0aWNpcGF0aW9uRGVzaXJlZFN0YXRlEisKJ1BBUlRJQ0lQQVRJT05fREVTSVJFRF9TVEFURV9VTlNQRUNJRklFRBAAEigKJFBBUlRJQ0lQQVRJT05fREVTSVJFRF9TVEFURV9BU1NJR05FRBABEioKJlBBUlRJQ0lQQVRJT05fREVTSVJFRF9TVEFURV9VTkFTU0lHTkVEEAIy0QIKHVBhcnRpY2lwYXRpb25BdXRob3JpdHlTZXJ2aWNlEoQBChNSZXBsYXlQYXJ0aWNpcGF0aW9uEjUucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5SZXBsYXlQYXJ0aWNpcGF0aW9uUmVxdWVzdBo2LnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuUmVwbGF5UGFydGljaXBhdGlvblJlc3BvbnNlEqgBCh9HZXREZXNpcmVkUGFydGljaXBhdGlvblNuYXBzaG90EkEucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5HZXREZXNpcmVkUGFydGljaXBhdGlvblNuYXBzaG90UmVxdWVzdBpCLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlc3BvbnNlQlJaUGdpdGh1Yi5jb20va2FmYWNvbm5lY3QvcmVsYXlwb2ludC9nZW4vZ28vcmVsYXlwb2ludC9pbnRlcmFjdGlvbi92MTtpbnRlcmFjdGlvbnBiYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
  * Event is the authoritative `.log` fact (one envelope for chat AND call; `medium` is a
@@ -379,4 +379,263 @@ export type FeedControl = Message<"relaypoint.interaction.v1.FeedControl"> & {
  */
 export const FeedControlSchema: GenMessage<FeedControl> = /*@__PURE__*/
   messageDesc(file_relaypoint_interaction_v1_interaction, 5);
+
+/**
+ * @generated from message relaypoint.interaction.v1.ParticipationCommand
+ */
+export type ParticipationCommand = Message<"relaypoint.interaction.v1.ParticipationCommand"> & {
+  /**
+   * @generated from field: string event_id = 1;
+   */
+  eventId: string;
+
+  /**
+   * @generated from field: uint64 aggregate_version = 2;
+   */
+  aggregateVersion: bigint;
+
+  /**
+   * @generated from field: string tenant_id = 3;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string interaction_id = 4;
+   */
+  interactionId: string;
+
+  /**
+   * @generated from field: string participant_id = 5;
+   */
+  participantId: string;
+
+  /**
+   * @generated from field: relaypoint.interaction.v1.ParticipationDesiredState desired_state = 6;
+   */
+  desiredState: ParticipationDesiredState;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp occurred_at = 7;
+   */
+  occurredAt?: Timestamp | undefined;
+
+  /**
+   * @generated from field: string traceparent = 8;
+   */
+  traceparent: string;
+
+  /**
+   * @generated from field: string capability = 9;
+   */
+  capability: string;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.ParticipationCommand.
+ * Use `create(ParticipationCommandSchema)` to create a new message.
+ */
+export const ParticipationCommandSchema: GenMessage<ParticipationCommand> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 6);
+
+/**
+ * @generated from message relaypoint.interaction.v1.ReplayParticipationRequest
+ */
+export type ReplayParticipationRequest = Message<"relaypoint.interaction.v1.ReplayParticipationRequest"> & {
+  /**
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string interaction_id = 2;
+   */
+  interactionId: string;
+
+  /**
+   * @generated from field: uint64 from_version = 3;
+   */
+  fromVersion: bigint;
+
+  /**
+   * @generated from field: uint64 to_version = 4;
+   */
+  toVersion: bigint;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.ReplayParticipationRequest.
+ * Use `create(ReplayParticipationRequestSchema)` to create a new message.
+ */
+export const ReplayParticipationRequestSchema: GenMessage<ReplayParticipationRequest> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 7);
+
+/**
+ * @generated from message relaypoint.interaction.v1.ReplayParticipationResponse
+ */
+export type ReplayParticipationResponse = Message<"relaypoint.interaction.v1.ReplayParticipationResponse"> & {
+  /**
+   * @generated from field: repeated relaypoint.interaction.v1.ParticipationCommand commands = 1;
+   */
+  commands: ParticipationCommand[];
+
+  /**
+   * @generated from field: uint64 head_version = 2;
+   */
+  headVersion: bigint;
+
+  /**
+   * @generated from field: string head_event_id = 3;
+   */
+  headEventId: string;
+
+  /**
+   * @generated from field: bytes head_hash = 4;
+   */
+  headHash: Uint8Array;
+
+  /**
+   * @generated from field: uint64 history_floor = 5;
+   */
+  historyFloor: bigint;
+
+  /**
+   * @generated from field: string provenance = 6;
+   */
+  provenance: string;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.ReplayParticipationResponse.
+ * Use `create(ReplayParticipationResponseSchema)` to create a new message.
+ */
+export const ReplayParticipationResponseSchema: GenMessage<ReplayParticipationResponse> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 8);
+
+/**
+ * @generated from message relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest
+ */
+export type GetDesiredParticipationSnapshotRequest = Message<"relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest"> & {
+  /**
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string interaction_id = 2;
+   */
+  interactionId: string;
+
+  /**
+   * @generated from field: uint64 minimum_version = 3;
+   */
+  minimumVersion: bigint;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest.
+ * Use `create(GetDesiredParticipationSnapshotRequestSchema)` to create a new message.
+ */
+export const GetDesiredParticipationSnapshotRequestSchema: GenMessage<GetDesiredParticipationSnapshotRequest> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 9);
+
+/**
+ * @generated from message relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse
+ */
+export type GetDesiredParticipationSnapshotResponse = Message<"relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse"> & {
+  /**
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string interaction_id = 2;
+   */
+  interactionId: string;
+
+  /**
+   * @generated from field: uint64 aggregate_version = 3;
+   */
+  aggregateVersion: bigint;
+
+  /**
+   * @generated from field: string head_event_id = 4;
+   */
+  headEventId: string;
+
+  /**
+   * @generated from field: bytes head_hash = 5;
+   */
+  headHash: Uint8Array;
+
+  /**
+   * @generated from field: repeated string participant_ids = 6;
+   */
+  participantIds: string[];
+
+  /**
+   * @generated from field: uint64 history_floor = 7;
+   */
+  historyFloor: bigint;
+
+  /**
+   * @generated from field: string provenance = 8;
+   */
+  provenance: string;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse.
+ * Use `create(GetDesiredParticipationSnapshotResponseSchema)` to create a new message.
+ */
+export const GetDesiredParticipationSnapshotResponseSchema: GenMessage<GetDesiredParticipationSnapshotResponse> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 10);
+
+/**
+ * @generated from enum relaypoint.interaction.v1.ParticipationDesiredState
+ */
+export enum ParticipationDesiredState {
+  /**
+   * @generated from enum value: PARTICIPATION_DESIRED_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PARTICIPATION_DESIRED_STATE_ASSIGNED = 1;
+   */
+  ASSIGNED = 1,
+
+  /**
+   * @generated from enum value: PARTICIPATION_DESIRED_STATE_UNASSIGNED = 2;
+   */
+  UNASSIGNED = 2,
+}
+
+/**
+ * Describes the enum relaypoint.interaction.v1.ParticipationDesiredState.
+ */
+export const ParticipationDesiredStateSchema: GenEnum<ParticipationDesiredState> = /*@__PURE__*/
+  enumDesc(file_relaypoint_interaction_v1_interaction, 0);
+
+/**
+ * @generated from service relaypoint.interaction.v1.ParticipationAuthorityService
+ */
+export const ParticipationAuthorityService: GenService<{
+  /**
+   * @generated from rpc relaypoint.interaction.v1.ParticipationAuthorityService.ReplayParticipation
+   */
+  replayParticipation: {
+    methodKind: "unary";
+    input: typeof ReplayParticipationRequestSchema;
+    output: typeof ReplayParticipationResponseSchema;
+  },
+  /**
+   * @generated from rpc relaypoint.interaction.v1.ParticipationAuthorityService.GetDesiredParticipationSnapshot
+   */
+  getDesiredParticipationSnapshot: {
+    methodKind: "unary";
+    input: typeof GetDesiredParticipationSnapshotRequestSchema;
+    output: typeof GetDesiredParticipationSnapshotResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_relaypoint_interaction_v1_interaction, 0);
 

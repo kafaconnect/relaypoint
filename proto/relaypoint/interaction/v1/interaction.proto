@@ -101,3 +101,59 @@ message FeedControl {
   string interaction_id = 3;
   int64 at_sequence = 4;      // the .log sequence at which membership closed
 }
+
+message ParticipationCommand {
+  string event_id = 1;
+  uint64 aggregate_version = 2;
+  string tenant_id = 3;
+  string interaction_id = 4;
+  string participant_id = 5;
+  ParticipationDesiredState desired_state = 6;
+  google.protobuf.Timestamp occurred_at = 7;
+  string traceparent = 8;
+  string capability = 9;
+}
+
+enum ParticipationDesiredState {
+  PARTICIPATION_DESIRED_STATE_UNSPECIFIED = 0;
+  PARTICIPATION_DESIRED_STATE_ASSIGNED = 1;
+  PARTICIPATION_DESIRED_STATE_UNASSIGNED = 2;
+}
+
+message ReplayParticipationRequest {
+  string tenant_id = 1;
+  string interaction_id = 2;
+  uint64 from_version = 3;
+  uint64 to_version = 4;
+}
+
+message ReplayParticipationResponse {
+  repeated ParticipationCommand commands = 1;
+  uint64 head_version = 2;
+  string head_event_id = 3;
+  bytes head_hash = 4;
+  uint64 history_floor = 5;
+  string provenance = 6;
+}
+
+message GetDesiredParticipationSnapshotRequest {
+  string tenant_id = 1;
+  string interaction_id = 2;
+  uint64 minimum_version = 3;
+}
+
+message GetDesiredParticipationSnapshotResponse {
+  string tenant_id = 1;
+  string interaction_id = 2;
+  uint64 aggregate_version = 3;
+  string head_event_id = 4;
+  bytes head_hash = 5;
+  repeated string participant_ids = 6;
+  uint64 history_floor = 7;
+  string provenance = 8;
+}
+
+service ParticipationAuthorityService {
+  rpc ReplayParticipation(ReplayParticipationRequest) returns (ReplayParticipationResponse);
+  rpc GetDesiredParticipationSnapshot(GetDesiredParticipationSnapshotRequest) returns (GetDesiredParticipationSnapshotResponse);
+}
