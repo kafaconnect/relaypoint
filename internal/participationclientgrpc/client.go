@@ -13,39 +13,39 @@ import (
 
 type Client struct {
 	client interactionv1.ParticipationAuthorityServiceClient
+	grant  participation.TransportGrant
 }
 
-func New(client interactionv1.ParticipationAuthorityServiceClient) *Client {
-	return &Client{client: client}
-}
-
-func (c *Client) Replay(ctx context.Context, principal participation.Principal, request *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error) {
-	if c == nil || c.client == nil || !validPrincipal(principal) {
+func New(client interactionv1.ParticipationAuthorityServiceClient, grant participation.TransportGrant) (*Client, error) {
+	if client == nil || grant.ServiceID != "relaypoint" ||
+		!participation.ValidTransportGrant(grant, participation.CapabilityRead) {
 		return nil, participation.ErrPermissionDenied
 	}
-	response, err := c.client.ReplayParticipation(outgoingContext(ctx, principal), request)
+	return &Client{client: client, grant: grant}, nil
+}
+
+func (c *Client) Replay(ctx context.Context, request *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error) {
+	if c == nil || c.client == nil || request == nil {
+		return nil, participation.ErrPermissionDenied
+	}
+	response, err := c.client.ReplayParticipation(outgoingContext(ctx, c.grant, request.GetTenantId()), request)
 	return response, mapError(err)
 }
 
-func (c *Client) Snapshot(ctx context.Context, principal participation.Principal, request *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error) {
-	if c == nil || c.client == nil || !validPrincipal(principal) {
+func (c *Client) Snapshot(ctx context.Context, request *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error) {
+	if c == nil || c.client == nil || request == nil {
 		return nil, participation.ErrPermissionDenied
 	}
-	response, err := c.client.GetDesiredParticipationSnapshot(outgoingContext(ctx, principal), request)
+	response, err := c.client.GetDesiredParticipationSnapshot(outgoingContext(ctx, c.grant, request.GetTenantId()), request)
 	return response, mapError(err)
 }
 
-func outgoingContext(ctx context.Context, principal participation.Principal) context.Context {
+func outgoingContext(ctx context.Context, grant participation.TransportGrant, tenantID string) context.Context {
 	return metadata.AppendToOutgoingContext(ctx,
-		"x-service-id", principal.ServiceID,
-		"x-tenant-id", principal.TenantID,
-		"x-capability", principal.Capability,
+		"x-service-id", grant.ServiceID,
+		"x-tenant-id", tenantID,
+		"x-capability", grant.Capability,
 	)
-}
-
-func validPrincipal(principal participation.Principal) bool {
-	return principal.ServiceID == "relaypoint" && principal.TenantID != "" &&
-		principal.Capability == participation.CapabilityRead && principal.Role == ""
 }
 
 func mapError(err error) error {

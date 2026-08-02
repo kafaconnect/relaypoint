@@ -80,11 +80,15 @@ type Snapshot struct {
 	Provenance   string
 }
 
-type Principal struct {
+type TransportGrant struct {
 	ServiceID  string
-	TenantID   string
 	Capability string
 	Role       string
+}
+
+type Principal struct {
+	TenantID string
+	Grant    TransportGrant
 }
 
 type Store interface {
@@ -99,8 +103,8 @@ type Store interface {
 }
 
 type AuthorityPort interface {
-	Replay(context.Context, Principal, *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error)
-	Snapshot(context.Context, Principal, *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error)
+	Replay(context.Context, *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error)
+	Snapshot(context.Context, *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error)
 }
 
 type Result uint8
@@ -128,7 +132,8 @@ func (p *Projector) Apply(ctx context.Context, principal Principal, command *int
 		return Poisoned, ErrInvalid
 	}
 	record, err := Canonical(command)
-	if err != nil || principal.TenantID != command.GetTenantId() || principal.Capability != CapabilityWrite || command.GetCapability() != principal.Capability {
+	if err != nil || principal.TenantID != command.GetTenantId() ||
+		!ValidTransportGrant(principal.Grant, CapabilityWrite) {
 		return Poisoned, ErrPermissionDenied
 	}
 	key := Key{TenantID: command.GetTenantId(), InteractionID: command.GetInteractionId()}
@@ -184,13 +189,12 @@ func (p *Projector) reconcile(ctx context.Context, fold Fold, held Record, histo
 	if !started {
 		return CompareAndSetLost, nil
 	}
-	principal := Principal{ServiceID: "relaypoint", TenantID: intent.Key.TenantID, Capability: CapabilityRead}
-	replay, err := p.authority.Replay(ctx, principal, &interactionv1.ReplayParticipationRequest{
+	replay, err := p.authority.Replay(ctx, &interactionv1.ReplayParticipationRequest{
 		TenantId: intent.Key.TenantID, InteractionId: intent.Key.InteractionID,
-		FromVersion: intent.RequestedFrom, ToVersion: intent.RequestedTo,
+		FromVersion: intent.RequestedFrom, ToVersion: intent.RequestedTo, RequestId: intent.Token,
 	})
 	if errors.Is(err, ErrUnknownHistory) {
-		return p.snapshot(ctx, principal, intent, held)
+		return p.snapshot(ctx, intent, held)
 	}
 	if err != nil {
 		return p.failReconcile(ctx, intent, held, err)
@@ -223,9 +227,9 @@ func (p *Projector) reconcile(ctx context.Context, fold Fold, held Record, histo
 	return Applied, nil
 }
 
-func (p *Projector) snapshot(ctx context.Context, principal Principal, intent Intent, held Record) (Result, error) {
-	wire, err := p.authority.Snapshot(ctx, principal, &interactionv1.GetDesiredParticipationSnapshotRequest{
-		TenantId: intent.Key.TenantID, InteractionId: intent.Key.InteractionID, MinimumVersion: intent.ObservedVersion,
+func (p *Projector) snapshot(ctx context.Context, intent Intent, held Record) (Result, error) {
+	wire, err := p.authority.Snapshot(ctx, &interactionv1.GetDesiredParticipationSnapshotRequest{
+		TenantId: intent.Key.TenantID, InteractionId: intent.Key.InteractionID, MinimumVersion: intent.ObservedVersion, RequestId: intent.Token,
 	})
 	if err != nil {
 		return p.failReconcile(ctx, intent, held, err)
@@ -258,7 +262,7 @@ func (p *Projector) failReconcile(ctx context.Context, intent Intent, held Recor
 func Canonical(command *interactionv1.ParticipationCommand) (Record, error) {
 	if command == nil || !uuidv7Pattern.MatchString(command.GetEventId()) || !uuidv7Pattern.MatchString(command.GetTenantId()) ||
 		!uuidv7Pattern.MatchString(command.GetInteractionId()) || !uuidv7Pattern.MatchString(command.GetParticipantId()) ||
-		command.GetAggregateVersion() == 0 || command.GetCapability() != CapabilityWrite ||
+		command.GetAggregateVersion() == 0 ||
 		(command.GetDesiredState() != interactionv1.ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_ASSIGNED &&
 			command.GetDesiredState() != interactionv1.ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_UNASSIGNED) ||
 		command.GetOccurredAt() == nil || command.GetOccurredAt().CheckValid() != nil {
@@ -275,6 +279,10 @@ func Canonical(command *interactionv1.ParticipationCommand) (Record, error) {
 	}
 	hash := sha256.Sum256(body)
 	return Record{Command: normalized, Identity: Identity{EventID: normalized.GetEventId(), Hash: hash, Body: body}}, nil
+}
+
+func ValidTransportGrant(grant TransportGrant, capability string) bool {
+	return grant.ServiceID != "" && grant.Role == "" && grant.Capability == capability
 }
 
 func foldRecords(current Fold, records []Record) (Fold, error) {

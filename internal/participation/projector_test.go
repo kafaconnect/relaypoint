@@ -125,18 +125,15 @@ type authorityPort struct {
 	replay         *interactionv1.ReplayParticipationResponse
 	replayErr      error
 	snapshot       *interactionv1.GetDesiredParticipationSnapshotResponse
-	principals     []Principal
 	remoteWithLock bool
 }
 
-func (p *authorityPort) Replay(_ context.Context, principal Principal, _ *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error) {
-	p.principals = append(p.principals, principal)
+func (p *authorityPort) Replay(_ context.Context, _ *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error) {
 	p.remoteWithLock = p.remoteWithLock || p.store.transactionOpen
 	return p.replay, p.replayErr
 }
 
-func (p *authorityPort) Snapshot(_ context.Context, principal Principal, _ *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error) {
-	p.principals = append(p.principals, principal)
+func (p *authorityPort) Snapshot(_ context.Context, _ *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error) {
 	p.remoteWithLock = p.remoteWithLock || p.store.transactionOpen
 	return p.snapshot, nil
 }
@@ -153,8 +150,11 @@ func partCommand(version uint64, participant string, state interactionv1.Partici
 		ParticipantId: participant, DesiredState: state,
 		OccurredAt:  timestamppb.New(time.Unix(int64(100+version), 0).UTC()),
 		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-		Capability:  CapabilityWrite,
 	}
+}
+
+func partWritePrincipal() Principal {
+	return Principal{TenantID: partTenant, Grant: TransportGrant{ServiceID: "corex", Capability: CapabilityWrite}}
 }
 
 func newFoldStore() *foldStore {
@@ -167,11 +167,11 @@ func TestParticipationSubscriptionUsesTenantCapabilityNotRole(t *testing.T) {
 	port := &authorityPort{store: store}
 	projector := NewProjector(store, port, func() string { return "018f4000-0000-7000-8000-000000000020" })
 	command := partCommand(1, partAlice, interactionv1.ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_ASSIGNED)
-	result, err := projector.Apply(context.Background(), Principal{TenantID: partTenant, Role: "desk-admin"}, command)
+	result, err := projector.Apply(context.Background(), Principal{TenantID: partTenant, Grant: TransportGrant{ServiceID: "corex", Capability: CapabilityWrite, Role: "desk-admin"}}, command)
 	if !errors.Is(err, ErrPermissionDenied) || result != Poisoned || store.state.Version != 0 {
 		t.Fatalf("role result=%v err=%v state=%+v", result, err, store.state)
 	}
-	result, err = projector.Apply(context.Background(), Principal{TenantID: partTenant, Capability: CapabilityWrite}, command)
+	result, err = projector.Apply(context.Background(), partWritePrincipal(), command)
 	if err != nil || result != Applied || store.state.Version != 1 {
 		t.Fatalf("capability result=%v err=%v state=%+v", result, err, store.state)
 	}
@@ -185,15 +185,12 @@ func TestParticipationGapReplaysExactNextOutsideLockAndCAS(t *testing.T) {
 	two := partCommand(2, partBob, interactionv1.ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_ASSIGNED)
 	port := &authorityPort{store: store, replay: replayResponse(t, one, two)}
 	projector := NewProjector(store, port, func() string { return "018f4000-0000-7000-8000-000000000020" })
-	result, err := projector.Apply(context.Background(), Principal{TenantID: partTenant, Capability: CapabilityWrite}, two)
+	result, err := projector.Apply(context.Background(), partWritePrincipal(), two)
 	if err != nil || result != Applied || store.state.Version != 2 || len(store.state.Participants) != 2 {
 		t.Fatalf("result=%v state=%+v err=%v", result, store.state, err)
 	}
 	if port.remoteWithLock || len(store.pending) != 0 || len(store.versionLedger) != 2 || len(store.eventLedger) != 2 {
 		t.Fatalf("lock=%v pending=%d versions=%d events=%d", port.remoteWithLock, len(store.pending), len(store.versionLedger), len(store.eventLedger))
-	}
-	if len(port.principals) != 1 || port.principals[0].TenantID != partTenant || port.principals[0].Capability != CapabilityRead || port.principals[0].Role != "" {
-		t.Fatalf("principal=%+v", port.principals)
 	}
 }
 
@@ -207,12 +204,12 @@ func TestParticipationDuplicateDivergenceAndSnapshotReplacement(t *testing.T) {
 	}
 	store.install([]Record{record}, Fold{Version: 1, Identity: record.Identity, Participants: map[string]struct{}{partAlice: {}}})
 	projector := NewProjector(store, &authorityPort{store: store}, func() string { return "018f4000-0000-7000-8000-000000000020" })
-	if result, applyErr := projector.Apply(context.Background(), Principal{TenantID: partTenant, Capability: CapabilityWrite}, one); applyErr != nil || result != Duplicate {
+	if result, applyErr := projector.Apply(context.Background(), partWritePrincipal(), one); applyErr != nil || result != Duplicate {
 		t.Fatalf("duplicate result=%v err=%v", result, applyErr)
 	}
 	divergent := proto.Clone(one).(*interactionv1.ParticipationCommand)
 	divergent.ParticipantId = partBob
-	if result, applyErr := projector.Apply(context.Background(), Principal{TenantID: partTenant, Capability: CapabilityWrite}, divergent); !errors.Is(applyErr, ErrDivergentHistory) || result != Poisoned || store.dlq != 1 || store.alert != 1 {
+	if result, applyErr := projector.Apply(context.Background(), partWritePrincipal(), divergent); !errors.Is(applyErr, ErrDivergentHistory) || result != Poisoned || store.dlq != 1 || store.alert != 1 {
 		t.Fatalf("divergent result=%v dlq=%d alert=%d err=%v", result, store.dlq, store.alert, applyErr)
 	}
 	store.versionLedger = map[uint64]Identity{}
@@ -228,7 +225,7 @@ func TestParticipationDuplicateDivergenceAndSnapshotReplacement(t *testing.T) {
 		HistoryFloor: 1, Provenance: "corex-participation-history-v1",
 	}}
 	projector = NewProjector(store, port, func() string { return "018f4000-0000-7000-8000-000000000021" })
-	result, err := projector.Apply(context.Background(), Principal{TenantID: partTenant, Capability: CapabilityWrite}, three)
+	result, err := projector.Apply(context.Background(), partWritePrincipal(), three)
 	if err != nil || result != AuditedSnapshot || store.state.Version != 4 || len(store.state.Participants) != 1 {
 		t.Fatalf("snapshot result=%v state=%+v err=%v", result, store.state, err)
 	}
@@ -245,7 +242,7 @@ func TestParticipationReconcileRejectsChangedHeadAtInstall(t *testing.T) {
 	port := &authorityPort{store: store, replay: replayResponse(t,
 		partCommand(1, partAlice, interactionv1.ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_ASSIGNED), two)}
 	projector := NewProjector(store, port, func() string { return "018f4000-0000-7000-8000-000000000020" })
-	result, err := projector.Apply(context.Background(), Principal{TenantID: partTenant, Capability: CapabilityWrite}, two)
+	result, err := projector.Apply(context.Background(), partWritePrincipal(), two)
 	if err != nil || result != CompareAndSetLost || store.state.Version != 0 || port.remoteWithLock {
 		t.Fatalf("result=%v state=%+v lock=%v err=%v", result, store.state, port.remoteWithLock, err)
 	}
@@ -258,7 +255,7 @@ func TestParticipationReconcileExhaustionIsVisible(t *testing.T) {
 	port := &authorityPort{store: store, replayErr: errors.New("authority unavailable")}
 	projector := NewProjector(store, port, func() string { return "018f4000-0000-7000-8000-000000000020" })
 	for attempt := 1; attempt <= 3; attempt++ {
-		result, err := projector.Apply(context.Background(), Principal{TenantID: partTenant, Capability: CapabilityWrite}, two)
+		result, err := projector.Apply(context.Background(), partWritePrincipal(), two)
 		if attempt < 3 && (result != 0 || err == nil) {
 			t.Fatalf("attempt %d result=%v err=%v", attempt, result, err)
 		}

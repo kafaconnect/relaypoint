@@ -37,12 +37,12 @@ type integrationAuthority struct {
 	lockFailed bool
 }
 
-func (a *integrationAuthority) Replay(ctx context.Context, _ participation.Principal, _ *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error) {
+func (a *integrationAuthority) Replay(ctx context.Context, _ *interactionv1.ReplayParticipationRequest) (*interactionv1.ReplayParticipationResponse, error) {
 	a.checkUnlocked(ctx)
 	return a.replay, a.replayErr
 }
 
-func (a *integrationAuthority) Snapshot(ctx context.Context, _ participation.Principal, _ *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error) {
+func (a *integrationAuthority) Snapshot(ctx context.Context, _ *interactionv1.GetDesiredParticipationSnapshotRequest) (*interactionv1.GetDesiredParticipationSnapshotResponse, error) {
 	a.checkUnlocked(ctx)
 	return a.snapshot, nil
 }
@@ -100,7 +100,7 @@ func TestPostgresParticipationExactNextReplaySnapshotCASAndRLS(t *testing.T) {
 		ids = ids[1:]
 		return id
 	})
-	result, err := projector.Apply(ctx, participation.Principal{TenantID: integrationTenant, Capability: participation.CapabilityWrite}, two)
+	result, err := projector.Apply(ctx, integrationWritePrincipal(), two)
 	if err != nil || result != participation.Applied || authority.lockFailed {
 		t.Fatalf("result=%v lock_failed=%v err=%v", result, authority.lockFailed, err)
 	}
@@ -130,7 +130,7 @@ func TestPostgresParticipationExactNextReplaySnapshotCASAndRLS(t *testing.T) {
 		HeadEventId: four.GetEventId(), HeadHash: fourRecord.Hash[:], ParticipantIds: []string{integrationBob},
 		HistoryFloor: 1, Provenance: "corex-participation-history-v1",
 	}
-	result, err = projector.Apply(ctx, participation.Principal{TenantID: integrationTenant, Capability: participation.CapabilityWrite}, one)
+	result, err = projector.Apply(ctx, integrationWritePrincipal(), one)
 	if err != nil || result != participation.AuditedSnapshot || authority.lockFailed {
 		t.Fatalf("snapshot result=%v lock_failed=%v err=%v", result, authority.lockFailed, err)
 	}
@@ -154,8 +154,12 @@ func integrationCommand(version uint64, participantID string) *interactionv1.Par
 		TenantId: integrationTenant, InteractionId: integrationInteraction, ParticipantId: participantID,
 		DesiredState: interactionv1.ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_ASSIGNED,
 		OccurredAt:   timestamppb.New(time.Unix(int64(100+version), 0).UTC()),
-		Traceparent:  "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", Capability: participation.CapabilityWrite,
+		Traceparent:  "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 	}
+}
+
+func integrationWritePrincipal() participation.Principal {
+	return participation.Principal{TenantID: integrationTenant, Grant: participation.TransportGrant{ServiceID: "corex", Capability: participation.CapabilityWrite}}
 }
 
 func participationPools(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {

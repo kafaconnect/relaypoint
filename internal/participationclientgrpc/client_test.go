@@ -27,12 +27,28 @@ func (c *wireClient) GetDesiredParticipationSnapshot(ctx context.Context, _ *int
 // @spec:service-extraction.participation.outside-lock-reconciliation
 func TestClientPropagatesTenantScopedOpaqueCapability(t *testing.T) {
 	wire := new(wireClient)
-	client := New(wire)
-	principal := participation.Principal{ServiceID: "relaypoint", TenantID: "018f4000-0000-7000-8000-000000000001", Capability: participation.CapabilityRead}
-	_, err := client.Replay(context.Background(), principal, &interactionv1.ReplayParticipationRequest{})
+	grant := participation.TransportGrant{ServiceID: "relaypoint", Capability: participation.CapabilityRead}
+	client, constructionErr := New(wire, grant)
+	if constructionErr != nil {
+		t.Fatal(constructionErr)
+	}
+	tenantID := "018f4000-0000-7000-8000-000000000001"
+	_, err := client.Replay(context.Background(), &interactionv1.ReplayParticipationRequest{TenantId: tenantID})
 	if err != nil || wire.metadata.Get("x-service-id")[0] != "relaypoint" ||
-		wire.metadata.Get("x-tenant-id")[0] != principal.TenantID ||
+		wire.metadata.Get("x-tenant-id")[0] != tenantID ||
 		wire.metadata.Get("x-capability")[0] != participation.CapabilityRead {
 		t.Fatalf("metadata=%v err=%v", wire.metadata, err)
+	}
+}
+
+func TestClientRejectsEmptyWrongAndRoleBearingTransportPrincipals(t *testing.T) {
+	for _, grant := range []participation.TransportGrant{
+		{},
+		{ServiceID: "relaypoint", Capability: participation.CapabilityWrite},
+		{ServiceID: "relaypoint", Capability: participation.CapabilityRead, Role: "admin"},
+	} {
+		if client, err := New(new(wireClient), grant); err == nil || client != nil {
+			t.Fatalf("grant accepted: %+v", grant)
+		}
 	}
 }

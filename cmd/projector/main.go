@@ -12,11 +12,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/kafaconnect/relaypoint/internal/health"
 	"github.com/kafaconnect/relaypoint/internal/obs"
+	"github.com/kafaconnect/relaypoint/internal/participation"
+	"github.com/kafaconnect/relaypoint/internal/participationclientnats"
+	"github.com/kafaconnect/relaypoint/internal/participationnats"
+	"github.com/kafaconnect/relaypoint/internal/participationpg"
 	"github.com/kafaconnect/relaypoint/internal/projector"
 )
 
@@ -26,6 +31,8 @@ func main() {
 	if health.IsProbe(os.Args) {
 		os.Exit(health.RunProbe(health.DefaultAddr))
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	slog.SetDefault(obs.New("relaypoint-projector"))
 
 	// OTLP trace export (M1.5 F5b) — no-op when the OTLP endpoint is unset; fail-open on a setup error.
@@ -35,6 +42,11 @@ func main() {
 		tracerShutdown = func(context.Context) error { return nil }
 	}
 	defer func() { _ = tracerShutdown(context.Background()) }()
+	dsnPath, err := postgresDSNPath(os.Args[1:])
+	must("postgres-config", err)
+	pool, err := openProjectorPostgres(ctx, dsnPath)
+	must("postgres", err)
+	defer pool.Close()
 
 	url := envOr("NATS_URL", nats.DefaultURL)
 	user := envOr("NATS_USER", defaultNATSUser)
@@ -50,6 +62,7 @@ func main() {
 	must("jetstream-kv", err)
 
 	must("feed-stream", projector.EnsureFeedStream(js, time.Hour, 10*time.Minute))
+	must("participation-stream", participationnats.EnsureStream(js))
 
 	const maxDeliver = 5
 	const leaseTTL = 5 * time.Second // shared by the lease and the renew budget so they cannot drift
@@ -66,9 +79,9 @@ func main() {
 	// desk now emits participation facts, so no roster pull remains on this path.
 	cfg := projector.Config{MaxDeliver: maxDeliver, LeaseTTL: leaseTTL, HealthAddr: health.DefaultAddr}
 	p := projector.New(src, sink, lease, snaps, cfg)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	participationConsumer, err := newParticipationRuntime(nc, js, pool, slog.Default())
+	must("participation-consumer", err)
+	defer participationConsumer.Close()
 
 	live := func() error {
 		if !nc.IsConnected() {
@@ -77,19 +90,80 @@ func main() {
 		if _, jerr := js.AccountInfo(); jerr != nil {
 			return fmt.Errorf("jetstream unreachable: %w", jerr)
 		}
-		return nil
+		pingCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		return pool.Ping(pingCtx)
+	}
+	ready := func() error {
+		if err := p.Ready(); err != nil {
+			return err
+		}
+		if err := participationConsumer.Ready(); err != nil {
+			return err
+		}
+		return live()
 	}
 	go func() {
-		if herr := health.Serve(ctx, cfg.HealthAddr, live, p.Ready, obs.MetricsHandler()); herr != nil {
+		if herr := health.Serve(ctx, cfg.HealthAddr, live, ready, obs.MetricsHandler()); herr != nil {
 			slog.Error("health.serve", "err", herr)
 		}
 	}()
 
 	slog.Info("projector.up", "url", url, "stream", "INTERACTION_LOGS", "feed_stream", "AGENT_FEED")
-	if err := p.Run(ctx); err != nil && ctx.Err() == nil {
+	if err := runProjectors(ctx, p.Run, participationConsumer.Run); err != nil && ctx.Err() == nil {
 		slog.Error("projector.exit", "err", err)
 		os.Exit(1)
 	}
+}
+
+func newParticipationRuntime(nc *nats.Conn, js nats.JetStreamContext, pool *pgxpool.Pool, logger *slog.Logger) (*participationnats.Consumer, error) {
+	readGrant := participation.TransportGrant{ServiceID: "relaypoint", Capability: participation.CapabilityRead}
+	authority, err := participationclientnats.New(nc, 5*time.Second, readGrant)
+	if err != nil {
+		return nil, err
+	}
+	projector := participation.NewProjector(
+		participationpg.New(pool), authority,
+		func() string { return uuid.Must(uuid.NewV7()).String() },
+	)
+	writeGrant := participation.TransportGrant{ServiceID: "corex", Capability: participation.CapabilityWrite}
+	return participationnats.NewConsumer(js, projector, writeGrant, logger)
+}
+
+func runProjectors(ctx context.Context, runners ...func(context.Context) error) error {
+	if len(runners) == 0 {
+		return errors.New("no projector runtimes configured")
+	}
+	for _, run := range runners {
+		if run == nil {
+			return errors.New("nil projector runtime")
+		}
+	}
+	parent := ctx
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	results := make(chan error, len(runners))
+	for _, run := range runners {
+		go func(run func(context.Context) error) { results <- run(ctx) }(run)
+	}
+	collected := []error{<-results}
+	cancel()
+	for range runners[1:] {
+		collected = append(collected, <-results)
+	}
+	var result error
+	for _, err := range collected {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			result = errors.Join(result, err)
+		}
+	}
+	if result != nil {
+		return result
+	}
+	if parent.Err() != nil {
+		return nil
+	}
+	return errors.New("projector runtime stopped without an error")
 }
 
 func workerID() string {

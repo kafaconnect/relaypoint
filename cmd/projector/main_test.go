@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +65,11 @@ func TestNATSConfDefinesLeastPrivilegeProjectorUser(t *testing.T) {
 		"tenant.*.interaction.*.log",
 		"$KV.projector-lease.>",
 		"$KV.projector-snapshot.>",
+		"corex.participation.commands.v1.*.*",
+		"rpc.corex.participation-replay.v1.*.*",
+		"rpc.corex.participation-snapshot.v1.*.*",
+		"$JS.ACK.INTERACTION_LOGS.fanout-projector.>",
+		"$JS.ACK.PARTICIPATION_COMMANDS.relaypoint-participation.>",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("projector perms missing %q", want)
@@ -73,5 +80,49 @@ func TestNATSConfDefinesLeastPrivilegeProjectorUser(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(conf), "anonymous") {
 		t.Error("infra-NATS anonymous posture must be documented in the conf")
+	}
+}
+
+func TestProjectorPostgresDSNUsesRequiredSecretFileArgument(t *testing.T) {
+	path, err := postgresDSNPath([]string{"--postgres-dsn-file=/run/secrets/relaypoint-projector.dsn"})
+	if err != nil || path != "/run/secrets/relaypoint-projector.dsn" {
+		t.Fatalf("path=%q err=%v", path, err)
+	}
+	for _, arguments := range [][]string{nil, {"--postgres-dsn-file="}, {"--postgres-dsn=secret"}, {"--postgres-dsn-file=a", "extra"}} {
+		if _, err := postgresDSNPath(arguments); err == nil {
+			t.Fatalf("arguments accepted: %v", arguments)
+		}
+	}
+}
+
+func TestRunProjectorsFailsClosed(t *testing.T) {
+	want := errors.New("consumer failed")
+	blocked := func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := runProjectors(context.Background(), blocked, func(context.Context) error { return want }); !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+	if err := runProjectors(context.Background(), func(context.Context) error { return nil }, blocked); err == nil {
+		t.Fatal("unexpected clean runtime exit accepted")
+	}
+	if err := runProjectors(context.Background()); err == nil {
+		t.Fatal("empty runtime set accepted")
+	}
+	if err := runProjectors(context.Background(), nil); err == nil {
+		t.Fatal("nil runtime accepted")
+	}
+}
+
+func TestRunProjectorsStopsCleanlyWithParent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	run := func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := runProjectors(ctx, run, run); err != nil {
+		t.Fatalf("error = %v", err)
 	}
 }

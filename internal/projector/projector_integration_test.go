@@ -56,6 +56,17 @@ func freshStreams(t *testing.T, js nats.JetStreamContext) {
 
 func appendFact(t *testing.T, js nats.JetStreamContext, iid string, seq int64, typ, actor string) {
 	t.Helper()
+	if routerURL := os.Getenv("NATS_URL_ROUTER"); routerURL != "" {
+		router, err := nats.Connect(routerURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer router.Close()
+		js, err = router.JetStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	e := &signaling.Event{
 		Schema: signaling.SchemaV1, TenantId: tn, EventType: typ, ActorId: actor, Sequence: seq,
 		EventId: fmt.Sprintf("ev-%s-%d", iid, seq),
@@ -69,6 +80,17 @@ func appendFact(t *testing.T, js nats.JetStreamContext, iid string, seq int64, t
 
 func drainFeed(t *testing.T, js nats.JetStreamContext, agent, iid string) [][]byte {
 	t.Helper()
+	if routerURL := os.Getenv("NATS_URL_ROUTER"); routerURL != "" {
+		router, err := nats.Connect(routerURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer router.Close()
+		js, err = router.JetStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	subj := fmt.Sprintf("tenant.%s.agent.%s.feed.%s", tn, agent, iid)
 	sub, err := js.PullSubscribe(subj, "", nats.DeliverAll(), nats.AckNone())
 	if err != nil {
