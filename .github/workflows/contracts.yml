@@ -1,0 +1,40 @@
+name: contracts
+
+on:
+  pull_request:
+    paths:
+      - "proto/**"
+      - "gen/go/**"
+      - "clients/typescript/src/gen/**"
+      - "buf.yaml"
+      - "buf.gen.yaml"
+      - "clients/typescript/package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "scripts/check-contracts.sh"
+      - ".github/workflows/contracts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: bash scripts/check-contracts.sh '.git#branch=origin/main'
