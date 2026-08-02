@@ -1,0 +1,9 @@
+DROP TABLE projection_invariant_alert_outbox;
+DROP TABLE route_projection_dlq;
+DROP TABLE projection_reconcile_intents;
+DROP TABLE route_fact_event_ledger;
+DROP TABLE route_fact_version_ledger;
+DROP TABLE route_projection_heads;
+DROP TABLE delivery_ack_outbox;
+DROP TABLE interaction_delivery_log;
+DROP TABLE delivery_authorizations;

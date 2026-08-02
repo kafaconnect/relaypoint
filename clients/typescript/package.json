@@ -18,6 +18,10 @@
     "./gen/*.js": {
       "types": "./dist/gen/relaypoint/interaction/v1/*.d.ts",
       "import": "./dist/gen/relaypoint/interaction/v1/*.js"
+    },
+    "./gen/delivery/v1/delivery_pb.js": {
+      "types": "./dist/gen/relaypoint/delivery/v1/delivery_pb.d.ts",
+      "import": "./dist/gen/relaypoint/delivery/v1/delivery_pb.js"
     }
   },
   "files": [

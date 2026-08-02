@@ -5,6 +5,11 @@ plugins:
   - local: protoc-gen-go
     out: gen/go
     opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=true
   # TypeScript — @bufbuild/protoc-gen-es into the SDK source tree.
   - local: ["pnpm", "-C", "clients/typescript", "exec", "protoc-gen-es"]
     out: clients/typescript/src/gen
