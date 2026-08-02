@@ -18,6 +18,10 @@
     "./gen/*.js": {
       "types": "./dist/gen/relaypoint/interaction/v1/*.d.ts",
       "import": "./dist/gen/relaypoint/interaction/v1/*.js"
+    },
+    "./gen/delivery/v1/delivery_pb.js": {
+      "types": "./dist/gen/relaypoint/delivery/v1/delivery_pb.d.ts",
+      "import": "./dist/gen/relaypoint/delivery/v1/delivery_pb.js"
     }
   },
   "files": [
@@ -36,8 +40,8 @@
     "nats.ws": "^1.30.3"
   },
   "devDependencies": {
-    "@bufbuild/buf": "^1.70.0",
-    "@bufbuild/protoc-gen-es": "^2.12.0",
+    "@bufbuild/buf": "1.70.0",
+    "@bufbuild/protoc-gen-es": "2.12.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   },

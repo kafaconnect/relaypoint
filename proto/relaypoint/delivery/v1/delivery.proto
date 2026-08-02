@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package relaypoint.delivery.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/kafaconnect/relaypoint/gen/go/relaypoint/delivery/v1;deliverypb";
+
+service DeliveryService {
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc AcceptDelivery(DeliveryAuthorization) returns (DeliveryReceipt);
+}
+
+message DeliveryAuthorization {
+  string delivery_authorization_id = 1;
+  string event_id = 2;
+  string tenant_id = 3;
+  string reservation_id = 4;
+  string interaction_id = 5;
+  string target_subscriber_id = 6;
+  string fencing_token = 7;
+  uint64 route_version = 8;
+  google.protobuf.Timestamp delivery_deadline = 9;
+  string traceparent = 10;
+}
+
+message DeliveryReceipt {
+  string receipt_id = 1;
+  string delivery_authorization_id = 2;
+  string event_id = 3;
+  string tenant_id = 4;
+  string reservation_id = 5;
+  string interaction_id = 6;
+  string target_subscriber_id = 7;
+  google.protobuf.Timestamp accepted_at = 8;
+  google.protobuf.Timestamp delivery_deadline = 9;
+  uint64 log_sequence = 10;
+  string issuer_service_id = 11;
+  DeliveryVisibility visibility = 12;
+}
+
+enum DeliveryVisibility {
+  DELIVERY_VISIBILITY_UNSPECIFIED = 0;
+  DELIVERY_VISIBILITY_PENDING_NOT_VISIBLE = 1;
+}
