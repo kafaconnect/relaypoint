@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,8 +66,12 @@ func TestPostgresAtomicDeliveryRLSAndProjectionRecovery(t *testing.T) {
 	if _, err := admin.Exec(ctx, fmt.Sprintf("GRANT USAGE ON SCHEMA public TO %s; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %s", role, role, role)); err != nil {
 		t.Fatal(err)
 	}
-	appURL := strings.Replace(adminURL, "postgres:relaypoint_test@", role+":relaypoint_test@", 1)
-	pool, err := pgxpool.New(ctx, appURL)
+	config, err := pgxpool.ParseConfig(adminURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.User, config.ConnConfig.Password = role, "relaypoint_test"
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +147,22 @@ func tenantCount(t *testing.T, pool *pgxpool.Pool, tenantID, query string, args 
 
 func startPostgres17(t *testing.T) (string, func()) {
 	t.Helper()
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		pool, err := pgxpool.New(context.Background(), dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		var versionText string
+		if err := pool.QueryRow(context.Background(), `SHOW server_version_num`).Scan(&versionText); err != nil {
+			t.Fatal(err)
+		}
+		version, err := strconv.Atoi(versionText)
+		if err != nil || version < 170000 || version >= 180000 {
+			t.Fatalf("PostgreSQL 17 required: version=%s err=%v", versionText, err)
+		}
+		return dsn, func() {}
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker unavailable")
 	}
