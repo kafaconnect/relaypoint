@@ -20,6 +20,7 @@ trap cleanup EXIT
 GOWORK=off GOBIN="$tool_bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
 GOWORK=off GOBIN="$tool_bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 PATH="$tool_bin:$PATH" GOWORK=off "$buf_bin" generate
+bash scripts/generate_participation_addresses.sh --verify
 
 git diff --exit-code -- gen/go clients/typescript/src/gen
 untracked="$(git ls-files --others --exclude-standard -- gen/go clients/typescript/src/gen)"

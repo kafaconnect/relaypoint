@@ -132,6 +132,125 @@ func (CommandResult_Status) EnumDescriptor() ([]byte, []int) {
 	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{2, 0}
 }
 
+type MutateDesiredParticipationResponse_Result int32
+
+const (
+	MutateDesiredParticipationResponse_RESULT_UNSPECIFIED          MutateDesiredParticipationResponse_Result = 0
+	MutateDesiredParticipationResponse_RESULT_APPLIED              MutateDesiredParticipationResponse_Result = 1
+	MutateDesiredParticipationResponse_RESULT_UNCHANGED            MutateDesiredParticipationResponse_Result = 2
+	MutateDesiredParticipationResponse_RESULT_IDEMPOTENCY_CONFLICT MutateDesiredParticipationResponse_Result = 3
+	MutateDesiredParticipationResponse_RESULT_INVALID              MutateDesiredParticipationResponse_Result = 4
+	MutateDesiredParticipationResponse_RESULT_TRANSIENT_FAILURE    MutateDesiredParticipationResponse_Result = 5
+	MutateDesiredParticipationResponse_RESULT_INTERNAL_FAILURE     MutateDesiredParticipationResponse_Result = 6
+)
+
+// Enum value maps for MutateDesiredParticipationResponse_Result.
+var (
+	MutateDesiredParticipationResponse_Result_name = map[int32]string{
+		0: "RESULT_UNSPECIFIED",
+		1: "RESULT_APPLIED",
+		2: "RESULT_UNCHANGED",
+		3: "RESULT_IDEMPOTENCY_CONFLICT",
+		4: "RESULT_INVALID",
+		5: "RESULT_TRANSIENT_FAILURE",
+		6: "RESULT_INTERNAL_FAILURE",
+	}
+	MutateDesiredParticipationResponse_Result_value = map[string]int32{
+		"RESULT_UNSPECIFIED":          0,
+		"RESULT_APPLIED":              1,
+		"RESULT_UNCHANGED":            2,
+		"RESULT_IDEMPOTENCY_CONFLICT": 3,
+		"RESULT_INVALID":              4,
+		"RESULT_TRANSIENT_FAILURE":    5,
+		"RESULT_INTERNAL_FAILURE":     6,
+	}
+)
+
+func (x MutateDesiredParticipationResponse_Result) Enum() *MutateDesiredParticipationResponse_Result {
+	p := new(MutateDesiredParticipationResponse_Result)
+	*p = x
+	return p
+}
+
+func (x MutateDesiredParticipationResponse_Result) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (MutateDesiredParticipationResponse_Result) Descriptor() protoreflect.EnumDescriptor {
+	return file_relaypoint_interaction_v1_interaction_proto_enumTypes[2].Descriptor()
+}
+
+func (MutateDesiredParticipationResponse_Result) Type() protoreflect.EnumType {
+	return &file_relaypoint_interaction_v1_interaction_proto_enumTypes[2]
+}
+
+func (x MutateDesiredParticipationResponse_Result) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use MutateDesiredParticipationResponse_Result.Descriptor instead.
+func (MutateDesiredParticipationResponse_Result) EnumDescriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{8, 0}
+}
+
+type ParticipationError_Code int32
+
+const (
+	ParticipationError_CODE_UNSPECIFIED       ParticipationError_Code = 0
+	ParticipationError_CODE_UNKNOWN_HISTORY   ParticipationError_Code = 1
+	ParticipationError_CODE_PERMISSION_DENIED ParticipationError_Code = 2
+	ParticipationError_CODE_INVALID           ParticipationError_Code = 3
+	ParticipationError_CODE_TRANSIENT         ParticipationError_Code = 4
+	ParticipationError_CODE_INTERNAL          ParticipationError_Code = 5
+)
+
+// Enum value maps for ParticipationError_Code.
+var (
+	ParticipationError_Code_name = map[int32]string{
+		0: "CODE_UNSPECIFIED",
+		1: "CODE_UNKNOWN_HISTORY",
+		2: "CODE_PERMISSION_DENIED",
+		3: "CODE_INVALID",
+		4: "CODE_TRANSIENT",
+		5: "CODE_INTERNAL",
+	}
+	ParticipationError_Code_value = map[string]int32{
+		"CODE_UNSPECIFIED":       0,
+		"CODE_UNKNOWN_HISTORY":   1,
+		"CODE_PERMISSION_DENIED": 2,
+		"CODE_INVALID":           3,
+		"CODE_TRANSIENT":         4,
+		"CODE_INTERNAL":          5,
+	}
+)
+
+func (x ParticipationError_Code) Enum() *ParticipationError_Code {
+	p := new(ParticipationError_Code)
+	*p = x
+	return p
+}
+
+func (x ParticipationError_Code) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ParticipationError_Code) Descriptor() protoreflect.EnumDescriptor {
+	return file_relaypoint_interaction_v1_interaction_proto_enumTypes[3].Descriptor()
+}
+
+func (ParticipationError_Code) Type() protoreflect.EnumType {
+	return &file_relaypoint_interaction_v1_interaction_proto_enumTypes[3]
+}
+
+func (x ParticipationError_Code) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ParticipationError_Code.Descriptor instead.
+func (ParticipationError_Code) EnumDescriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{13, 0}
+}
+
 // Event is the authoritative `.log` fact (one envelope for chat AND call; `medium` is a
 // payload field, never a subject). Router-written only.
 type Event struct {
@@ -779,19 +898,228 @@ func (x *ParticipationCommand) GetCapability() string {
 	return ""
 }
 
+type MutateDesiredParticipationRequest struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	SchemaVersion uint32                    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	RequestId     string                    `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	TenantId      string                    `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	InteractionId string                    `protobuf:"bytes,4,opt,name=interaction_id,json=interactionId,proto3" json:"interaction_id,omitempty"`
+	ParticipantId string                    `protobuf:"bytes,5,opt,name=participant_id,json=participantId,proto3" json:"participant_id,omitempty"`
+	DesiredState  ParticipationDesiredState `protobuf:"varint,6,opt,name=desired_state,json=desiredState,proto3,enum=relaypoint.interaction.v1.ParticipationDesiredState" json:"desired_state,omitempty"`
+	OccurredAt    *timestamppb.Timestamp    `protobuf:"bytes,7,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MutateDesiredParticipationRequest) Reset() {
+	*x = MutateDesiredParticipationRequest{}
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MutateDesiredParticipationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MutateDesiredParticipationRequest) ProtoMessage() {}
+
+func (x *MutateDesiredParticipationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MutateDesiredParticipationRequest.ProtoReflect.Descriptor instead.
+func (*MutateDesiredParticipationRequest) Descriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MutateDesiredParticipationRequest) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *MutateDesiredParticipationRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationRequest) GetInteractionId() string {
+	if x != nil {
+		return x.InteractionId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationRequest) GetParticipantId() string {
+	if x != nil {
+		return x.ParticipantId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationRequest) GetDesiredState() ParticipationDesiredState {
+	if x != nil {
+		return x.DesiredState
+	}
+	return ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_UNSPECIFIED
+}
+
+func (x *MutateDesiredParticipationRequest) GetOccurredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.OccurredAt
+	}
+	return nil
+}
+
+type MutateDesiredParticipationResponse struct {
+	state            protoimpl.MessageState                    `protogen:"open.v1"`
+	SchemaVersion    uint32                                    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	RequestId        string                                    `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	TenantId         string                                    `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	InteractionId    string                                    `protobuf:"bytes,4,opt,name=interaction_id,json=interactionId,proto3" json:"interaction_id,omitempty"`
+	ParticipantId    string                                    `protobuf:"bytes,5,opt,name=participant_id,json=participantId,proto3" json:"participant_id,omitempty"`
+	DesiredState     ParticipationDesiredState                 `protobuf:"varint,6,opt,name=desired_state,json=desiredState,proto3,enum=relaypoint.interaction.v1.ParticipationDesiredState" json:"desired_state,omitempty"`
+	Result           MutateDesiredParticipationResponse_Result `protobuf:"varint,7,opt,name=result,proto3,enum=relaypoint.interaction.v1.MutateDesiredParticipationResponse_Result" json:"result,omitempty"`
+	AggregateVersion uint64                                    `protobuf:"varint,8,opt,name=aggregate_version,json=aggregateVersion,proto3" json:"aggregate_version,omitempty"`
+	EventId          string                                    `protobuf:"bytes,9,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	CanonicalHash    []byte                                    `protobuf:"bytes,10,opt,name=canonical_hash,json=canonicalHash,proto3" json:"canonical_hash,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *MutateDesiredParticipationResponse) Reset() {
+	*x = MutateDesiredParticipationResponse{}
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MutateDesiredParticipationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MutateDesiredParticipationResponse) ProtoMessage() {}
+
+func (x *MutateDesiredParticipationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MutateDesiredParticipationResponse.ProtoReflect.Descriptor instead.
+func (*MutateDesiredParticipationResponse) Descriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *MutateDesiredParticipationResponse) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *MutateDesiredParticipationResponse) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationResponse) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationResponse) GetInteractionId() string {
+	if x != nil {
+		return x.InteractionId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationResponse) GetParticipantId() string {
+	if x != nil {
+		return x.ParticipantId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationResponse) GetDesiredState() ParticipationDesiredState {
+	if x != nil {
+		return x.DesiredState
+	}
+	return ParticipationDesiredState_PARTICIPATION_DESIRED_STATE_UNSPECIFIED
+}
+
+func (x *MutateDesiredParticipationResponse) GetResult() MutateDesiredParticipationResponse_Result {
+	if x != nil {
+		return x.Result
+	}
+	return MutateDesiredParticipationResponse_RESULT_UNSPECIFIED
+}
+
+func (x *MutateDesiredParticipationResponse) GetAggregateVersion() uint64 {
+	if x != nil {
+		return x.AggregateVersion
+	}
+	return 0
+}
+
+func (x *MutateDesiredParticipationResponse) GetEventId() string {
+	if x != nil {
+		return x.EventId
+	}
+	return ""
+}
+
+func (x *MutateDesiredParticipationResponse) GetCanonicalHash() []byte {
+	if x != nil {
+		return x.CanonicalHash
+	}
+	return nil
+}
+
 type ReplayParticipationRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	InteractionId string                 `protobuf:"bytes,2,opt,name=interaction_id,json=interactionId,proto3" json:"interaction_id,omitempty"`
 	FromVersion   uint64                 `protobuf:"varint,3,opt,name=from_version,json=fromVersion,proto3" json:"from_version,omitempty"`
 	ToVersion     uint64                 `protobuf:"varint,4,opt,name=to_version,json=toVersion,proto3" json:"to_version,omitempty"`
+	RequestId     string                 `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReplayParticipationRequest) Reset() {
 	*x = ReplayParticipationRequest{}
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[7]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -803,7 +1131,7 @@ func (x *ReplayParticipationRequest) String() string {
 func (*ReplayParticipationRequest) ProtoMessage() {}
 
 func (x *ReplayParticipationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[7]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -816,7 +1144,7 @@ func (x *ReplayParticipationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayParticipationRequest.ProtoReflect.Descriptor instead.
 func (*ReplayParticipationRequest) Descriptor() ([]byte, []int) {
-	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{7}
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReplayParticipationRequest) GetTenantId() string {
@@ -847,6 +1175,13 @@ func (x *ReplayParticipationRequest) GetToVersion() uint64 {
 	return 0
 }
 
+func (x *ReplayParticipationRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
 type ReplayParticipationResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Commands      []*ParticipationCommand `protobuf:"bytes,1,rep,name=commands,proto3" json:"commands,omitempty"`
@@ -861,7 +1196,7 @@ type ReplayParticipationResponse struct {
 
 func (x *ReplayParticipationResponse) Reset() {
 	*x = ReplayParticipationResponse{}
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[8]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -873,7 +1208,7 @@ func (x *ReplayParticipationResponse) String() string {
 func (*ReplayParticipationResponse) ProtoMessage() {}
 
 func (x *ReplayParticipationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[8]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -886,7 +1221,7 @@ func (x *ReplayParticipationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayParticipationResponse.ProtoReflect.Descriptor instead.
 func (*ReplayParticipationResponse) Descriptor() ([]byte, []int) {
-	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{8}
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ReplayParticipationResponse) GetCommands() []*ParticipationCommand {
@@ -936,13 +1271,14 @@ type GetDesiredParticipationSnapshotRequest struct {
 	TenantId       string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	InteractionId  string                 `protobuf:"bytes,2,opt,name=interaction_id,json=interactionId,proto3" json:"interaction_id,omitempty"`
 	MinimumVersion uint64                 `protobuf:"varint,3,opt,name=minimum_version,json=minimumVersion,proto3" json:"minimum_version,omitempty"`
+	RequestId      string                 `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetDesiredParticipationSnapshotRequest) Reset() {
 	*x = GetDesiredParticipationSnapshotRequest{}
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[9]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -954,7 +1290,7 @@ func (x *GetDesiredParticipationSnapshotRequest) String() string {
 func (*GetDesiredParticipationSnapshotRequest) ProtoMessage() {}
 
 func (x *GetDesiredParticipationSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[9]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -967,7 +1303,7 @@ func (x *GetDesiredParticipationSnapshotRequest) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use GetDesiredParticipationSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetDesiredParticipationSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{9}
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetDesiredParticipationSnapshotRequest) GetTenantId() string {
@@ -991,6 +1327,13 @@ func (x *GetDesiredParticipationSnapshotRequest) GetMinimumVersion() uint64 {
 	return 0
 }
 
+func (x *GetDesiredParticipationSnapshotRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
 type GetDesiredParticipationSnapshotResponse struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	TenantId         string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -1007,7 +1350,7 @@ type GetDesiredParticipationSnapshotResponse struct {
 
 func (x *GetDesiredParticipationSnapshotResponse) Reset() {
 	*x = GetDesiredParticipationSnapshotResponse{}
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[10]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1019,7 +1362,7 @@ func (x *GetDesiredParticipationSnapshotResponse) String() string {
 func (*GetDesiredParticipationSnapshotResponse) ProtoMessage() {}
 
 func (x *GetDesiredParticipationSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[10]
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1032,7 +1375,7 @@ func (x *GetDesiredParticipationSnapshotResponse) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use GetDesiredParticipationSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetDesiredParticipationSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{10}
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetDesiredParticipationSnapshotResponse) GetTenantId() string {
@@ -1090,6 +1433,230 @@ func (x *GetDesiredParticipationSnapshotResponse) GetProvenance() string {
 	}
 	return ""
 }
+
+type ParticipationError struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Code          ParticipationError_Code `protobuf:"varint,1,opt,name=code,proto3,enum=relaypoint.interaction.v1.ParticipationError_Code" json:"code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ParticipationError) Reset() {
+	*x = ParticipationError{}
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ParticipationError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ParticipationError) ProtoMessage() {}
+
+func (x *ParticipationError) ProtoReflect() protoreflect.Message {
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ParticipationError.ProtoReflect.Descriptor instead.
+func (*ParticipationError) Descriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ParticipationError) GetCode() ParticipationError_Code {
+	if x != nil {
+		return x.Code
+	}
+	return ParticipationError_CODE_UNSPECIFIED
+}
+
+type ReplayParticipationReply struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Types that are valid to be assigned to Outcome:
+	//
+	//	*ReplayParticipationReply_Response
+	//	*ReplayParticipationReply_Error
+	Outcome       isReplayParticipationReply_Outcome `protobuf_oneof:"outcome"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplayParticipationReply) Reset() {
+	*x = ReplayParticipationReply{}
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplayParticipationReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplayParticipationReply) ProtoMessage() {}
+
+func (x *ReplayParticipationReply) ProtoReflect() protoreflect.Message {
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplayParticipationReply.ProtoReflect.Descriptor instead.
+func (*ReplayParticipationReply) Descriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ReplayParticipationReply) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *ReplayParticipationReply) GetOutcome() isReplayParticipationReply_Outcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return nil
+}
+
+func (x *ReplayParticipationReply) GetResponse() *ReplayParticipationResponse {
+	if x != nil {
+		if x, ok := x.Outcome.(*ReplayParticipationReply_Response); ok {
+			return x.Response
+		}
+	}
+	return nil
+}
+
+func (x *ReplayParticipationReply) GetError() *ParticipationError {
+	if x != nil {
+		if x, ok := x.Outcome.(*ReplayParticipationReply_Error); ok {
+			return x.Error
+		}
+	}
+	return nil
+}
+
+type isReplayParticipationReply_Outcome interface {
+	isReplayParticipationReply_Outcome()
+}
+
+type ReplayParticipationReply_Response struct {
+	Response *ReplayParticipationResponse `protobuf:"bytes,2,opt,name=response,proto3,oneof"`
+}
+
+type ReplayParticipationReply_Error struct {
+	Error *ParticipationError `protobuf:"bytes,3,opt,name=error,proto3,oneof"`
+}
+
+func (*ReplayParticipationReply_Response) isReplayParticipationReply_Outcome() {}
+
+func (*ReplayParticipationReply_Error) isReplayParticipationReply_Outcome() {}
+
+type DesiredParticipationSnapshotReply struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Types that are valid to be assigned to Outcome:
+	//
+	//	*DesiredParticipationSnapshotReply_Response
+	//	*DesiredParticipationSnapshotReply_Error
+	Outcome       isDesiredParticipationSnapshotReply_Outcome `protobuf_oneof:"outcome"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DesiredParticipationSnapshotReply) Reset() {
+	*x = DesiredParticipationSnapshotReply{}
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DesiredParticipationSnapshotReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DesiredParticipationSnapshotReply) ProtoMessage() {}
+
+func (x *DesiredParticipationSnapshotReply) ProtoReflect() protoreflect.Message {
+	mi := &file_relaypoint_interaction_v1_interaction_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DesiredParticipationSnapshotReply.ProtoReflect.Descriptor instead.
+func (*DesiredParticipationSnapshotReply) Descriptor() ([]byte, []int) {
+	return file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *DesiredParticipationSnapshotReply) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *DesiredParticipationSnapshotReply) GetOutcome() isDesiredParticipationSnapshotReply_Outcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return nil
+}
+
+func (x *DesiredParticipationSnapshotReply) GetResponse() *GetDesiredParticipationSnapshotResponse {
+	if x != nil {
+		if x, ok := x.Outcome.(*DesiredParticipationSnapshotReply_Response); ok {
+			return x.Response
+		}
+	}
+	return nil
+}
+
+func (x *DesiredParticipationSnapshotReply) GetError() *ParticipationError {
+	if x != nil {
+		if x, ok := x.Outcome.(*DesiredParticipationSnapshotReply_Error); ok {
+			return x.Error
+		}
+	}
+	return nil
+}
+
+type isDesiredParticipationSnapshotReply_Outcome interface {
+	isDesiredParticipationSnapshotReply_Outcome()
+}
+
+type DesiredParticipationSnapshotReply_Response struct {
+	Response *GetDesiredParticipationSnapshotResponse `protobuf:"bytes,2,opt,name=response,proto3,oneof"`
+}
+
+type DesiredParticipationSnapshotReply_Error struct {
+	Error *ParticipationError `protobuf:"bytes,3,opt,name=error,proto3,oneof"`
+}
+
+func (*DesiredParticipationSnapshotReply_Response) isDesiredParticipationSnapshotReply_Outcome() {}
+
+func (*DesiredParticipationSnapshotReply_Error) isDesiredParticipationSnapshotReply_Outcome() {}
 
 var File_relaypoint_interaction_v1_interaction_proto protoreflect.FileDescriptor
 
@@ -1164,13 +1731,46 @@ const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\vtraceparent\x18\b \x01(\tR\vtraceparent\x12\x1e\n" +
 	"\n" +
 	"capability\x18\t \x01(\tR\n" +
-	"capability\"\xa2\x01\n" +
+	"capability\"\xec\x02\n" +
+	"!MutateDesiredParticipationRequest\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tR\trequestId\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12%\n" +
+	"\x0einteraction_id\x18\x04 \x01(\tR\rinteractionId\x12%\n" +
+	"\x0eparticipant_id\x18\x05 \x01(\tR\rparticipantId\x12Y\n" +
+	"\rdesired_state\x18\x06 \x01(\x0e24.relaypoint.interaction.v1.ParticipationDesiredStateR\fdesiredState\x12;\n" +
+	"\voccurred_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"occurredAt\"\xba\x05\n" +
+	"\"MutateDesiredParticipationResponse\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tR\trequestId\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12%\n" +
+	"\x0einteraction_id\x18\x04 \x01(\tR\rinteractionId\x12%\n" +
+	"\x0eparticipant_id\x18\x05 \x01(\tR\rparticipantId\x12Y\n" +
+	"\rdesired_state\x18\x06 \x01(\x0e24.relaypoint.interaction.v1.ParticipationDesiredStateR\fdesiredState\x12\\\n" +
+	"\x06result\x18\a \x01(\x0e2D.relaypoint.interaction.v1.MutateDesiredParticipationResponse.ResultR\x06result\x12+\n" +
+	"\x11aggregate_version\x18\b \x01(\x04R\x10aggregateVersion\x12\x19\n" +
+	"\bevent_id\x18\t \x01(\tR\aeventId\x12%\n" +
+	"\x0ecanonical_hash\x18\n" +
+	" \x01(\fR\rcanonicalHash\"\xba\x01\n" +
+	"\x06Result\x12\x16\n" +
+	"\x12RESULT_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eRESULT_APPLIED\x10\x01\x12\x14\n" +
+	"\x10RESULT_UNCHANGED\x10\x02\x12\x1f\n" +
+	"\x1bRESULT_IDEMPOTENCY_CONFLICT\x10\x03\x12\x12\n" +
+	"\x0eRESULT_INVALID\x10\x04\x12\x1c\n" +
+	"\x18RESULT_TRANSIENT_FAILURE\x10\x05\x12\x1b\n" +
+	"\x17RESULT_INTERNAL_FAILURE\x10\x06\"\xc1\x01\n" +
 	"\x1aReplayParticipationRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12%\n" +
 	"\x0einteraction_id\x18\x02 \x01(\tR\rinteractionId\x12!\n" +
 	"\ffrom_version\x18\x03 \x01(\x04R\vfromVersion\x12\x1d\n" +
 	"\n" +
-	"to_version\x18\x04 \x01(\x04R\ttoVersion\"\x93\x02\n" +
+	"to_version\x18\x04 \x01(\x04R\ttoVersion\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x05 \x01(\tR\trequestId\"\x93\x02\n" +
 	"\x1bReplayParticipationResponse\x12K\n" +
 	"\bcommands\x18\x01 \x03(\v2/.relaypoint.interaction.v1.ParticipationCommandR\bcommands\x12!\n" +
 	"\fhead_version\x18\x02 \x01(\x04R\vheadVersion\x12\"\n" +
@@ -1179,11 +1779,13 @@ const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\rhistory_floor\x18\x05 \x01(\x04R\fhistoryFloor\x12\x1e\n" +
 	"\n" +
 	"provenance\x18\x06 \x01(\tR\n" +
-	"provenance\"\x95\x01\n" +
+	"provenance\"\xb4\x01\n" +
 	"&GetDesiredParticipationSnapshotRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12%\n" +
 	"\x0einteraction_id\x18\x02 \x01(\tR\rinteractionId\x12'\n" +
-	"\x0fminimum_version\x18\x03 \x01(\x04R\x0eminimumVersion\"\xc9\x02\n" +
+	"\x0fminimum_version\x18\x03 \x01(\x04R\x0eminimumVersion\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x04 \x01(\tR\trequestId\"\xc9\x02\n" +
 	"'GetDesiredParticipationSnapshotResponse\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12%\n" +
 	"\x0einteraction_id\x18\x02 \x01(\tR\rinteractionId\x12+\n" +
@@ -1194,7 +1796,28 @@ const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\rhistory_floor\x18\a \x01(\x04R\fhistoryFloor\x12\x1e\n" +
 	"\n" +
 	"provenance\x18\b \x01(\tR\n" +
-	"provenance*\x9e\x01\n" +
+	"provenance\"\xea\x01\n" +
+	"\x12ParticipationError\x12F\n" +
+	"\x04code\x18\x01 \x01(\x0e22.relaypoint.interaction.v1.ParticipationError.CodeR\x04code\"\x8b\x01\n" +
+	"\x04Code\x12\x14\n" +
+	"\x10CODE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14CODE_UNKNOWN_HISTORY\x10\x01\x12\x1a\n" +
+	"\x16CODE_PERMISSION_DENIED\x10\x02\x12\x10\n" +
+	"\fCODE_INVALID\x10\x03\x12\x12\n" +
+	"\x0eCODE_TRANSIENT\x10\x04\x12\x11\n" +
+	"\rCODE_INTERNAL\x10\x05\"\xe1\x01\n" +
+	"\x18ReplayParticipationReply\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12T\n" +
+	"\bresponse\x18\x02 \x01(\v26.relaypoint.interaction.v1.ReplayParticipationResponseH\x00R\bresponse\x12E\n" +
+	"\x05error\x18\x03 \x01(\v2-.relaypoint.interaction.v1.ParticipationErrorH\x00R\x05errorB\t\n" +
+	"\aoutcome\"\xf6\x01\n" +
+	"!DesiredParticipationSnapshotReply\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12`\n" +
+	"\bresponse\x18\x02 \x01(\v2B.relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponseH\x00R\bresponse\x12E\n" +
+	"\x05error\x18\x03 \x01(\v2-.relaypoint.interaction.v1.ParticipationErrorH\x00R\x05errorB\t\n" +
+	"\aoutcome*\x9e\x01\n" +
 	"\x19ParticipationDesiredState\x12+\n" +
 	"'PARTICIPATION_DESIRED_STATE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$PARTICIPATION_DESIRED_STATE_ASSIGNED\x10\x01\x12*\n" +
@@ -1215,39 +1838,55 @@ func file_relaypoint_interaction_v1_interaction_proto_rawDescGZIP() []byte {
 	return file_relaypoint_interaction_v1_interaction_proto_rawDescData
 }
 
-var file_relaypoint_interaction_v1_interaction_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_relaypoint_interaction_v1_interaction_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_relaypoint_interaction_v1_interaction_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_relaypoint_interaction_v1_interaction_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_relaypoint_interaction_v1_interaction_proto_goTypes = []any{
 	(ParticipationDesiredState)(0),                  // 0: relaypoint.interaction.v1.ParticipationDesiredState
 	(CommandResult_Status)(0),                       // 1: relaypoint.interaction.v1.CommandResult.Status
-	(*Event)(nil),                                   // 2: relaypoint.interaction.v1.Event
-	(*Command)(nil),                                 // 3: relaypoint.interaction.v1.Command
-	(*CommandResult)(nil),                           // 4: relaypoint.interaction.v1.CommandResult
-	(*SignalEvent)(nil),                             // 5: relaypoint.interaction.v1.SignalEvent
-	(*ChatMessage)(nil),                             // 6: relaypoint.interaction.v1.ChatMessage
-	(*FeedControl)(nil),                             // 7: relaypoint.interaction.v1.FeedControl
-	(*ParticipationCommand)(nil),                    // 8: relaypoint.interaction.v1.ParticipationCommand
-	(*ReplayParticipationRequest)(nil),              // 9: relaypoint.interaction.v1.ReplayParticipationRequest
-	(*ReplayParticipationResponse)(nil),             // 10: relaypoint.interaction.v1.ReplayParticipationResponse
-	(*GetDesiredParticipationSnapshotRequest)(nil),  // 11: relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest
-	(*GetDesiredParticipationSnapshotResponse)(nil), // 12: relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse
-	(*timestamppb.Timestamp)(nil),                   // 13: google.protobuf.Timestamp
+	(MutateDesiredParticipationResponse_Result)(0),  // 2: relaypoint.interaction.v1.MutateDesiredParticipationResponse.Result
+	(ParticipationError_Code)(0),                    // 3: relaypoint.interaction.v1.ParticipationError.Code
+	(*Event)(nil),                                   // 4: relaypoint.interaction.v1.Event
+	(*Command)(nil),                                 // 5: relaypoint.interaction.v1.Command
+	(*CommandResult)(nil),                           // 6: relaypoint.interaction.v1.CommandResult
+	(*SignalEvent)(nil),                             // 7: relaypoint.interaction.v1.SignalEvent
+	(*ChatMessage)(nil),                             // 8: relaypoint.interaction.v1.ChatMessage
+	(*FeedControl)(nil),                             // 9: relaypoint.interaction.v1.FeedControl
+	(*ParticipationCommand)(nil),                    // 10: relaypoint.interaction.v1.ParticipationCommand
+	(*MutateDesiredParticipationRequest)(nil),       // 11: relaypoint.interaction.v1.MutateDesiredParticipationRequest
+	(*MutateDesiredParticipationResponse)(nil),      // 12: relaypoint.interaction.v1.MutateDesiredParticipationResponse
+	(*ReplayParticipationRequest)(nil),              // 13: relaypoint.interaction.v1.ReplayParticipationRequest
+	(*ReplayParticipationResponse)(nil),             // 14: relaypoint.interaction.v1.ReplayParticipationResponse
+	(*GetDesiredParticipationSnapshotRequest)(nil),  // 15: relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest
+	(*GetDesiredParticipationSnapshotResponse)(nil), // 16: relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse
+	(*ParticipationError)(nil),                      // 17: relaypoint.interaction.v1.ParticipationError
+	(*ReplayParticipationReply)(nil),                // 18: relaypoint.interaction.v1.ReplayParticipationReply
+	(*DesiredParticipationSnapshotReply)(nil),       // 19: relaypoint.interaction.v1.DesiredParticipationSnapshotReply
+	(*timestamppb.Timestamp)(nil),                   // 20: google.protobuf.Timestamp
 }
 var file_relaypoint_interaction_v1_interaction_proto_depIdxs = []int32{
-	13, // 0: relaypoint.interaction.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
+	20, // 0: relaypoint.interaction.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
 	1,  // 1: relaypoint.interaction.v1.CommandResult.status:type_name -> relaypoint.interaction.v1.CommandResult.Status
 	0,  // 2: relaypoint.interaction.v1.ParticipationCommand.desired_state:type_name -> relaypoint.interaction.v1.ParticipationDesiredState
-	13, // 3: relaypoint.interaction.v1.ParticipationCommand.occurred_at:type_name -> google.protobuf.Timestamp
-	8,  // 4: relaypoint.interaction.v1.ReplayParticipationResponse.commands:type_name -> relaypoint.interaction.v1.ParticipationCommand
-	9,  // 5: relaypoint.interaction.v1.ParticipationAuthorityService.ReplayParticipation:input_type -> relaypoint.interaction.v1.ReplayParticipationRequest
-	11, // 6: relaypoint.interaction.v1.ParticipationAuthorityService.GetDesiredParticipationSnapshot:input_type -> relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest
-	10, // 7: relaypoint.interaction.v1.ParticipationAuthorityService.ReplayParticipation:output_type -> relaypoint.interaction.v1.ReplayParticipationResponse
-	12, // 8: relaypoint.interaction.v1.ParticipationAuthorityService.GetDesiredParticipationSnapshot:output_type -> relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse
-	7,  // [7:9] is the sub-list for method output_type
-	5,  // [5:7] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	20, // 3: relaypoint.interaction.v1.ParticipationCommand.occurred_at:type_name -> google.protobuf.Timestamp
+	0,  // 4: relaypoint.interaction.v1.MutateDesiredParticipationRequest.desired_state:type_name -> relaypoint.interaction.v1.ParticipationDesiredState
+	20, // 5: relaypoint.interaction.v1.MutateDesiredParticipationRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	0,  // 6: relaypoint.interaction.v1.MutateDesiredParticipationResponse.desired_state:type_name -> relaypoint.interaction.v1.ParticipationDesiredState
+	2,  // 7: relaypoint.interaction.v1.MutateDesiredParticipationResponse.result:type_name -> relaypoint.interaction.v1.MutateDesiredParticipationResponse.Result
+	10, // 8: relaypoint.interaction.v1.ReplayParticipationResponse.commands:type_name -> relaypoint.interaction.v1.ParticipationCommand
+	3,  // 9: relaypoint.interaction.v1.ParticipationError.code:type_name -> relaypoint.interaction.v1.ParticipationError.Code
+	14, // 10: relaypoint.interaction.v1.ReplayParticipationReply.response:type_name -> relaypoint.interaction.v1.ReplayParticipationResponse
+	17, // 11: relaypoint.interaction.v1.ReplayParticipationReply.error:type_name -> relaypoint.interaction.v1.ParticipationError
+	16, // 12: relaypoint.interaction.v1.DesiredParticipationSnapshotReply.response:type_name -> relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse
+	17, // 13: relaypoint.interaction.v1.DesiredParticipationSnapshotReply.error:type_name -> relaypoint.interaction.v1.ParticipationError
+	13, // 14: relaypoint.interaction.v1.ParticipationAuthorityService.ReplayParticipation:input_type -> relaypoint.interaction.v1.ReplayParticipationRequest
+	15, // 15: relaypoint.interaction.v1.ParticipationAuthorityService.GetDesiredParticipationSnapshot:input_type -> relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest
+	14, // 16: relaypoint.interaction.v1.ParticipationAuthorityService.ReplayParticipation:output_type -> relaypoint.interaction.v1.ReplayParticipationResponse
+	16, // 17: relaypoint.interaction.v1.ParticipationAuthorityService.GetDesiredParticipationSnapshot:output_type -> relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse
+	16, // [16:18] is the sub-list for method output_type
+	14, // [14:16] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_relaypoint_interaction_v1_interaction_proto_init() }
@@ -1255,13 +1894,21 @@ func file_relaypoint_interaction_v1_interaction_proto_init() {
 	if File_relaypoint_interaction_v1_interaction_proto != nil {
 		return
 	}
+	file_relaypoint_interaction_v1_interaction_proto_msgTypes[14].OneofWrappers = []any{
+		(*ReplayParticipationReply_Response)(nil),
+		(*ReplayParticipationReply_Error)(nil),
+	}
+	file_relaypoint_interaction_v1_interaction_proto_msgTypes[15].OneofWrappers = []any{
+		(*DesiredParticipationSnapshotReply_Response)(nil),
+		(*DesiredParticipationSnapshotReply_Error)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_relaypoint_interaction_v1_interaction_proto_rawDesc), len(file_relaypoint_interaction_v1_interaction_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   11,
+			NumEnums:      4,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
