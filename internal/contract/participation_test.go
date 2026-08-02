@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"strings"
 	"testing"
 
 	interactionv1 "github.com/kafaconnect/relaypoint/gen/go/relaypoint/interaction/v1"
@@ -25,8 +26,10 @@ func TestParticipationContractCarriesOrderedIdentityAndRecovery(t *testing.T) {
 		}
 	}
 	for _, name := range []protoreflect.Name{
+		"MutateDesiredParticipationRequest", "MutateDesiredParticipationResponse",
 		"ReplayParticipationRequest", "ReplayParticipationResponse",
 		"GetDesiredParticipationSnapshotRequest", "GetDesiredParticipationSnapshotResponse",
+		"ReplayParticipationReply", "DesiredParticipationSnapshotReply",
 	} {
 		if messages.ByName(name) == nil {
 			t.Fatalf("missing %s", name)
@@ -37,5 +40,22 @@ func TestParticipationContractCarriesOrderedIdentityAndRecovery(t *testing.T) {
 		service.Methods().Get(0).Name() != "ReplayParticipation" ||
 		service.Methods().Get(1).Name() != "GetDesiredParticipationSnapshot" {
 		t.Fatalf("participation service = %v", service)
+	}
+	tenant := "018f1000-0000-7000-8000-000000000001"
+	interaction := "018f1000-0000-7000-8000-000000000002"
+	addresses := []struct {
+		build func(string, string) (string, error)
+		want  string
+	}{
+		{interactionv1.MutateDesiredParticipationAddress, "rpc.corex.participation-mutate.v1"},
+		{interactionv1.ParticipationCommandAddress, "corex.participation.commands.v1"},
+		{interactionv1.ReplayParticipationAddress, "rpc.corex.participation-replay.v1"},
+		{interactionv1.DesiredParticipationSnapshotAddress, "rpc.corex.participation-snapshot.v1"},
+	}
+	for _, address := range addresses {
+		got, err := address.build(tenant, interaction)
+		if err != nil || !strings.HasPrefix(got, address.want+".") {
+			t.Fatalf("address=%q error=%v", got, err)
+		}
 	}
 }

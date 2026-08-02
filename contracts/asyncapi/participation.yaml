@@ -1,0 +1,74 @@
+asyncapi: 2.6.0
+id: urn:relaypoint:interaction:participation
+info:
+  title: RelayPoint participation transport
+  version: 1.0.0
+  license:
+    name: Source Available
+defaultContentType: application/x-protobuf
+channels:
+  rpc.corex.participation-mutate.v1.{tenant}.{interaction}:
+    x-address-function: mutateDesiredParticipationAddress
+    x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    parameters:
+      tenant: { $ref: '#/components/parameters/tenant' }
+      interaction: { $ref: '#/components/parameters/interaction' }
+    publish:
+      operationId: mutateDesiredParticipation
+      message: { $ref: '#/components/messages/MutateDesiredParticipationRequest' }
+      x-reply-message: { $ref: '#/components/messages/MutateDesiredParticipationResponse' }
+  corex.participation.commands.v1.{tenant}.{interaction}:
+    x-address-function: participationCommandAddress
+    x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    x-jetstream-stream: PARTICIPATION_COMMANDS
+    x-ordering-key: [tenant, interaction]
+    x-nats-msg-id-format: <event_id>
+    parameters:
+      tenant: { $ref: '#/components/parameters/tenant' }
+      interaction: { $ref: '#/components/parameters/interaction' }
+    subscribe:
+      operationId: onParticipationCommand
+      message: { $ref: '#/components/messages/ParticipationCommand' }
+  rpc.corex.participation-replay.v1.{tenant}.{interaction}:
+    x-address-function: replayParticipationAddress
+    x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    parameters:
+      tenant: { $ref: '#/components/parameters/tenant' }
+      interaction: { $ref: '#/components/parameters/interaction' }
+    publish:
+      operationId: replayParticipation
+      message: { $ref: '#/components/messages/ReplayParticipationRequest' }
+      x-reply-message: { $ref: '#/components/messages/ReplayParticipationReply' }
+  rpc.corex.participation-snapshot.v1.{tenant}.{interaction}:
+    x-address-function: desiredParticipationSnapshotAddress
+    x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    parameters:
+      tenant: { $ref: '#/components/parameters/tenant' }
+      interaction: { $ref: '#/components/parameters/interaction' }
+    publish:
+      operationId: getDesiredParticipationSnapshot
+      message: { $ref: '#/components/messages/GetDesiredParticipationSnapshotRequest' }
+      x-reply-message: { $ref: '#/components/messages/DesiredParticipationSnapshotReply' }
+components:
+  parameters:
+    tenant:
+      description: Canonical lowercase tenant UUIDv7.
+      schema: { type: string, format: uuid }
+    interaction:
+      description: Canonical lowercase interaction UUIDv7.
+      schema: { type: string, format: uuid }
+  messages:
+    MutateDesiredParticipationRequest:
+      payload: { $ref: '../../proto/relaypoint/interaction/v1/interaction.proto#MutateDesiredParticipationRequest' }
+    MutateDesiredParticipationResponse:
+      payload: { $ref: '../../proto/relaypoint/interaction/v1/interaction.proto#MutateDesiredParticipationResponse' }
+    ParticipationCommand:
+      payload: { $ref: '../../proto/relaypoint/interaction/v1/interaction.proto#ParticipationCommand' }
+    ReplayParticipationRequest:
+      payload: { $ref: '../../proto/relaypoint/interaction/v1/interaction.proto#ReplayParticipationRequest' }
+    ReplayParticipationReply:
+      payload: { $ref: '../../proto/relaypoint/interaction/v1/interaction.proto#ReplayParticipationReply' }
+    GetDesiredParticipationSnapshotRequest:
+      payload: { $ref: '../../proto/relaypoint/interaction/v1/interaction.proto#GetDesiredParticipationSnapshotRequest' }
+    DesiredParticipationSnapshotReply:
+      payload: { $ref: '../../proto/relaypoint/interaction/v1/interaction.proto#DesiredParticipationSnapshotReply' }

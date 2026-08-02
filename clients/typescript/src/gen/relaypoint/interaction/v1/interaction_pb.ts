@@ -24,7 +24,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file relaypoint/interaction/v1/interaction.proto.
  */
 export const file_relaypoint_interaction_v1_interaction: GenFile = /*@__PURE__*/
-  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIuECCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDBIUCgxjb21tYW5kZWRfYnkYDyABKAkSDgoGcmVhc29uGBAgASgJEhIKCnJlcXVlc3RfaWQYESABKAkifgoHQ29tbWFuZBISCgpjb21tYW5kX2lkGAEgASgJEhEKCXRlbmFudF9pZBgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgR0eXBlGAQgASgJEg4KBm1lZGl1bRgFIAEoCRIOCgZyZWZfaWQYBiABKAkSDAoEZGF0YRgHIAEoDCLTAQoNQ29tbWFuZFJlc3VsdBISCgpjb21tYW5kX2lkGAEgASgJEj8KBnN0YXR1cxgCIAEoDjIvLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuQ29tbWFuZFJlc3VsdC5TdGF0dXMSEQoJY2F1c2VkX2J5GAMgASgJEg4KBnJlYXNvbhgEIAEoCSJKCgZTdGF0dXMSFgoSU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPU1RBVFVTX0FDQ0VQVEVEEAESEwoPU1RBVFVTX1JFSkVDVEVEEAIiSwoLU2lnbmFsRXZlbnQSDgoGc2NoZW1hGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIYWN0b3JfaWQYAyABKAkSDAoEZGF0YRgEIAEoDCI0CgtDaGF0TWVzc2FnZRIMCgR0ZXh0GAEgASgJEhcKD2F0dGFjaG1lbnRfcmVmcxgCIAMoCSJbCgtGZWVkQ29udHJvbBIOCgZzY2hlbWEYASABKAkSDwoHY29udHJvbBgCIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgDIAEoCRITCgthdF9zZXF1ZW5jZRgEIAEoAyKtAgoUUGFydGljaXBhdGlvbkNvbW1hbmQSEAoIZXZlbnRfaWQYASABKAkSGQoRYWdncmVnYXRlX3ZlcnNpb24YAiABKAQSEQoJdGVuYW50X2lkGAMgASgJEhYKDmludGVyYWN0aW9uX2lkGAQgASgJEhYKDnBhcnRpY2lwYW50X2lkGAUgASgJEksKDWRlc2lyZWRfc3RhdGUYBiABKA4yNC5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlBhcnRpY2lwYXRpb25EZXNpcmVkU3RhdGUSLwoLb2NjdXJyZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKC3RyYWNlcGFyZW50GAggASgJEhIKCmNhcGFiaWxpdHkYCSABKAkicQoaUmVwbGF5UGFydGljaXBhdGlvblJlcXVlc3QSEQoJdGVuYW50X2lkGAEgASgJEhYKDmludGVyYWN0aW9uX2lkGAIgASgJEhQKDGZyb21fdmVyc2lvbhgDIAEoBBISCgp0b192ZXJzaW9uGAQgASgEIssBChtSZXBsYXlQYXJ0aWNpcGF0aW9uUmVzcG9uc2USQQoIY29tbWFuZHMYASADKAsyLy5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlBhcnRpY2lwYXRpb25Db21tYW5kEhQKDGhlYWRfdmVyc2lvbhgCIAEoBBIVCg1oZWFkX2V2ZW50X2lkGAMgASgJEhEKCWhlYWRfaGFzaBgEIAEoDBIVCg1oaXN0b3J5X2Zsb29yGAUgASgEEhIKCnByb3ZlbmFuY2UYBiABKAkibAomR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlcXVlc3QSEQoJdGVuYW50X2lkGAEgASgJEhYKDmludGVyYWN0aW9uX2lkGAIgASgJEhcKD21pbmltdW1fdmVyc2lvbhgDIAEoBCLdAQonR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlc3BvbnNlEhEKCXRlbmFudF9pZBgBIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgCIAEoCRIZChFhZ2dyZWdhdGVfdmVyc2lvbhgDIAEoBBIVCg1oZWFkX2V2ZW50X2lkGAQgASgJEhEKCWhlYWRfaGFzaBgFIAEoDBIXCg9wYXJ0aWNpcGFudF9pZHMYBiADKAkSFQoNaGlzdG9yeV9mbG9vchgHIAEoBBISCgpwcm92ZW5hbmNlGAggASgJKp4BChlQYXJ0aWNpcGF0aW9uRGVzaXJlZFN0YXRlEisKJ1BBUlRJQ0lQQVRJT05fREVTSVJFRF9TVEFURV9VTlNQRUNJRklFRBAAEigKJFBBUlRJQ0lQQVRJT05fREVTSVJFRF9TVEFURV9BU1NJR05FRBABEioKJlBBUlRJQ0lQQVRJT05fREVTSVJFRF9TVEFURV9VTkFTU0lHTkVEEAIy0QIKHVBhcnRpY2lwYXRpb25BdXRob3JpdHlTZXJ2aWNlEoQBChNSZXBsYXlQYXJ0aWNpcGF0aW9uEjUucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5SZXBsYXlQYXJ0aWNpcGF0aW9uUmVxdWVzdBo2LnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuUmVwbGF5UGFydGljaXBhdGlvblJlc3BvbnNlEqgBCh9HZXREZXNpcmVkUGFydGljaXBhdGlvblNuYXBzaG90EkEucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5HZXREZXNpcmVkUGFydGljaXBhdGlvblNuYXBzaG90UmVxdWVzdBpCLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlc3BvbnNlQlJaUGdpdGh1Yi5jb20va2FmYWNvbm5lY3QvcmVsYXlwb2ludC9nZW4vZ28vcmVsYXlwb2ludC9pbnRlcmFjdGlvbi92MTtpbnRlcmFjdGlvbnBiYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("CityZWxheXBvaW50L2ludGVyYWN0aW9uL3YxL2ludGVyYWN0aW9uLnByb3RvEhlyZWxheXBvaW50LmludGVyYWN0aW9uLnYxIuECCgVFdmVudBIOCgZzY2hlbWEYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIQCghldmVudF9pZBgDIAEoCRIQCghzZXF1ZW5jZRgEIAEoAxIvCgtvY2N1cnJlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEQoJdGVuYW50X2lkGAYgASgJEhAKCGFjdG9yX2lkGAcgASgJEg4KBm1lZGl1bRgIIAEoCRIVCg1tZWRpYV9wcm9maWxlGAkgASgJEhIKCmNvbW1hbmRfaWQYCiABKAkSFAoMcGF5bG9hZF9oYXNoGAsgASgJEhEKCWNhdXNlZF9ieRgMIAEoCRIOCgZyZWZfaWQYDSABKAkSDAoEZGF0YRgOIAEoDBIUCgxjb21tYW5kZWRfYnkYDyABKAkSDgoGcmVhc29uGBAgASgJEhIKCnJlcXVlc3RfaWQYESABKAkifgoHQ29tbWFuZBISCgpjb21tYW5kX2lkGAEgASgJEhEKCXRlbmFudF9pZBgCIAEoCRIQCghhY3Rvcl9pZBgDIAEoCRIMCgR0eXBlGAQgASgJEg4KBm1lZGl1bRgFIAEoCRIOCgZyZWZfaWQYBiABKAkSDAoEZGF0YRgHIAEoDCLTAQoNQ29tbWFuZFJlc3VsdBISCgpjb21tYW5kX2lkGAEgASgJEj8KBnN0YXR1cxgCIAEoDjIvLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuQ29tbWFuZFJlc3VsdC5TdGF0dXMSEQoJY2F1c2VkX2J5GAMgASgJEg4KBnJlYXNvbhgEIAEoCSJKCgZTdGF0dXMSFgoSU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPU1RBVFVTX0FDQ0VQVEVEEAESEwoPU1RBVFVTX1JFSkVDVEVEEAIiSwoLU2lnbmFsRXZlbnQSDgoGc2NoZW1hGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIYWN0b3JfaWQYAyABKAkSDAoEZGF0YRgEIAEoDCI0CgtDaGF0TWVzc2FnZRIMCgR0ZXh0GAEgASgJEhcKD2F0dGFjaG1lbnRfcmVmcxgCIAMoCSJbCgtGZWVkQ29udHJvbBIOCgZzY2hlbWEYASABKAkSDwoHY29udHJvbBgCIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgDIAEoCRITCgthdF9zZXF1ZW5jZRgEIAEoAyKtAgoUUGFydGljaXBhdGlvbkNvbW1hbmQSEAoIZXZlbnRfaWQYASABKAkSGQoRYWdncmVnYXRlX3ZlcnNpb24YAiABKAQSEQoJdGVuYW50X2lkGAMgASgJEhYKDmludGVyYWN0aW9uX2lkGAQgASgJEhYKDnBhcnRpY2lwYW50X2lkGAUgASgJEksKDWRlc2lyZWRfc3RhdGUYBiABKA4yNC5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlBhcnRpY2lwYXRpb25EZXNpcmVkU3RhdGUSLwoLb2NjdXJyZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhMKC3RyYWNlcGFyZW50GAggASgJEhIKCmNhcGFiaWxpdHkYCSABKAkikAIKIU11dGF0ZURlc2lyZWRQYXJ0aWNpcGF0aW9uUmVxdWVzdBIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRISCgpyZXF1ZXN0X2lkGAIgASgJEhEKCXRlbmFudF9pZBgDIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgEIAEoCRIWCg5wYXJ0aWNpcGFudF9pZBgFIAEoCRJLCg1kZXNpcmVkX3N0YXRlGAYgASgOMjQucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5QYXJ0aWNpcGF0aW9uRGVzaXJlZFN0YXRlEi8KC29jY3VycmVkX2F0GAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCK4BAoiTXV0YXRlRGVzaXJlZFBhcnRpY2lwYXRpb25SZXNwb25zZRIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRISCgpyZXF1ZXN0X2lkGAIgASgJEhEKCXRlbmFudF9pZBgDIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgEIAEoCRIWCg5wYXJ0aWNpcGFudF9pZBgFIAEoCRJLCg1kZXNpcmVkX3N0YXRlGAYgASgOMjQucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5QYXJ0aWNpcGF0aW9uRGVzaXJlZFN0YXRlElQKBnJlc3VsdBgHIAEoDjJELnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuTXV0YXRlRGVzaXJlZFBhcnRpY2lwYXRpb25SZXNwb25zZS5SZXN1bHQSGQoRYWdncmVnYXRlX3ZlcnNpb24YCCABKAQSEAoIZXZlbnRfaWQYCSABKAkSFgoOY2Fub25pY2FsX2hhc2gYCiABKAwiugEKBlJlc3VsdBIWChJSRVNVTFRfVU5TUEVDSUZJRUQQABISCg5SRVNVTFRfQVBQTElFRBABEhQKEFJFU1VMVF9VTkNIQU5HRUQQAhIfChtSRVNVTFRfSURFTVBPVEVOQ1lfQ09ORkxJQ1QQAxISCg5SRVNVTFRfSU5WQUxJRBAEEhwKGFJFU1VMVF9UUkFOU0lFTlRfRkFJTFVSRRAFEhsKF1JFU1VMVF9JTlRFUk5BTF9GQUlMVVJFEAYihQEKGlJlcGxheVBhcnRpY2lwYXRpb25SZXF1ZXN0EhEKCXRlbmFudF9pZBgBIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgCIAEoCRIUCgxmcm9tX3ZlcnNpb24YAyABKAQSEgoKdG9fdmVyc2lvbhgEIAEoBBISCgpyZXF1ZXN0X2lkGAUgASgJIssBChtSZXBsYXlQYXJ0aWNpcGF0aW9uUmVzcG9uc2USQQoIY29tbWFuZHMYASADKAsyLy5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlBhcnRpY2lwYXRpb25Db21tYW5kEhQKDGhlYWRfdmVyc2lvbhgCIAEoBBIVCg1oZWFkX2V2ZW50X2lkGAMgASgJEhEKCWhlYWRfaGFzaBgEIAEoDBIVCg1oaXN0b3J5X2Zsb29yGAUgASgEEhIKCnByb3ZlbmFuY2UYBiABKAkigAEKJkdldERlc2lyZWRQYXJ0aWNpcGF0aW9uU25hcHNob3RSZXF1ZXN0EhEKCXRlbmFudF9pZBgBIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgCIAEoCRIXCg9taW5pbXVtX3ZlcnNpb24YAyABKAQSEgoKcmVxdWVzdF9pZBgEIAEoCSLdAQonR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlc3BvbnNlEhEKCXRlbmFudF9pZBgBIAEoCRIWCg5pbnRlcmFjdGlvbl9pZBgCIAEoCRIZChFhZ2dyZWdhdGVfdmVyc2lvbhgDIAEoBBIVCg1oZWFkX2V2ZW50X2lkGAQgASgJEhEKCWhlYWRfaGFzaBgFIAEoDBIXCg9wYXJ0aWNpcGFudF9pZHMYBiADKAkSFQoNaGlzdG9yeV9mbG9vchgHIAEoBBISCgpwcm92ZW5hbmNlGAggASgJIuQBChJQYXJ0aWNpcGF0aW9uRXJyb3ISQAoEY29kZRgBIAEoDjIyLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuUGFydGljaXBhdGlvbkVycm9yLkNvZGUiiwEKBENvZGUSFAoQQ09ERV9VTlNQRUNJRklFRBAAEhgKFENPREVfVU5LTk9XTl9ISVNUT1JZEAESGgoWQ09ERV9QRVJNSVNTSU9OX0RFTklFRBACEhAKDENPREVfSU5WQUxJRBADEhIKDkNPREVfVFJBTlNJRU5UEAQSEQoNQ09ERV9JTlRFUk5BTBAFIsUBChhSZXBsYXlQYXJ0aWNpcGF0aW9uUmVwbHkSEgoKcmVxdWVzdF9pZBgBIAEoCRJKCghyZXNwb25zZRgCIAEoCzI2LnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuUmVwbGF5UGFydGljaXBhdGlvblJlc3BvbnNlSAASPgoFZXJyb3IYAyABKAsyLS5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlBhcnRpY2lwYXRpb25FcnJvckgAQgkKB291dGNvbWUi2gEKIURlc2lyZWRQYXJ0aWNpcGF0aW9uU25hcHNob3RSZXBseRISCgpyZXF1ZXN0X2lkGAEgASgJElYKCHJlc3BvbnNlGAIgASgLMkIucmVsYXlwb2ludC5pbnRlcmFjdGlvbi52MS5HZXREZXNpcmVkUGFydGljaXBhdGlvblNuYXBzaG90UmVzcG9uc2VIABI+CgVlcnJvchgDIAEoCzItLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuUGFydGljaXBhdGlvbkVycm9ySABCCQoHb3V0Y29tZSqeAQoZUGFydGljaXBhdGlvbkRlc2lyZWRTdGF0ZRIrCidQQVJUSUNJUEFUSU9OX0RFU0lSRURfU1RBVEVfVU5TUEVDSUZJRUQQABIoCiRQQVJUSUNJUEFUSU9OX0RFU0lSRURfU1RBVEVfQVNTSUdORUQQARIqCiZQQVJUSUNJUEFUSU9OX0RFU0lSRURfU1RBVEVfVU5BU1NJR05FRBACMtECCh1QYXJ0aWNpcGF0aW9uQXV0aG9yaXR5U2VydmljZRKEAQoTUmVwbGF5UGFydGljaXBhdGlvbhI1LnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuUmVwbGF5UGFydGljaXBhdGlvblJlcXVlc3QaNi5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLlJlcGxheVBhcnRpY2lwYXRpb25SZXNwb25zZRKoAQofR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdBJBLnJlbGF5cG9pbnQuaW50ZXJhY3Rpb24udjEuR2V0RGVzaXJlZFBhcnRpY2lwYXRpb25TbmFwc2hvdFJlcXVlc3QaQi5yZWxheXBvaW50LmludGVyYWN0aW9uLnYxLkdldERlc2lyZWRQYXJ0aWNpcGF0aW9uU25hcHNob3RSZXNwb25zZUJSWlBnaXRodWIuY29tL2thZmFjb25uZWN0L3JlbGF5cG9pbnQvZ2VuL2dvL3JlbGF5cG9pbnQvaW50ZXJhY3Rpb24vdjE7aW50ZXJhY3Rpb25wYmIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * Event is the authoritative `.log` fact (one envelope for chat AND call; `medium` is a
@@ -438,6 +438,161 @@ export const ParticipationCommandSchema: GenMessage<ParticipationCommand> = /*@_
   messageDesc(file_relaypoint_interaction_v1_interaction, 6);
 
 /**
+ * @generated from message relaypoint.interaction.v1.MutateDesiredParticipationRequest
+ */
+export type MutateDesiredParticipationRequest = Message<"relaypoint.interaction.v1.MutateDesiredParticipationRequest"> & {
+  /**
+   * @generated from field: uint32 schema_version = 1;
+   */
+  schemaVersion: number;
+
+  /**
+   * @generated from field: string request_id = 2;
+   */
+  requestId: string;
+
+  /**
+   * @generated from field: string tenant_id = 3;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string interaction_id = 4;
+   */
+  interactionId: string;
+
+  /**
+   * @generated from field: string participant_id = 5;
+   */
+  participantId: string;
+
+  /**
+   * @generated from field: relaypoint.interaction.v1.ParticipationDesiredState desired_state = 6;
+   */
+  desiredState: ParticipationDesiredState;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp occurred_at = 7;
+   */
+  occurredAt?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.MutateDesiredParticipationRequest.
+ * Use `create(MutateDesiredParticipationRequestSchema)` to create a new message.
+ */
+export const MutateDesiredParticipationRequestSchema: GenMessage<MutateDesiredParticipationRequest> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 7);
+
+/**
+ * @generated from message relaypoint.interaction.v1.MutateDesiredParticipationResponse
+ */
+export type MutateDesiredParticipationResponse = Message<"relaypoint.interaction.v1.MutateDesiredParticipationResponse"> & {
+  /**
+   * @generated from field: uint32 schema_version = 1;
+   */
+  schemaVersion: number;
+
+  /**
+   * @generated from field: string request_id = 2;
+   */
+  requestId: string;
+
+  /**
+   * @generated from field: string tenant_id = 3;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string interaction_id = 4;
+   */
+  interactionId: string;
+
+  /**
+   * @generated from field: string participant_id = 5;
+   */
+  participantId: string;
+
+  /**
+   * @generated from field: relaypoint.interaction.v1.ParticipationDesiredState desired_state = 6;
+   */
+  desiredState: ParticipationDesiredState;
+
+  /**
+   * @generated from field: relaypoint.interaction.v1.MutateDesiredParticipationResponse.Result result = 7;
+   */
+  result: MutateDesiredParticipationResponse_Result;
+
+  /**
+   * @generated from field: uint64 aggregate_version = 8;
+   */
+  aggregateVersion: bigint;
+
+  /**
+   * @generated from field: string event_id = 9;
+   */
+  eventId: string;
+
+  /**
+   * @generated from field: bytes canonical_hash = 10;
+   */
+  canonicalHash: Uint8Array;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.MutateDesiredParticipationResponse.
+ * Use `create(MutateDesiredParticipationResponseSchema)` to create a new message.
+ */
+export const MutateDesiredParticipationResponseSchema: GenMessage<MutateDesiredParticipationResponse> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 8);
+
+/**
+ * @generated from enum relaypoint.interaction.v1.MutateDesiredParticipationResponse.Result
+ */
+export enum MutateDesiredParticipationResponse_Result {
+  /**
+   * @generated from enum value: RESULT_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: RESULT_APPLIED = 1;
+   */
+  APPLIED = 1,
+
+  /**
+   * @generated from enum value: RESULT_UNCHANGED = 2;
+   */
+  UNCHANGED = 2,
+
+  /**
+   * @generated from enum value: RESULT_IDEMPOTENCY_CONFLICT = 3;
+   */
+  IDEMPOTENCY_CONFLICT = 3,
+
+  /**
+   * @generated from enum value: RESULT_INVALID = 4;
+   */
+  INVALID = 4,
+
+  /**
+   * @generated from enum value: RESULT_TRANSIENT_FAILURE = 5;
+   */
+  TRANSIENT_FAILURE = 5,
+
+  /**
+   * @generated from enum value: RESULT_INTERNAL_FAILURE = 6;
+   */
+  INTERNAL_FAILURE = 6,
+}
+
+/**
+ * Describes the enum relaypoint.interaction.v1.MutateDesiredParticipationResponse.Result.
+ */
+export const MutateDesiredParticipationResponse_ResultSchema: GenEnum<MutateDesiredParticipationResponse_Result> = /*@__PURE__*/
+  enumDesc(file_relaypoint_interaction_v1_interaction, 8, 0);
+
+/**
  * @generated from message relaypoint.interaction.v1.ReplayParticipationRequest
  */
 export type ReplayParticipationRequest = Message<"relaypoint.interaction.v1.ReplayParticipationRequest"> & {
@@ -460,6 +615,11 @@ export type ReplayParticipationRequest = Message<"relaypoint.interaction.v1.Repl
    * @generated from field: uint64 to_version = 4;
    */
   toVersion: bigint;
+
+  /**
+   * @generated from field: string request_id = 5;
+   */
+  requestId: string;
 };
 
 /**
@@ -467,7 +627,7 @@ export type ReplayParticipationRequest = Message<"relaypoint.interaction.v1.Repl
  * Use `create(ReplayParticipationRequestSchema)` to create a new message.
  */
 export const ReplayParticipationRequestSchema: GenMessage<ReplayParticipationRequest> = /*@__PURE__*/
-  messageDesc(file_relaypoint_interaction_v1_interaction, 7);
+  messageDesc(file_relaypoint_interaction_v1_interaction, 9);
 
 /**
  * @generated from message relaypoint.interaction.v1.ReplayParticipationResponse
@@ -509,7 +669,7 @@ export type ReplayParticipationResponse = Message<"relaypoint.interaction.v1.Rep
  * Use `create(ReplayParticipationResponseSchema)` to create a new message.
  */
 export const ReplayParticipationResponseSchema: GenMessage<ReplayParticipationResponse> = /*@__PURE__*/
-  messageDesc(file_relaypoint_interaction_v1_interaction, 8);
+  messageDesc(file_relaypoint_interaction_v1_interaction, 10);
 
 /**
  * @generated from message relaypoint.interaction.v1.GetDesiredParticipationSnapshotRequest
@@ -529,6 +689,11 @@ export type GetDesiredParticipationSnapshotRequest = Message<"relaypoint.interac
    * @generated from field: uint64 minimum_version = 3;
    */
   minimumVersion: bigint;
+
+  /**
+   * @generated from field: string request_id = 4;
+   */
+  requestId: string;
 };
 
 /**
@@ -536,7 +701,7 @@ export type GetDesiredParticipationSnapshotRequest = Message<"relaypoint.interac
  * Use `create(GetDesiredParticipationSnapshotRequestSchema)` to create a new message.
  */
 export const GetDesiredParticipationSnapshotRequestSchema: GenMessage<GetDesiredParticipationSnapshotRequest> = /*@__PURE__*/
-  messageDesc(file_relaypoint_interaction_v1_interaction, 9);
+  messageDesc(file_relaypoint_interaction_v1_interaction, 11);
 
 /**
  * @generated from message relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse
@@ -588,7 +753,133 @@ export type GetDesiredParticipationSnapshotResponse = Message<"relaypoint.intera
  * Use `create(GetDesiredParticipationSnapshotResponseSchema)` to create a new message.
  */
 export const GetDesiredParticipationSnapshotResponseSchema: GenMessage<GetDesiredParticipationSnapshotResponse> = /*@__PURE__*/
-  messageDesc(file_relaypoint_interaction_v1_interaction, 10);
+  messageDesc(file_relaypoint_interaction_v1_interaction, 12);
+
+/**
+ * @generated from message relaypoint.interaction.v1.ParticipationError
+ */
+export type ParticipationError = Message<"relaypoint.interaction.v1.ParticipationError"> & {
+  /**
+   * @generated from field: relaypoint.interaction.v1.ParticipationError.Code code = 1;
+   */
+  code: ParticipationError_Code;
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.ParticipationError.
+ * Use `create(ParticipationErrorSchema)` to create a new message.
+ */
+export const ParticipationErrorSchema: GenMessage<ParticipationError> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 13);
+
+/**
+ * @generated from enum relaypoint.interaction.v1.ParticipationError.Code
+ */
+export enum ParticipationError_Code {
+  /**
+   * @generated from enum value: CODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: CODE_UNKNOWN_HISTORY = 1;
+   */
+  UNKNOWN_HISTORY = 1,
+
+  /**
+   * @generated from enum value: CODE_PERMISSION_DENIED = 2;
+   */
+  PERMISSION_DENIED = 2,
+
+  /**
+   * @generated from enum value: CODE_INVALID = 3;
+   */
+  INVALID = 3,
+
+  /**
+   * @generated from enum value: CODE_TRANSIENT = 4;
+   */
+  TRANSIENT = 4,
+
+  /**
+   * @generated from enum value: CODE_INTERNAL = 5;
+   */
+  INTERNAL = 5,
+}
+
+/**
+ * Describes the enum relaypoint.interaction.v1.ParticipationError.Code.
+ */
+export const ParticipationError_CodeSchema: GenEnum<ParticipationError_Code> = /*@__PURE__*/
+  enumDesc(file_relaypoint_interaction_v1_interaction, 13, 0);
+
+/**
+ * @generated from message relaypoint.interaction.v1.ReplayParticipationReply
+ */
+export type ReplayParticipationReply = Message<"relaypoint.interaction.v1.ReplayParticipationReply"> & {
+  /**
+   * @generated from field: string request_id = 1;
+   */
+  requestId: string;
+
+  /**
+   * @generated from oneof relaypoint.interaction.v1.ReplayParticipationReply.outcome
+   */
+  outcome: {
+    /**
+     * @generated from field: relaypoint.interaction.v1.ReplayParticipationResponse response = 2;
+     */
+    value: ReplayParticipationResponse;
+    case: "response";
+  } | {
+    /**
+     * @generated from field: relaypoint.interaction.v1.ParticipationError error = 3;
+     */
+    value: ParticipationError;
+    case: "error";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.ReplayParticipationReply.
+ * Use `create(ReplayParticipationReplySchema)` to create a new message.
+ */
+export const ReplayParticipationReplySchema: GenMessage<ReplayParticipationReply> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 14);
+
+/**
+ * @generated from message relaypoint.interaction.v1.DesiredParticipationSnapshotReply
+ */
+export type DesiredParticipationSnapshotReply = Message<"relaypoint.interaction.v1.DesiredParticipationSnapshotReply"> & {
+  /**
+   * @generated from field: string request_id = 1;
+   */
+  requestId: string;
+
+  /**
+   * @generated from oneof relaypoint.interaction.v1.DesiredParticipationSnapshotReply.outcome
+   */
+  outcome: {
+    /**
+     * @generated from field: relaypoint.interaction.v1.GetDesiredParticipationSnapshotResponse response = 2;
+     */
+    value: GetDesiredParticipationSnapshotResponse;
+    case: "response";
+  } | {
+    /**
+     * @generated from field: relaypoint.interaction.v1.ParticipationError error = 3;
+     */
+    value: ParticipationError;
+    case: "error";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message relaypoint.interaction.v1.DesiredParticipationSnapshotReply.
+ * Use `create(DesiredParticipationSnapshotReplySchema)` to create a new message.
+ */
+export const DesiredParticipationSnapshotReplySchema: GenMessage<DesiredParticipationSnapshotReply> = /*@__PURE__*/
+  messageDesc(file_relaypoint_interaction_v1_interaction, 15);
 
 /**
  * @generated from enum relaypoint.interaction.v1.ParticipationDesiredState
