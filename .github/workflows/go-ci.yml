@@ -74,7 +74,11 @@ jobs:
         run: |
           output="$(mktemp)"
           go test -tags=integration -p=1 -count=1 -json ./... | tee "$output"
-          ! grep -q '"Action":"skip"' "$output"
+          if jq -e 'select(.Action == "skip" and ((.Test // "") | length > 0))' "$output" >/dev/null; then
+            echo "::error::integration test case skipped"
+            jq -c 'select(.Action == "skip" and ((.Test // "") | length > 0))' "$output"
+            exit 1
+          fi
       - name: logging gate (no ad-hoc logging)
         run: bash scripts/check-logging.sh
       - name: Stop owned NATS
