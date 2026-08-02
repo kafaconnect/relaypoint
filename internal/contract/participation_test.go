@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -18,12 +19,21 @@ func TestParticipationContractCarriesOrderedIdentityAndRecovery(t *testing.T) {
 	}
 	for number, name := range []protoreflect.Name{
 		"event_id", "aggregate_version", "tenant_id", "interaction_id", "participant_id",
-		"desired_state", "occurred_at", "traceparent", "capability",
+		"desired_state", "occurred_at", "traceparent",
 	} {
 		field := command.Fields().ByNumber(protoreflect.FieldNumber(number + 1))
 		if field == nil || field.Name() != name {
 			t.Fatalf("command field %d = %v", number+1, field)
 		}
+	}
+	if command.Fields().ByNumber(9) != nil || command.Fields().ByName("capability") != nil {
+		t.Fatal("ParticipationCommand capability must not be payload authority")
+	}
+	if command.ReservedRanges().Len() != 1 || command.ReservedRanges().Get(0) != [2]protoreflect.FieldNumber{9, 10} {
+		t.Fatalf("reserved ranges = %v", command.ReservedRanges())
+	}
+	if command.ReservedNames().Len() != 1 || command.ReservedNames().Get(0) != "capability" {
+		t.Fatalf("reserved names = %v", command.ReservedNames())
 	}
 	for _, name := range []protoreflect.Name{
 		"MutateDesiredParticipationRequest", "MutateDesiredParticipationResponse",
@@ -56,6 +66,19 @@ func TestParticipationContractCarriesOrderedIdentityAndRecovery(t *testing.T) {
 		got, err := address.build(tenant, interaction)
 		if err != nil || !strings.HasPrefix(got, address.want+".") {
 			t.Fatalf("address=%q error=%v", got, err)
+		}
+	}
+	asyncAPI, err := os.ReadFile("../../contracts/asyncapi/participation.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, authority := range []string{
+		"source: authenticated-nats-acl-grant",
+		"capability: Corex-participation-write",
+		"tenant-binding: subject-equals-payload",
+	} {
+		if !strings.Contains(string(asyncAPI), authority) {
+			t.Fatalf("missing AsyncAPI authority %q", authority)
 		}
 	}
 }
