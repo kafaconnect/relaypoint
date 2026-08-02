@@ -103,6 +103,9 @@ message FeedControl {
 }
 
 message ParticipationCommand {
+  reserved 9;
+  reserved "capability";
+
   string event_id = 1;
   uint64 aggregate_version = 2;
   string tenant_id = 3;
@@ -111,7 +114,6 @@ message ParticipationCommand {
   ParticipationDesiredState desired_state = 6;
   google.protobuf.Timestamp occurred_at = 7;
   string traceparent = 8;
-  string capability = 9;
 }
 
 message MutateDesiredParticipationRequest {

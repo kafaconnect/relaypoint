@@ -800,7 +800,6 @@ type ParticipationCommand struct {
 	DesiredState     ParticipationDesiredState `protobuf:"varint,6,opt,name=desired_state,json=desiredState,proto3,enum=relaypoint.interaction.v1.ParticipationDesiredState" json:"desired_state,omitempty"`
 	OccurredAt       *timestamppb.Timestamp    `protobuf:"bytes,7,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
 	Traceparent      string                    `protobuf:"bytes,8,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
-	Capability       string                    `protobuf:"bytes,9,opt,name=capability,proto3" json:"capability,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -887,13 +886,6 @@ func (x *ParticipationCommand) GetOccurredAt() *timestamppb.Timestamp {
 func (x *ParticipationCommand) GetTraceparent() string {
 	if x != nil {
 		return x.Traceparent
-	}
-	return ""
-}
-
-func (x *ParticipationCommand) GetCapability() string {
-	if x != nil {
-		return x.Capability
 	}
 	return ""
 }
@@ -1718,7 +1710,7 @@ const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\acontrol\x18\x02 \x01(\tR\acontrol\x12%\n" +
 	"\x0einteraction_id\x18\x03 \x01(\tR\rinteractionId\x12\x1f\n" +
 	"\vat_sequence\x18\x04 \x01(\x03R\n" +
-	"atSequence\"\xa3\x03\n" +
+	"atSequence\"\x95\x03\n" +
 	"\x14ParticipationCommand\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12+\n" +
 	"\x11aggregate_version\x18\x02 \x01(\x04R\x10aggregateVersion\x12\x1b\n" +
@@ -1728,9 +1720,8 @@ const file_relaypoint_interaction_v1_interaction_proto_rawDesc = "" +
 	"\rdesired_state\x18\x06 \x01(\x0e24.relaypoint.interaction.v1.ParticipationDesiredStateR\fdesiredState\x12;\n" +
 	"\voccurred_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12 \n" +
-	"\vtraceparent\x18\b \x01(\tR\vtraceparent\x12\x1e\n" +
-	"\n" +
-	"capability\x18\t \x01(\tR\n" +
+	"\vtraceparent\x18\b \x01(\tR\vtraceparentJ\x04\b\t\x10\n" +
+	"R\n" +
 	"capability\"\xec\x02\n" +
 	"!MutateDesiredParticipationRequest\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x1d\n" +

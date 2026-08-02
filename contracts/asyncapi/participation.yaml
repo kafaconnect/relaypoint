@@ -20,6 +20,10 @@ channels:
   corex.participation.commands.v1.{tenant}.{interaction}:
     x-address-function: participationCommandAddress
     x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    x-authorization:
+      source: authenticated-nats-acl-grant
+      capability: Corex-participation-write
+      tenant-binding: subject-equals-payload
     x-jetstream-stream: PARTICIPATION_COMMANDS
     x-ordering-key: [tenant, interaction]
     x-nats-msg-id-format: <event_id>
