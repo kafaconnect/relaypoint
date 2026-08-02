@@ -10,6 +10,11 @@ channels:
   rpc.corex.participation-mutate.v1.{tenant}.{interaction}:
     x-address-function: mutateDesiredParticipationAddress
     x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    x-authorization:
+      source: authenticated-nats-acl-grant
+      service: desk
+      capability: Corex-participation-write
+      tenant-binding: subject-equals-payload
     parameters:
       tenant: { $ref: '#/components/parameters/tenant' }
       interaction: { $ref: '#/components/parameters/interaction' }
@@ -22,6 +27,7 @@ channels:
     x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
     x-authorization:
       source: authenticated-nats-acl-grant
+      service: corex
       capability: Corex-participation-write
       tenant-binding: subject-equals-payload
     x-jetstream-stream: PARTICIPATION_COMMANDS
@@ -36,6 +42,11 @@ channels:
   rpc.corex.participation-replay.v1.{tenant}.{interaction}:
     x-address-function: replayParticipationAddress
     x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    x-authorization:
+      source: authenticated-nats-acl-grant
+      service: relaypoint
+      capability: Corex-participation-read
+      tenant-binding: subject-equals-payload
     parameters:
       tenant: { $ref: '#/components/parameters/tenant' }
       interaction: { $ref: '#/components/parameters/interaction' }
@@ -46,6 +57,11 @@ channels:
   rpc.corex.participation-snapshot.v1.{tenant}.{interaction}:
     x-address-function: desiredParticipationSnapshotAddress
     x-address-validators: { tenant: uuidv7, interaction: uuidv7 }
+    x-authorization:
+      source: authenticated-nats-acl-grant
+      service: relaypoint
+      capability: Corex-participation-read
+      tenant-binding: subject-equals-payload
     parameters:
       tenant: { $ref: '#/components/parameters/tenant' }
       interaction: { $ref: '#/components/parameters/interaction' }

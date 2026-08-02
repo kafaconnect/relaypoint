@@ -72,13 +72,18 @@ func TestParticipationContractCarriesOrderedIdentityAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, authority := range []string{
-		"source: authenticated-nats-acl-grant",
-		"capability: Corex-participation-write",
-		"tenant-binding: subject-equals-payload",
+	authority := string(asyncAPI)
+	for value, count := range map[string]int{
+		"source: authenticated-nats-acl-grant":   4,
+		"tenant-binding: subject-equals-payload": 4,
+		"capability: Corex-participation-write":  2,
+		"capability: Corex-participation-read":   2,
+		"service: desk":                          1,
+		"service: corex":                         1,
+		"service: relaypoint":                    2,
 	} {
-		if !strings.Contains(string(asyncAPI), authority) {
-			t.Fatalf("missing AsyncAPI authority %q", authority)
+		if strings.Count(authority, value) != count {
+			t.Fatalf("AsyncAPI authority %q count=%d want=%d", value, strings.Count(authority, value), count)
 		}
 	}
 }
