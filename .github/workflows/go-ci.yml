@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "**/*.go"
+      - "db/migrations/**"
+      - "deploy/**"
       - "go.mod"
       - "go.sum"
       - "scripts/check-logging.sh"
@@ -12,12 +14,50 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: relaypoint
+          POSTGRES_PASSWORD: relaypoint-ci
+          POSTGRES_USER: relaypoint
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relaypoint -d relaypoint"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://relaypoint:relaypoint-ci@127.0.0.1:5432/relaypoint?sslmode=disable
+      NATS_URL_ROUTER: nats://router:router-dev@127.0.0.1:14222
+      NATS_URL_CLIENT: nats://client:client-dev@127.0.0.1:14222
+      NATS_URL_PROJECTOR: nats://projector:projector-dev@127.0.0.1:14222
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
           check-latest: true
+      - name: Start authenticated NATS JetStream
+        run: |
+          docker run -d --name "relaypoint-go-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            -e ROUTER_PASSWORD=router-dev \
+            -e CLIENT_PASSWORD=client-dev \
+            -e PROJECTOR_PASSWORD=projector-dev \
+            -e AUTH_PASSWORD=auth-dev \
+            -e AUTH_CALLOUT_ISSUER=ACFPE6KPJID4EMOOIH7XT5VVRFWVTNJF6A6TKRSZJJ6DM6XQYISJ7MH2 \
+            -v "$PWD/deploy/nats/nats-server.conf:/etc/nats/nats-server.conf:ro" \
+            -p 14222:4222 -p 18222:8222 \
+            nats:2.10-alpine -c /etc/nats/nats-server.conf
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18222/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "relaypoint-go-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          exit 1
       - name: gofmt
         run: |
           unformatted="$(gofmt -l .)"
@@ -30,5 +70,17 @@ jobs:
         run: go vet ./...
       - name: test (race)
         run: go test ./... -race
+      - name: full PostgreSQL 17 and NATS JetStream integration
+        run: |
+          output="$(mktemp)"
+          go test -tags=integration -p=1 -count=1 -json ./... | tee "$output"
+          if jq -e 'select(.Action == "skip" and ((.Test // "") | length > 0))' "$output" >/dev/null; then
+            echo "::error::integration test case skipped"
+            jq -c 'select(.Action == "skip" and ((.Test // "") | length > 0))' "$output"
+            exit 1
+          fi
       - name: logging gate (no ad-hoc logging)
         run: bash scripts/check-logging.sh
+      - name: Stop owned NATS
+        if: always()
+        run: docker rm -f "relaypoint-go-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true

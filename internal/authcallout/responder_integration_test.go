@@ -403,7 +403,6 @@ func TestAuthCalloutAdminOperationObserverACLs(t *testing.T) {
 	adminTok := m.mint(t, mintOpts{
 		sub:        "admin",
 		tid:        "T",
-		role:       "agent",
 		capability: signaling.CapabilityAgentFeedAdminOperationObserver,
 	})
 	subject := "tenant.T.admin.operation.018f0000-0000-7000-8000-000000000001.changed"

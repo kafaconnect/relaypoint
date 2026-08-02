@@ -193,6 +193,152 @@ CREATE TABLE projection_invariant_alert_outbox (
     CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7')
 );
 
+CREATE TABLE participation_fold_heads (
+    tenant_id uuid NOT NULL,
+    interaction_id uuid NOT NULL,
+    aggregate_version bigint NOT NULL DEFAULT 0 CHECK (aggregate_version >= 0),
+    event_id uuid,
+    command_hash bytea CHECK (command_hash IS NULL OR octet_length(command_hash) = 32),
+    snapshot_source_event_id uuid,
+    snapshot_source_hash bytea CHECK (snapshot_source_hash IS NULL OR octet_length(snapshot_source_hash) = 32),
+    snapshot_provenance text,
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant_id, interaction_id),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7'),
+    CHECK (event_id IS NULL OR substring(event_id::text FROM 15 FOR 1) = '7'),
+    CHECK ((aggregate_version = 0) = (event_id IS NULL AND command_hash IS NULL)),
+    CHECK (
+        (snapshot_source_event_id IS NULL AND snapshot_source_hash IS NULL AND snapshot_provenance IS NULL)
+        OR (snapshot_source_event_id IS NOT NULL AND snapshot_source_hash IS NOT NULL AND snapshot_provenance IS NOT NULL)
+    )
+);
+
+CREATE TABLE participation_folded_participants (
+    tenant_id uuid NOT NULL,
+    interaction_id uuid NOT NULL,
+    participant_id uuid NOT NULL,
+    aggregate_version bigint NOT NULL CHECK (aggregate_version > 0),
+    event_id uuid NOT NULL,
+    command_hash bytea NOT NULL CHECK (octet_length(command_hash) = 32),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant_id, interaction_id, participant_id),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(participant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(event_id::text FROM 15 FOR 1) = '7')
+);
+
+CREATE TABLE participation_version_ledger (
+    tenant_id uuid NOT NULL,
+    interaction_id uuid NOT NULL,
+    aggregate_version bigint NOT NULL CHECK (aggregate_version > 0),
+    event_id uuid NOT NULL,
+    command_hash bytea NOT NULL CHECK (octet_length(command_hash) = 32),
+    command_body bytea,
+    source_kind text NOT NULL DEFAULT 'command' CHECK (source_kind IN ('command', 'snapshot')),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant_id, interaction_id, aggregate_version),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(event_id::text FROM 15 FOR 1) = '7'),
+    CHECK ((source_kind = 'command') = (command_body IS NOT NULL))
+);
+
+CREATE TABLE participation_event_ledger (
+    tenant_id uuid NOT NULL,
+    event_id uuid NOT NULL,
+    interaction_id uuid NOT NULL,
+    aggregate_version bigint NOT NULL CHECK (aggregate_version > 0),
+    command_hash bytea NOT NULL CHECK (octet_length(command_hash) = 32),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant_id, event_id),
+    UNIQUE (tenant_id, interaction_id, aggregate_version),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(event_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7')
+);
+
+CREATE TABLE participation_pending_inputs (
+    tenant_id uuid NOT NULL,
+    event_id uuid NOT NULL,
+    interaction_id uuid NOT NULL,
+    aggregate_version bigint NOT NULL CHECK (aggregate_version > 0),
+    command_hash bytea NOT NULL CHECK (octet_length(command_hash) = 32),
+    command_body bytea NOT NULL,
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'installed', 'dlq')),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    PRIMARY KEY (tenant_id, event_id),
+    UNIQUE (tenant_id, interaction_id, aggregate_version),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(event_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7')
+);
+
+CREATE TABLE participation_reconcile_intents (
+    tenant_id uuid NOT NULL,
+    reconcile_token uuid NOT NULL,
+    interaction_id uuid NOT NULL,
+    observed_version bigint NOT NULL CHECK (observed_version >= 0),
+    requested_from bigint NOT NULL CHECK (requested_from > 0),
+    requested_to bigint NOT NULL CHECK (requested_to >= requested_from),
+    held_event_id uuid NOT NULL,
+    held_hash bytea NOT NULL CHECK (octet_length(held_hash) = 32),
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'installed', 'audited')),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    PRIMARY KEY (tenant_id, reconcile_token),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(reconcile_token::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(held_event_id::text FROM 15 FOR 1) = '7')
+);
+
+CREATE UNIQUE INDEX participation_reconcile_intents_pending_idx
+    ON participation_reconcile_intents (tenant_id, interaction_id) WHERE status = 'pending';
+
+CREATE TABLE participation_dlq (
+    tenant_id uuid NOT NULL,
+    dlq_id uuid NOT NULL,
+    reconcile_token uuid,
+    interaction_id uuid NOT NULL,
+    event_id uuid NOT NULL,
+    aggregate_version bigint NOT NULL CHECK (aggregate_version > 0),
+    command_hash bytea NOT NULL CHECK (octet_length(command_hash) = 32),
+    reason text NOT NULL CHECK (reason IN ('DIVERGENT_HISTORY', 'UNKNOWN_STALE_HISTORY', 'RECONCILE_EXHAUSTED')),
+    command_body bytea NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant_id, dlq_id),
+    UNIQUE (tenant_id, interaction_id, event_id, reason),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(dlq_id::text FROM 15 FOR 1) = '7'),
+    CHECK (reconcile_token IS NULL OR substring(reconcile_token::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(event_id::text FROM 15 FOR 1) = '7')
+);
+
+CREATE TABLE participation_alert_outbox (
+    tenant_id uuid NOT NULL,
+    alert_id uuid NOT NULL,
+    reconcile_token uuid,
+    interaction_id uuid NOT NULL,
+    event_id uuid NOT NULL,
+    reason text NOT NULL CHECK (reason IN ('DIVERGENT_HISTORY', 'UNKNOWN_STALE_HISTORY', 'RECONCILE_EXHAUSTED')),
+    payload bytea NOT NULL,
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed')),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    PRIMARY KEY (tenant_id, alert_id),
+    UNIQUE (tenant_id, interaction_id, event_id, reason),
+    CHECK (substring(tenant_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(alert_id::text FROM 15 FOR 1) = '7'),
+    CHECK (reconcile_token IS NULL OR substring(reconcile_token::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(interaction_id::text FROM 15 FOR 1) = '7'),
+    CHECK (substring(event_id::text FROM 15 FOR 1) = '7')
+);
+
 ALTER TABLE delivery_authorizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE delivery_authorizations FORCE ROW LEVEL SECURITY;
 ALTER TABLE interaction_delivery_log ENABLE ROW LEVEL SECURITY;
@@ -211,6 +357,22 @@ ALTER TABLE route_projection_dlq ENABLE ROW LEVEL SECURITY;
 ALTER TABLE route_projection_dlq FORCE ROW LEVEL SECURITY;
 ALTER TABLE projection_invariant_alert_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE projection_invariant_alert_outbox FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_fold_heads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_fold_heads FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_folded_participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_folded_participants FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_version_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_version_ledger FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_event_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_event_ledger FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_pending_inputs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_pending_inputs FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_reconcile_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_reconcile_intents FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_dlq ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_dlq FORCE ROW LEVEL SECURITY;
+ALTER TABLE participation_alert_outbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE participation_alert_outbox FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY delivery_authorizations_tenant ON delivery_authorizations USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE POLICY interaction_delivery_log_tenant ON interaction_delivery_log USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
@@ -221,3 +383,11 @@ CREATE POLICY route_fact_event_ledger_tenant ON route_fact_event_ledger USING (t
 CREATE POLICY projection_reconcile_intents_tenant ON projection_reconcile_intents USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE POLICY route_projection_dlq_tenant ON route_projection_dlq USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE POLICY projection_invariant_alert_outbox_tenant ON projection_invariant_alert_outbox USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_fold_heads_tenant ON participation_fold_heads USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_folded_participants_tenant ON participation_folded_participants USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_version_ledger_tenant ON participation_version_ledger USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_event_ledger_tenant ON participation_event_ledger USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_pending_inputs_tenant ON participation_pending_inputs USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_reconcile_intents_tenant ON participation_reconcile_intents USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_dlq_tenant ON participation_dlq USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY participation_alert_outbox_tenant ON participation_alert_outbox USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);

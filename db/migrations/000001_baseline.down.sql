@@ -1,3 +1,11 @@
+DROP TABLE participation_alert_outbox;
+DROP TABLE participation_dlq;
+DROP TABLE participation_reconcile_intents;
+DROP TABLE participation_pending_inputs;
+DROP TABLE participation_event_ledger;
+DROP TABLE participation_version_ledger;
+DROP TABLE participation_folded_participants;
+DROP TABLE participation_fold_heads;
 DROP TABLE projection_invariant_alert_outbox;
 DROP TABLE route_projection_dlq;
 DROP TABLE projection_reconcile_intents;
